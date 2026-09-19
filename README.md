@@ -29,8 +29,9 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
   disabled: true
 ```
 
-从源码跑：把 `- insert: - id: dsh-tree, name: 'file:///绝对路径/index.js'` 写进
-`cordis.patch.yml`，别和上面的装法同时用（同一个 id 插两次，dsh 起不来）。
+从源码跑：先 `npm install`（要一个 `schemastery`），再把
+`- insert: - id: dsh-tree, name: 'file:///绝对路径/index.js'` 写进 `cordis.patch.yml`，
+别和上面的装法同时用（同一个 id 插两次，dsh 起不来）。
 改 `index.js` 要重启，改 `client.js` 刷新浏览器即可。
 
 ## 用
