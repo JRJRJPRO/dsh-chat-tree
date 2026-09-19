@@ -281,11 +281,11 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 	check(bad.length === 0, `scaleZ(100) 必须和 Z 一模一样，不同的字段：${bad.join(',')}`)
 
 	const big = pure.scaleZ(200)
-	for (const key of ['row', 'rowMin', 'dot', 'lane', 'hit', 'ell', 'mouth']) {
+	for (const key of ['row', 'rowMin', 'dot', 'lane', 'hit', 'ell']) {
 		check(big[key] === Z[key] * 2, `${key} 在 200% 下该是 ${Z[key] * 2}，实际 ${big[key]}`)
 	}
 	// 时间和文字卡片宽度不是几何量，不许跟着缩
-	check(big.bridgeMs === Z.bridgeMs, 'bridgeMs 是时间，不该被缩放')
+	check(big.restMs === Z.restMs, 'restMs 是 hover intent 的等待时间，不该被缩放')
 	check(big.card === Z.card, 'card 是文字卡片宽度，跟着放大只会挡住聊天区')
 	check(pure.scaleZ(undefined).dot === Z.dot && pure.scaleZ(0).dot === Z.dot, '非法百分比该退回 100%')
 
@@ -297,14 +297,9 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 	console.log(`  100% 逐字段相等；200% 下 dot ${Z.dot}→${big.dot}、lane ${Z.lane}→${big.lane}、hit ${Z.hit}→${big.hit}`)
 }
 
-console.log('用例 11：走廊跟着缩放 —— 放大后不能还按原尺寸开口')
-{
-	const small = pure.bridgeBox(100, 9, 20, pure.scaleZ(100))
-	const big = pure.bridgeBox(100, 18, 40, pure.scaleZ(200))
-	check(big.far === small.far * 2, `200% 时走廊开口该翻倍：${small.far} → ${big.far}`)
-	check(pure.bridgeBox(100, 9, 20).far === small.far, '不传 z 时必须等价于 100%')
-	console.log(`  开口半高 ${small.far} → ${big.far}`)
-}
+// 用例 11（走廊跟着缩放）已删：走廊那套机制整个被 hover intent 取代了，
+// bridgeBox / Z.mouth / Z.bridgeMs 都不存在了。为什么推翻见 DESIGN.md §hover intent。
+// 缩放这一面仍有人守着：用例 10 钉住 hit/lane 比例恒定，restMs 不参与缩放。
 
 console.log('用例 9：档位文案')
 {

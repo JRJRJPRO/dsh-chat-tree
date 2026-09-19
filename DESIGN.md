@@ -161,6 +161,24 @@ activities      ← 裁到岔路那一轮（UI 里助手正文的唯一来源）
 
 ## 5. UI
 
+### `dsh.client.inject` 要跟着挂载点走
+
+`package.json` 里这张表决定浏览器半能用到谁，写漏了就是运行时才炸。当前五项各有出处：
+
+| 声明 | 为什么要 |
+|---|---|
+| `dsh-api-session-controller` | `ctx.sessions`（列表 / open / fork / jump） |
+| `dsh-api-workspace-controller` | `ctx.workspaces`（归档集） |
+| `dsh-client-ui-layout` | **声明 `shell.overlay` 的就是它**，导轨挂在这 |
+| `dsh-client-ui-chat` | 我们读它的 DOM：`[data-conversation-scroll]`、`[data-chat-turn]`、`TurnNavigator.module.css` |
+| `dsh-client-ui-settings` | 设置卡片的 `settings.plugin.item` |
+
+> ⚠️ 改挂载点时**必须同步改这里**。从 `conversation.session.header.utilities` 换到
+> `shell.overlay` 那次，原本写的是 `dsh-client-ui-conversation` —— 那个包既不声明
+> `shell.overlay`、也不拥有上面三个 DOM 锚点（它们全在 `ui-chat`），留着是纯误导。
+
+改这张表**要重启 dsh**，光刷新浏览器不够。改完导轨要是没了，先把这里回滚。
+
 ### 挂在哪个 slot —— 决定了切会话会不会"闪"
 
 导轨注册在 **`shell.overlay`**（`scope: "root"`，由 `AppFrame` 常驻渲染）。

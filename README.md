@@ -64,11 +64,15 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ## 测
 
 ```bash
+npm test                   # 四套一起跑
+
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
-node test-highlight.mjs    # 高亮的边界情形
-node test-elide.mjs        # 省略的距离、行号压实、省略号位置
+node test-highlight.mjs    # 高亮、hover intent、连线遮挡
+node test-elide.mjs        # 省略的距离、行号压实、缩放
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
 ```
+
+`test-branch.mjs` 要读真实会话日志，不在默认位置时设 `DSH_HOME_REAL` 指过去，否则它自己跳过。
 
 设计与踩坑记录：[DESIGN.md](DESIGN.md)。原生能力清单：[NATIVE-BASELINE.md](NATIVE-BASELINE.md)。
 
