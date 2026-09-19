@@ -321,9 +321,42 @@ window.__ModuleLoader__.load({
 			return node.entry !== undefined && node.active === true && node.entry.turn === activeTurn
 		}
 
+		/**
+		 * 走廊的横向范围（导轨内坐标系）。
+		 *
+		 * 左缘越过卡片右缘 2px 压住缝；右缘停在悬停点的圆边上 —— 再往右就盖住这个点
+		 * 自己，它就点不动了；再往左则露出左邻居命中区的右端（在 x-5），白挡。
+		 * @param x - 悬停点的圆心
+		 * @param size - 悬停点的直径
+		 * @returns 绝对定位要的 left / width
+		 */
+		function bridgeBox(x, size) {
+			const left = -6
+			return { left, width: x - size / 2 - left }
+		}
+
+		/**
+		 * 走廊让位的那一刻，鼠标正压着同一行的哪个点。
+		 *
+		 * 元素在静止的鼠标底下出现是不会触发 mouseenter 的，所以让位时必须自己算一次，
+		 * 否则用户得抖一下鼠标才选得中。
+		 * @param seats - 同一行里可见的点，形如 {x, node}
+		 * @param x - 鼠标横坐标（导轨内坐标系）
+		 * @param reach - 命中半径
+		 * @returns 压着的点，没压着就 undefined
+		 */
+		function nodeUnder(seats, x, reach) {
+			let best
+			for (const seat of seats) {
+				const gap = Math.abs(seat.x - x)
+				if (gap <= reach && (best === undefined || gap < best.gap)) best = { gap, node: seat.node }
+			}
+			return best === undefined ? undefined : best.node
+		}
+
 		// ===== 第 4 步：尺寸与形态 =====
 
-		const Z = { row: 20, rowMin: 7, dot: 9, lane: 14, pad: 16, card: 270, gap: 20 }
+		const Z = { row: 20, rowMin: 7, dot: 9, lane: 14, pad: 16, card: 270, gap: 20, bridgeMs: 260 }
 		const C = {
 			line: '#30363d', lineActive: 'rgba(88,166,255,.6)',
 			dim: '#6e7681', dimActive: 'rgba(88,166,255,.9)',
@@ -761,6 +794,13 @@ window.__ModuleLoader__.load({
 			const [tick, setTick] = react.useState(0)
 			const labels = react.useMemo(() => readLabels(), [tick])
 
+			// 走廊：鼠标从点走到卡片上的 ＋，必须横穿左边每一列，途中每个点都会抢走悬停
+			// （列间距 14px 但命中区 18px，往左 5px 就被抢）。开着卡片时在必经之路上
+			// 盖一条透明走廊挡住抢夺；停住不动超过 BRIDGE_MS 就认定是想选走廊底下的点。
+			const [bridge, setBridge] = react.useState(true)
+			const bridgeTimer = react.useRef(0)
+			const pointerX = react.useRef(0)
+
 			const closeTimer = react.useRef(0)
 			const hold = react.useCallback(() => clearTimeout(closeTimer.current), [])
 			const release = react.useCallback(() => {
@@ -769,6 +809,11 @@ window.__ModuleLoader__.load({
 			}, [])
 			react.useEffect(() => () => clearTimeout(closeTimer.current), [])
 			react.useEffect(() => hideNativeRail(), [])
+			// 换了悬停目标就重新布防
+			react.useEffect(() => {
+				setBridge(true)
+				return () => clearTimeout(bridgeTimer.current)
+			}, [hover === null ? '' : hover.node.key])
 
 			if (!listState || !current) return null
 
@@ -894,6 +939,36 @@ window.__ModuleLoader__.load({
 				}))
 			}
 
+			// 走廊。必须压在所有点之上，否则挡不住抢夺。右缘停在悬停点的圆边上，
+			// 让那个点自己仍然点得到（左邻居的命中区右端在 x-5，已被盖住）。
+			if (hover !== null && bridge && view.shown.has(hover.node)) {
+				const hx = xOf(hover.node.column)
+				const hy = yOf(rowOfNode(hover.node))
+				const span = bridgeBox(hx, hover.node.kind === 'empty' ? dotSize + 2 : dotSize)
+				const yield_ = () => {
+					setBridge(false)
+					const row = rowOfNode(hover.node)
+					const seats = graph.nodes
+						.filter((node) => view.shown.has(node) && rowOfNode(node) === row)
+						.map((node) => ({ x: xOf(node.column), node }))
+					const under = nodeUnder(seats, pointerX.current, 9)
+					if (under !== undefined && under !== hover.node) setHover({ node: under, y: yOf(row) })
+				}
+				parts.push(h('span', {
+					key: 'bridge',
+					style: { position: 'absolute', left: `${span.left}px`, top: `${hy - rowH / 2}px`, width: `${span.width}px`, height: `${rowH}px` },
+					onMouseEnter: () => {
+						hold()
+						clearTimeout(bridgeTimer.current)
+						bridgeTimer.current = setTimeout(yield_, Z.bridgeMs)
+					},
+					onMouseMove: (event) => {
+						pointerX.current = event.clientX - event.currentTarget.getBoundingClientRect().left + span.left
+					},
+					onMouseLeave: () => clearTimeout(bridgeTimer.current),
+				}))
+			}
+
 			const top = box ? box.top + Z.pad : window.innerHeight * 0.14
 			const right = box ? Math.max(0, window.innerWidth - box.right) + Z.gap : Z.gap
 			const height = available
@@ -1009,7 +1084,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, dotStyle, elide, anchorNode, radiusStore, stepText, STEPS, RADIUS }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, bridgeBox, nodeUnder, dotStyle, elide, anchorNode, radiusStore, stepText, STEPS, RADIUS, Z }
 		return module.exports
 	},
 })

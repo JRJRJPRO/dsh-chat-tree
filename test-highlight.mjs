@@ -172,5 +172,42 @@ console.log('\n用例 5：节点样式的 key 集合必须恒定，且边框不�
 	console.log(`  ${variants.length} 种形态组合，key 集合一致（${reference.length} 个），边框全是 longhand`)
 }
 
+console.log('\n用例 6：走廊必须盖住鼠标去 ＋ 路上的每一个命中区')
+{
+	// 为什么要守这条：列间距 14px 而命中区宽 18px，往左挪 5px 就进了左邻居的地盘。
+	// ＋ 在卡片右缘（导轨外侧），鼠标必须横穿左边所有列才够得着 —— 沿途每个点
+	// 都会抢走悬停，于是 ＋ 永远变成最左边那个点的。走廊就是用来挡这一路抢夺的。
+	const { Z } = pure
+	const HIT = 18 // 命中区宽度，和 client.js 里画的那条对齐
+
+	for (const maxColumn of [1, 2, 5]) {
+		const railWidth = 18 + maxColumn * Z.lane
+		const xOf = (column) => railWidth - 9 - column * Z.lane
+		for (let hovered = 0; hovered <= maxColumn; hovered++) {
+			const hx = xOf(hovered)
+			const span = pure.bridgeBox(hx, Z.dot)
+			const left = span.left
+			const right = span.left + span.width
+
+			check(left <= -4, `maxColumn=${maxColumn} 悬停第${hovered}列：走廊左缘 ${left} 没够到卡片右缘 -4`)
+			check(right < hx, `maxColumn=${maxColumn} 悬停第${hovered}列：走廊盖住了自己的圆心，点不动了`)
+
+			for (let other = hovered + 1; other <= maxColumn; other++) {
+				const hitRight = xOf(other) + HIT / 2 // 左邻居命中区的右端 —— 最先抢的就是它
+				check(hitRight <= right, `maxColumn=${maxColumn} 悬停第${hovered}列：第${other}列的命中区右端 ${hitRight} 露在走廊(${left}..${right})外面，鼠标一过就被抢`)
+			}
+		}
+	}
+	console.log('  3 种列宽 × 每一列悬停，左侧命中区全部被盖住，自身圆心全部露出')
+
+	// 让位那一刻要自己算鼠标压着谁：元素在静止的鼠标下出现不会触发 mouseenter。
+	const seats = [{ x: 100, node: 'A' }, { x: 86, node: 'B' }, { x: 72, node: 'C' }]
+	check(pure.nodeUnder(seats, 86, 9) === 'B', '正压着 B 却没选中 B')
+	check(pure.nodeUnder(seats, 90, 9) === 'B', '偏 B 一点应该还是 B（离 B 4px，离 A 10px）')
+	check(pure.nodeUnder(seats, 40, 9) === undefined, '离所有点都远，不该硬塞一个')
+	check(pure.nodeUnder([], 86, 9) === undefined, '空行不该崩')
+	console.log('  让位时的取点：压中 / 偏一点 / 够不着 / 空行，四种都对')
+}
+
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 process.exit(failures === 0 ? 0 : 1)
