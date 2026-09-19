@@ -2,7 +2,9 @@
 
 把一个对话的所有分支画成一棵树，贴在 [DeepSeek Harness](https://github.com/deepseek-ai) 聊天区右缘。
 
-点节点跳到那一轮，点 ＋ 从那儿接着问。只依赖 dsh。
+点节点跳到那一轮，点 ＋ 从那儿接着问。
+
+不依赖任何其它插件。运行时只多一个 `schemastery`（dsh 自己也用它，用来声明设置项）。
 
 ```
      ◌
@@ -43,6 +45,12 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 边框蓝 = 这个节点在你当前的对话里；填充蓝 = 你正看着这一轮。
 
+## 省略
+
+只画离你正在看的那一轮若干步以内的节点，剪断处画 `⋯`。距离是树上的无向步数：父节点 1 步，父节点的另一个孩子 2 步。
+
+默认 10 步。**设置 → 插件 → 插件配置 → 对话树** 里可调，5 到 30，再往上一档是不省略。
+
 ## 它还顺手修了两个原生 fork 的缺陷
 
 - **会多抄一条还没跑的待办** —— 在节点 N 开岔路，新分支会先把 N+1 那个问题重跑一遍。所有 provider 都中招。
@@ -55,6 +63,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ```bash
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮的边界情形
+node test-elide.mjs        # 省略的距离、行号压实、省略号位置
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
 ```
 

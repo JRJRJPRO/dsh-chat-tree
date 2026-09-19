@@ -7,7 +7,7 @@
  * 三条规矩（改之前先看 DESIGN.md §5）：
  *   · y = 树深度，不是行号 —— 同一岔路分出去的两条支线，第一个节点同高度。
  *   · x = 列，**与"当前在哪条分支"无关** —— 切分支只换颜色，图的形状不动。
- *   · 不做省略，全图永远画全；放不下就压行高。
+ *   · 太远的节点省略掉（elide），剪断处画「⋯」；半径设为 0 就退回"永远画全"。
  *
  * 高亮两条判据，别混：
  *   边框蓝 ⟺ 节点在当前会话的对话里；填充蓝 ⟺ 边框已蓝 且 轮次 == 现在滑到的那一轮。
@@ -27,6 +27,12 @@ window.__ModuleLoader__.load({
 		const portal = reactDom.createPortal
 
 		// ===== 第 2 步：标签存储（MVP 妥协：localStorage，换浏览器就没了） =====
+
+		/** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
+		const SETTINGS_NS = 'dsh-tree'
+
+		/** 省略半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
+		const RADIUS = { min: 5, max: 30, fallback: 10, off: 0 }
 
 		const LS_KEY = 'dsh-tree.labels'
 
@@ -214,6 +220,67 @@ window.__ModuleLoader__.load({
 				maxColumn = Math.max(maxColumn, node.column || 0)
 			}
 			return { nodes, maxDepth, maxColumn }
+		}
+
+		/**
+		 * 按「离你正在看的那一轮多远」把太远的节点省略掉。
+		 *
+		 * 距离是树上的无向步数：父节点 1 步，父节点的另一个孩子 2 步（上一步再下一步）。
+		 * 藏掉的行不留空档 —— depth 重新压实成连续的 row，否则省略了也腾不出地方。
+		 *
+		 * 小例子（线性 1..20，站在 10，半径 3）：
+		 *   显示 7 8 9 [10] 11 12 13，上下各一个「⋯」。
+		 *
+		 * @param nodes - buildGraph 出来的全部节点
+		 * @param anchor - 从哪个节点量距离
+		 * @param radius - 保留半径；<=0 表示不省略
+		 * @returns {shown, rowOf, rows, bandTop, bandBottom, hidden}
+		 */
+		function elide(nodes, anchor, radius) {
+			const shown = new Set()
+			if (!(radius > 0) || anchor === undefined) {
+				for (const node of nodes) shown.add(node)
+			} else {
+				const step = new Map([[anchor, 0]])
+				const queue = [anchor]
+				for (let head = 0; head < queue.length; head += 1) {
+					const node = queue[head]
+					const walked = step.get(node)
+					if (walked >= radius) continue
+					for (const near of [node.parent].concat(node.children)) {
+						if (near === undefined || step.has(near)) continue
+						step.set(near, walked + 1)
+						queue.push(near)
+					}
+				}
+				for (const node of step.keys()) shown.add(node)
+			}
+
+			const depths = [...new Set([...shown].map((node) => node.depth))].sort((left, right) => left - right)
+			const rowOf = new Map(depths.map((depth, index) => [depth, index]))
+
+			// 省略号画在"树被剪断的地方"：留下来的节点丢了父亲 → 它这一列上方有省略号；
+			// 留下来的节点丢了孩子 → 那个孩子所在的列下方有省略号（岔路被砍掉也看得见）。
+			const bandTop = new Set()
+			const bandBottom = new Set()
+			for (const node of shown) {
+				if (node.parent !== undefined && !shown.has(node.parent)) bandTop.add(node.column)
+				for (const kid of node.children) if (!shown.has(kid)) bandBottom.add(kid.column)
+			}
+			return { shown, rowOf, rows: depths.length, bandTop, bandBottom, hidden: nodes.length - shown.size }
+		}
+
+		/**
+		 * 量距离的基准点：优先用正在看的那一轮，没有就退到当前路径最深的那个节点。
+		 * @param nodes - 全部节点
+		 * @param activeTurn - 现在滑到第几轮
+		 */
+		function anchorNode(nodes, activeTurn) {
+			const focused = nodes.find((node) => isFocusedNode(node, activeTurn))
+			if (focused !== undefined) return focused
+			let deepest
+			for (const node of nodes) if (node.active === true && (deepest === undefined || node.depth > deepest.depth)) deepest = node
+			return deepest || nodes[0]
 		}
 
 		/**
@@ -513,6 +580,81 @@ window.__ModuleLoader__.load({
 			)
 		}
 
+		/** 滑杆的档位：5..30，最后一格是"不省略"。 */
+		const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
+
+		/**
+		 * 设置 → 插件 → 插件配置 里的那张卡。容器归我们自己画（宿主只排版和派发）。
+		 * @param props.store - 半径 store，`set` 不存在说明 host 没注册 namespace
+		 */
+		function SettingsCard(props) {
+			const store = props.store || {}
+			const value = useObservable(store)
+			const at = Math.max(0, STEPS.indexOf(Number.isFinite(value) ? value : RADIUS.fallback))
+			const writable = typeof store.set === 'function'
+			const shown = STEPS[at] === RADIUS.off ? '不省略' : `${STEPS[at]} 步以内`
+
+			return h('div', {
+				style: {
+					background: C.bg, border: `1px solid ${C.line}`, borderRadius: '8px',
+					padding: '12px 14px', color: C.text,
+					font: '13px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif',
+				},
+			}, [
+				h('div', { key: 'h', style: { fontWeight: 600, marginBottom: '2px' } }, '对话树'),
+				h('div', { key: 's', style: { color: C.muted, fontSize: '12px', marginBottom: '10px' } },
+					'离你正在看的那一轮多远之内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。'),
+				h('div', { key: 'r', style: { display: 'flex', alignItems: 'center', gap: '10px' } }, [
+					h('input', {
+						key: 'i', type: 'range', min: 0, max: STEPS.length - 1, step: 1, value: at,
+						disabled: !writable,
+						style: { flex: '1 1 auto', accentColor: C.blue, cursor: writable ? 'pointer' : 'not-allowed' },
+						onChange: (event) => store.set(STEPS[Number(event.target.value)]),
+					}),
+					h('span', { key: 'v', style: { flex: '0 0 auto', minWidth: '72px', textAlign: 'right', color: C.blue, fontVariantNumeric: 'tabular-nums' } }, shown),
+				]),
+				writable ? null : h('div', { key: 'w', style: { color: C.muted, fontSize: '12px', marginTop: '8px' } },
+					'当前不可写：host 半没注册设置（改了 index.js 要重启 dsh）。现在按默认值 10 显示。'),
+			])
+		}
+
+		/**
+		 * 半径的唯一来源。host 注册了 namespace 就跟着设置走，没有就用默认值。
+		 * 形状故意长得和宿主的 ObservableSnapshot 一样，好直接喂给 useObservable。
+		 * @param ctx - 浏览器根 context
+		 */
+		function radiusStore(ctx) {
+			let value = RADIUS.fallback
+			const listeners = new Set()
+			const store = {
+				getSnapshot: () => value,
+				subscribe: (fn) => {
+					listeners.add(fn)
+					return () => listeners.delete(fn)
+				},
+			}
+			try {
+				ctx.inject(['settingsScope'], (scoped) => {
+					const bound = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
+					store.set = (next) => Promise.resolve(bound.set('visibleRadius', next)).catch((error) => console.warn('[dsh-tree] 写设置失败', error))
+					const pull = () => {
+						const snapshot = bound.getSnapshot() || {}
+						const next = snapshot.value && Number.isFinite(snapshot.value.visibleRadius) ? snapshot.value.visibleRadius : RADIUS.fallback
+						if (snapshot.writable === false) delete store.set
+						if (next === value) return
+						value = next
+						for (const fn of listeners) fn()
+					}
+					pull()
+					// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
+					scoped.effect(() => bound.subscribe(pull), 'dsh-tree: 设置订阅')
+				})
+			} catch (error) {
+				console.warn('[dsh-tree] 设置服务不可用，按默认半径画', error)
+			}
+			return store
+		}
+
 		/** 树本体。 */
 		function Rail(props) {
 			const api = (props && props.api) || {}
@@ -520,6 +662,8 @@ window.__ModuleLoader__.load({
 			const workspaceState = useObservable(api.workspaces)
 			const box = useChatBox()
 			const activeTurn = useActiveTurn()
+			const radiusRaw = useObservable(api.radius)
+			const radius = Number.isFinite(radiusRaw) ? radiusRaw : RADIUS.fallback
 
 			const current = listState && listState.current
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
@@ -564,6 +708,7 @@ window.__ModuleLoader__.load({
 					当前会话: current,
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
+					省略半径: radius === RADIUS.off ? '不省略' : radius,
 					分支: picked.map((item) => `${item.id.slice(8, 14)} ← ${item.parentId ? item.parentId.slice(8, 14) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || []).filter((t) => !t.inherited).map((t) => t.turn).join(',')}`),
 					节点: graph.nodes
 						.filter((node) => node.entry !== undefined)
@@ -573,42 +718,69 @@ window.__ModuleLoader__.load({
 				})
 			}
 
-			// 不折叠：全图永远画全，放不下就压行高（下限 rowMin）
+			// 省略太远的节点。radius=0 时 elide 全留，下面这一整套退化成原来的画法。
+			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), radius)
+			const padTop = view.bandTop.size > 0 ? 1 : 0
+			const padBottom = view.bandBottom.size > 0 ? 1 : 0
+			const rowOfNode = (node) => view.rowOf.get(node.depth) + padTop
+
+			// 放不下就压行高（下限 rowMin）
 			const available = (box ? box.height : window.innerHeight * 0.72) - Z.pad * 2
-			const rows = graph.maxDepth + 1
+			const rows = view.rows + padTop + padBottom
 			const rowH = Math.max(Z.rowMin, Math.min(Z.row, available / rows))
 			const treeHeight = rows * rowH
+			// 列宽用 graph.maxColumn 而不是可见列 —— 省略随滚动变化，导轨宽度不该跟着跳
 			const railWidth = 18 + graph.maxColumn * Z.lane
 			const xOf = (column) => railWidth - 9 - column * Z.lane
-			const yOf = (depth) => depth * rowH + rowH / 2
+			const yOf = (row) => row * rowH + rowH / 2
 			const dotSize = Math.max(6, Math.min(Z.dot, rowH - 5))
 
 			const parts = []
 
 			// 先铺线。跨列的折角**必须先横后竖**：反过来的话从节点 2 岔到 4 的竖线
 			// 会一路压过节点 3 再拐弯，看着像"经过 3 转个弯到 4"。
-			for (const node of graph.nodes) {
-				if (node.parent === undefined) continue
-				const color = node.active ? C.lineActive : C.line
-				const xParent = xOf(node.parent.column)
-				const xSelf = xOf(node.column)
-				const yParent = yOf(node.parent.depth)
-				if (xSelf !== xParent) {
+			const line = (key, xFrom, xTo, yFrom, yTo, color) => {
+				if (xTo !== xFrom) {
 					parts.push(h('span', {
-						key: `hz${node.key}`,
-						style: { position: 'absolute', left: `${Math.min(xSelf, xParent)}px`, top: `${yParent}px`, width: `${Math.abs(xParent - xSelf)}px`, height: '1px', background: color },
+						key: `hz${key}`,
+						style: { position: 'absolute', left: `${Math.min(xTo, xFrom)}px`, top: `${yFrom}px`, width: `${Math.abs(xFrom - xTo)}px`, height: '1px', background: color },
 					}))
 				}
 				parts.push(h('span', {
-					key: `v${node.key}`,
-					style: { position: 'absolute', left: `${xSelf}px`, top: `${yParent}px`, width: '1px', height: `${yOf(node.depth) - yParent}px`, background: color },
+					key: `v${key}`,
+					style: { position: 'absolute', left: `${xTo}px`, top: `${Math.min(yFrom, yTo)}px`, width: '1px', height: `${Math.abs(yTo - yFrom)}px`, background: color },
 				}))
+			}
+
+			for (const node of graph.nodes) {
+				if (node.parent === undefined) continue
+				const color = node.active ? C.lineActive : C.line
+				const mine = view.shown.has(node)
+				const theirs = view.shown.has(node.parent)
+				// 两头都在 → 正常连；只剩一头 → 接到省略号那一行，别让树看着断开
+				if (mine && theirs) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color)
+				else if (mine && padTop > 0) line(node.key, xOf(node.column), xOf(node.column), yOf(0), yOf(rowOfNode(node)), color)
+				else if (theirs && padBottom > 0) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rows - 1), color)
+			}
+
+			// 省略号
+			for (const [column, row] of [...[...view.bandTop].map((c) => [c, 0]), ...[...view.bandBottom].map((c) => [c, rows - 1])]) {
+				parts.push(h('span', {
+					key: `e${row}:${column}`,
+					title: `还有 ${view.hidden} 个节点被省略（设置里可以调范围）`,
+					style: {
+						position: 'absolute', left: `${xOf(column) - 7}px`, top: `${yOf(row) - 7}px`,
+						width: '14px', height: '14px', lineHeight: '14px', textAlign: 'center',
+						color: C.dim, fontSize: '12px', letterSpacing: '0.5px', userSelect: 'none',
+					},
+				}, '⋯'))
 			}
 
 			// 再画点
 			for (const node of graph.nodes) {
+				if (!view.shown.has(node)) continue
 				const x = xOf(node.column)
-				const y = yOf(node.depth)
+				const y = yOf(rowOfNode(node))
 				const isFocused = isFocusedNode(node, activeTurn)
 				const kind = isFocused ? 'current' : node.kind
 				const isHover = hover !== null && hover.node === node
@@ -723,6 +895,8 @@ window.__ModuleLoader__.load({
 				},
 			}
 
+			api.radius = radiusStore(ctx)
+
 			ctx.effect(
 				() =>
 					ctx.slots.inject('conversation.session.header.utilities', () =>
@@ -730,12 +904,23 @@ window.__ModuleLoader__.load({
 					),
 				'dsh-tree: rail',
 			)
+
+			// 设置卡片。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。
+			try {
+				ctx.inject(['settingsScope'], (scoped) =>
+					scoped.slots.inject('settings.plugin.item', () =>
+						scoped.slots.register({ name: 'settings.plugin.item', key: SETTINGS_NS, inject: () => ({ store: api.radius }) }, SettingsCard),
+					),
+				)
+			} catch (error) {
+				console.warn('[dsh-tree] 设置卡片注册失败', error)
+			}
 		}
 
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, dotStyle }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, dotStyle, elide, anchorNode, STEPS, RADIUS }
 		return module.exports
 	},
 })

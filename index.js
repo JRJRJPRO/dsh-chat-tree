@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { join, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import Schema from 'schemastery'
 
 /** cordis 插件名。 */
 export const name = 'tree'
@@ -21,6 +22,17 @@ export const inject = ['webServer', 'sessionPersistence', 'agents']
 
 /** 提问预览截断长度。宿主 turnOutline 也是这个量级，保持一致。 */
 const PREVIEW_MAX = 64
+
+/** 设置命名空间。client.js 里的 SETTINGS_NS 必须和它一字不差。 */
+export const SETTINGS_NS = 'dsh-tree'
+
+/**
+ * 只有一个字段：省略半径。0 = 不省略，否则 5..30。
+ * 前端滑杆只给这几档，但设置文件是人可以手改的，所以边界还是写在 schema 里。
+ */
+export const SETTINGS_SCHEMA = Schema.object({
+	visibleRadius: Schema.natural().max(30).default(10).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
+})
 
 // ===== 第 1 步：fold —— 从事件折出一个分支的大纲 =====
 
@@ -437,6 +449,17 @@ export function apply(ctx) {
 			adoptBranch(ctx, agent)
 		})
 	}, 'dsh-tree: 接管新分支')
+
+	// 设置 namespace。ctx.settings 是可选服务，所以走 ctx.inject 而不是顶层 inject
+	// —— 写进顶层 inject 的话，没挂设置提供方的部署会让整个 fiber 永远 pending。
+	try {
+		ctx.inject(['settings'], (scoped) => {
+			scoped.settings.register(SETTINGS_NS, SETTINGS_SCHEMA)
+			scoped.logger?.info?.(`dsh-tree: 设置 namespace ${SETTINGS_NS} 已注册`)
+		})
+	} catch (error) {
+		ctx.logger?.warn?.(`dsh-tree: 注册设置失败，前端会按默认半径画（${error}）`)
+	}
 
 	ctx.effect(
 		() =>
