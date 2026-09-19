@@ -14,16 +14,21 @@
 
 ## 装
 
-往 `$DSH_HOME/profiles/web/cordis.patch.yml` 加：
-
-```yaml
-- insert:
-    - id: dsh-tree
-      name: 'file:///绝对路径/dsh-tree/index.js'
+```sh
+dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ```
 
-重启 dsh。卸载就删掉这三行。
+重启 `dsh web`。卸载 `dsh plugin --profile web remove dsh-tree`。
 
+临时关掉不用卸载——往 `cordis.patch.yml` 加两行，约 1 秒生效，刷新浏览器即可：
+
+```yaml
+- id: dsh-tree
+  disabled: true
+```
+
+从源码跑：把 `- insert: - id: dsh-tree, name: 'file:///绝对路径/index.js'` 写进
+`cordis.patch.yml`，别和上面的装法同时用（同一个 id 插两次，dsh 起不来）。
 改 `index.js` 要重启，改 `client.js` 刷新浏览器即可。
 
 ## 用
@@ -58,3 +63,5 @@ node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管�
 ## 还没做
 
 节点名字存在 localStorage · 左侧列表仍是平的 · 超长对话会溢出。
+
+MIT

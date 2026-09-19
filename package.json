@@ -1,7 +1,6 @@
 {
   "name": "dsh-tree",
   "version": "0.1.0",
-  "private": true,
   "description": "DeepSeek Harness 对话树：把一个对话的所有分支画成一棵可点击的树",
   "type": "module",
   "main": "index.js",
@@ -10,7 +9,44 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "DESIGN.md",
+    "NATIVE-BASELINE.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "session",
+    "branch",
+    "tree",
+    "conversation"
+  ],
+  "license": "MIT",
+  "author": "Rongjie Jiang",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JRJRJPRO/dsh-tree.git"
+  },
+  "homepage": "https://github.com/JRJRJPRO/dsh-tree#readme",
+  "bugs": {
+    "url": "https://github.com/JRJRJPRO/dsh-tree/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.1.5-rc.2"
+    },
     "client": {
       "platform": "web",
       "inject": [
