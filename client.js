@@ -340,48 +340,40 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 走廊的横向范围（导轨内坐标系）。
+		 * hover intent 的决策：鼠标现在压着 `at`，卡片当前停在 `hover`，该怎么办？
 		 *
-		 * 左缘越过卡片右缘 2px 压住缝；右缘停在悬停点的圆边上 —— 再往右就盖住这个点
-		 * 自己，它就点不动了；再往左则露出左邻居命中区的右端（在 x-5），白挡。
-		 *
-		 * 形状是个**朝卡片张开的梯形**（safe triangle 的变体）：右端贴着点只有一行高，
-		 * 左端贴着卡片张到 `Z.mouth*2`。斜着奔卡片也掉不出去，而贴着点那一头仍然窄，
-		 * 想往上下行走一步就能脱身。clip-path 同时裁掉命中区，所以梯形外面是"透明"的，
-		 * 底下的点照常收 mouseenter —— 让位不再需要谁去主动拆走廊。
-		 *
-		 * ⚠️ 近端高度不能直接用 rowH：树压缩时 rowH 会掉到 7px，走廊变成一条窄缝，
-		 *    鼠标竖直方向抖一下就滑出去，被上下行的点抢走。至少要盖住一个点的上下各一半。
-		 * @param x - 悬停点的圆心
-		 * @param size - 悬停点的直径
-		 * @param rowH - 行高
-		 * @returns left/width/height（top 由调用方按圆心居中算）+ 盒内局部坐标的多边形
+		 * ⚠️ 这是 ＋ 够不够得着的**唯一**关键。卡片开着时换目标一律返回 'rest'
+		 *    （= 等鼠标停下来），绝不能图省事返回 'now'：从点走到卡片上的 ＋ 要横穿
+		 *    左边每一列（列距 14px < 命中区 18px），沿途每个点都会抢走卡片，
+		 *    ＋ 就永远够不着。改成 'now' 等于退回挂 onMouseEnter 的老做法。
+		 * @param hover - 当前停着的点，null = 还没开卡片
+		 * @param at - 鼠标正压着的点，undefined = 没压着
+		 * @returns 'keep' 不动 / 'now' 立刻换 / 'rest' 等停下来再换
 		 */
-		function bridgeBox(x, size, rowH, z) {
-			const sized = z === undefined ? Z : z // 缺省=100%，老调用点和测试不用改
-			const left = -6
-			const width = x - size / 2 - left
-			const near = Math.max(rowH, sized.dot * 2) / 2 // 贴着点那一端的半高
-			const far = Math.max(near, sized.mouth) // 贴着卡片那一端的半高
-			const points = [[width, far - near], [width, far + near], [0, far * 2], [0, 0]]
-			return { left, width, height: far * 2, near, far, points, clip: `polygon(${points.map(([px, py]) => `${px}px ${py}px`).join(',')})` }
+		function hoverNext(hover, at) {
+			if (at === undefined || at === hover) return 'keep'
+			return hover === null ? 'now' : 'rest'
 		}
 
 		/**
-		 * 走廊让位的那一刻，鼠标正压着同一行的哪个点。
+		 * 鼠标正压着哪个点（导轨内坐标系）。
 		 *
-		 * 元素在静止的鼠标底下出现是不会触发 mouseenter 的，所以让位时必须自己算一次，
-		 * 否则用户得抖一下鼠标才选得中。
-		 * @param seats - 同一行里可见的点，形如 {x, node}
-		 * @param x - 鼠标横坐标（导轨内坐标系）
-		 * @param reach - 命中半径
+		 * 命中区是每个点周围的一个矩形；重叠时取圆心最近的那个。
+		 * @param seats - 可见的点，形如 {x, y, node}
+		 * @param x - 鼠标横坐标
+		 * @param y - 鼠标纵坐标
+		 * @param w - 命中区宽
+		 * @param hgt - 命中区高
 		 * @returns 压着的点，没压着就 undefined
 		 */
-		function nodeUnder(seats, x, reach) {
+		function nodeAt(seats, x, y, w, hgt) {
 			let best
 			for (const seat of seats) {
-				const gap = Math.abs(seat.x - x)
-				if (gap <= reach && (best === undefined || gap < best.gap)) best = { gap, node: seat.node }
+				const dx = Math.abs(seat.x - x)
+				const dy = Math.abs(seat.y - y)
+				if (dx > w / 2 || dy > hgt / 2) continue
+				const far = dx * dx + dy * dy
+				if (best === undefined || far < best.far) best = { far, node: seat.node }
 			}
 			return best === undefined ? undefined : best.node
 		}
@@ -390,10 +382,10 @@ window.__ModuleLoader__.load({
 
 		// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的宽度（圆心在 hit/2 处）。
 		// 以前 18 和 9 是散在渲染里的魔数，收进来才能跟着缩放一起动。
-		const Z = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14, pad: 16, card: 270, gap: 20, mouth: 16, bridgeMs: 450 }
+		const Z = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
 
 		/**
-		 * 按百分比缩放尺寸。**只缩几何量** —— `bridgeMs` 是时间、`card` 是文字卡片宽度，
+		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
 		 * 跟着点一起放大只会挡住聊天区，所以都不动。
 		 *
 		 * 小例子（percent=150）：dot 9→13.5、lane 14→21、hit 18→27，
@@ -405,7 +397,7 @@ window.__ModuleLoader__.load({
 		function scaleZ(percent) {
 			const k = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1
 			const out = Object.assign({}, Z)
-			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'ell', 'mouth']) out[key] = Z[key] * k
+			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'ell']) out[key] = Z[key] * k
 			return out
 		}
 		const C = {
@@ -480,13 +472,22 @@ window.__ModuleLoader__.load({
 				let raf = 0
 				let observed
 				let observer
+				let goneAt = 0
+				let graceTimer = 0
 				const measure = () => {
 					const el = document.querySelector('[data-conversation-scroll]')
-					// ⚠️ 量不到时保留上一次的尺寸，别退回 undefined。切换会话时宿主会把聊天区
-					//    整个卸了重挂，中间有一帧找不到容器 —— 一旦清空，导轨立刻掉到"视口兜底"
-					//    那套几何（top/height 全变），rowH 跟着重算，整棵树跳一下再跳回来。
-					//    这就是切路径时看到的那一闪。兜底只在**首次**量到之前用。
-					if (el === null) return
+					// ⚠️ 量不到**先别清空**。切会话时宿主会把聊天区卸了重挂，中间有几帧找不到容器；
+					//    一清空导轨就掉到另一套几何、rowH 重算，整棵树跳一下再跳回来。
+					//    但"一直找不到"是另一回事（用户开了设置页/全局面板），那时候得真的收起来。
+					//    用 graceMs 区分这两种：短暂消失＝切会话，持续消失＝不在会话界面。
+					if (el === null) {
+						if (goneAt === 0) goneAt = Date.now()
+						if (Date.now() - goneAt >= Z.graceMs) return setBox(undefined)
+						clearTimeout(graceTimer)
+						graceTimer = setTimeout(measure, Z.graceMs)
+						return
+					}
+					goneAt = 0
 					// ⚠️ 容器被换过就改盯新的：ResizeObserver 绑的是元素实例，旧元素卸载后它再也不会响，
 					//    聊天区再变宽变高就只能等 800ms 的轮询兜底。
 					if (observer !== undefined && el !== observed) {
@@ -511,6 +512,7 @@ window.__ModuleLoader__.load({
 				const timer = setInterval(measure, 800)
 				return () => {
 					cancelAnimationFrame(raf)
+					clearTimeout(graceTimer)
 					if (observer) observer.disconnect()
 					window.removeEventListener('resize', schedule)
 					clearInterval(timer)
@@ -910,12 +912,9 @@ window.__ModuleLoader__.load({
 			const lastGraph = react.useRef(undefined) // 数据空窗期顶上去的那棵树，见下面 ⚠️
 			const labels = react.useMemo(() => readLabels(), [tick])
 
-			// 走廊：鼠标从点走到卡片上的 ＋，必须横穿左边每一列，途中每个点都会抢走悬停
-			// （列间距 14px 但命中区 18px，往左 5px 就被抢）。开着卡片时在必经之路上
-			// 盖一条透明走廊挡住抢夺；停住不动超过 BRIDGE_MS 就认定是想选走廊底下的点。
-			const [bridge, setBridge] = react.useState(true)
-			const bridgeTimer = react.useRef(0)
-			const pointerX = react.useRef(0)
+			// 换悬停目标用 hover intent：卡片开着时，鼠标**停下来**才换目标，一直在动就什么都不抢。
+			// 这样从点走到卡片上的 ＋ 全程安全 —— 赶路途中压过多少个点都无所谓。
+			const restTimer = react.useRef(0)
 
 			const closeTimer = react.useRef(0)
 			const hold = react.useCallback(() => clearTimeout(closeTimer.current), [])
@@ -925,13 +924,12 @@ window.__ModuleLoader__.load({
 			}, [])
 			react.useEffect(() => () => clearTimeout(closeTimer.current), [])
 			react.useEffect(() => hideNativeRail(), [])
-			// 换了悬停目标就重新布防
-			react.useEffect(() => {
-				setBridge(true)
-				return () => clearTimeout(bridgeTimer.current)
-			}, [hover === null ? '' : hover.node.key])
+			react.useEffect(() => () => clearTimeout(restTimer.current), [])
 
-			if (!listState || !current) return null
+			// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
+			// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
+			// 组件本身不卸载，hover / box / 上一棵树都还在，切回来是瞬时的。
+			if (!listState || !current || box === undefined) return null
 
 			// 可见集 = 会话列表 减去 归档集（归档的会话仍留在 sessions.list 里，必须显式扣）
 			const archived = new Set((workspaceState && workspaceState.archivedSessionIds) || [])
@@ -981,7 +979,7 @@ window.__ModuleLoader__.load({
 
 			// 放不下就压行高（下限 rowMin）
 			const z = scaleZ(scale)
-			const available = (box ? box.height : window.innerHeight * 0.72) - z.pad * 2
+			const available = box.height - z.pad * 2 // box 必定有值：上面已经 return 过了
 			const rows = view.rows + padTop + padBottom
 			const rowH = Math.max(z.rowMin, Math.min(z.row, available / rows))
 			const treeHeight = rows * rowH
@@ -1041,79 +1039,28 @@ window.__ModuleLoader__.load({
 				const kind = isFocused ? 'current' : node.kind
 				const isHover = hover !== null && hover.node === node
 				const size = node.kind === 'empty' ? dotSize + 2 : dotSize
-				const activate = () => {
-					hold()
-					setHover({ node, y })
-				}
+				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
+				//    否则赶路途中压过的每个点都会抢走卡片 —— ＋ 就永远够不着（DESIGN.md §6）。
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
 				parts.push(h('span', {
 					key: `d${node.key}`,
 					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(kind, node.active, isHover, size)),
-					onMouseEnter: activate,
 					onClick: go,
 				}))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
 					style: { position: 'absolute', left: `${x - z.hit / 2}px`, top: `${y - rowH / 2}px`, width: `${z.hit}px`, height: `${rowH}px`, cursor: 'pointer' },
-					onMouseEnter: activate,
 					onClick: go,
 				}))
 			}
 
-			// 走廊。必须压在所有点之上，否则挡不住抢夺。右缘停在悬停点的圆边上，
-			// 让那个点自己仍然点得到（左邻居的命中区右端在 x-5，已被盖住）。
-			//
-			// 让位有三条路，缺一不可 —— 左邻居正好**躺在**去卡片的必经之路上，
-			// 光靠形状躲不开它，不给出路的话开着卡片就永远选不中它们：
-			//   ① 走出梯形（往上下行去）→ clip-path 外面不拦，底下的点自己收 mouseenter
-			//   ② 掉头往右 → 不是去卡片，是想选底下那个点，立刻让位
-			//   ③ 停住不动超过 bridgeMs → 同上，让位
-			if (hover !== null && bridge && view.shown.has(hover.node)) {
-				const hx = xOf(hover.node.column)
-				const hy = yOf(rowOfNode(hover.node))
-				const span = bridgeBox(hx, hover.node.kind === 'empty' ? dotSize + 2 : dotSize, rowH, z)
-				const row = rowOfNode(hover.node)
-				const handOver = () => {
-					setBridge(false)
-					const seats = graph.nodes
-						.filter((node) => view.shown.has(node) && rowOfNode(node) === row)
-						.map((node) => ({ x: xOf(node.column), node }))
-					const under = nodeUnder(seats, pointerX.current, z.hit / 2)
-					if (under !== undefined && under !== hover.node) setHover({ node: under, y: yOf(row) })
-				}
-				// ⚠️ 计时器必须在 mousemove 上**重新**计时。只在 mouseenter 起算的话它就不是
-				//    "停住不动"而是"进来后 bridgeMs 无条件拆"：跨 3 列 42px，手慢一点就超时，
-				//    走廊当场消失、nodeUnder 就近抓一个点顶上去（列距 14 < 命中 18，
-				//    导轨里没有抓不到点的位置），卡片被抢，＋ 永远够不着。
-				const arm = () => {
-					clearTimeout(bridgeTimer.current)
-					bridgeTimer.current = setTimeout(handOver, Z.bridgeMs)
-				}
-				// ⚠️ mouseenter 里必须先记一次坐标，否则第一次 mousemove 拿 0 当上一帧，
-				//    算出来是"往右掉头"，人还没动就把卡片让出去了。
-				const at = (event) => event.clientX - event.currentTarget.getBoundingClientRect().left + span.left
-				parts.push(h('span', {
-					key: 'bridge',
-					style: { position: 'absolute', left: `${span.left}px`, top: `${hy - span.height / 2}px`, width: `${span.width}px`, height: `${span.height}px`, clipPath: span.clip },
-					onMouseEnter: (event) => {
-						hold()
-						pointerX.current = at(event)
-						arm()
-					},
-					onMouseMove: (event) => {
-						const x = at(event)
-						const back = x - pointerX.current
-						pointerX.current = x
-						if (back > 2) handOver()
-						else arm()
-					},
-					onMouseLeave: () => clearTimeout(bridgeTimer.current),
-				}))
-			}
-
-			const top = box ? box.top + Z.pad : window.innerHeight * 0.14
-			const right = box ? Math.max(0, window.innerWidth - box.right) + Z.gap : Z.gap
+			// 鼠标能落在哪些点上 —— 交给容器的 mousemove 做命中测试（见下面 hover intent）。
+			const seats = graph.nodes
+				.filter((node) => view.shown.has(node))
+				.map((node) => ({ x: xOf(node.column), y: yOf(rowOfNode(node)), node }))
+			const top = box.top + Z.pad
+			const right = Math.max(0, window.innerWidth - box.right) + Z.gap
 			const height = available
 
 			const shell = h(
@@ -1124,7 +1071,24 @@ window.__ModuleLoader__.load({
 				},
 				h(
 					'div',
-					{ style: { position: 'absolute', right: 0, top: `${Math.max(0, (height - treeHeight) / 2)}px`, width: `${railWidth}px`, height: `${treeHeight}px`, pointerEvents: 'auto' } },
+					{
+						style: { position: 'absolute', right: 0, top: `${Math.max(0, (height - treeHeight) / 2)}px`, width: `${railWidth}px`, height: `${treeHeight}px`, pointerEvents: 'auto' },
+						// hover intent：整条导轨只有这一个 mousemove 在做命中。
+						//   · 还没开卡片 → 碰到点就立刻开（要跟手）
+						//   · 已经开着  → 每次移动都把计时器清掉；只有**停住** restMs 才换目标
+						// 所以从点走到卡片上的 ＋ 全程不会被抢：只要手还在动，谁都抢不走。
+						onMouseMove: (event) => {
+							const rect = event.currentTarget.getBoundingClientRect()
+							const at = nodeAt(seats, event.clientX - rect.left, event.clientY - rect.top, z.hit, rowH)
+							hold()
+							clearTimeout(restTimer.current)
+							const want = hoverNext(hover === null ? null : hover.node, at)
+							if (want === 'keep') return
+							const seat = () => setHover({ node: at, y: yOf(rowOfNode(at)) })
+							if (want === 'now') seat()
+							else restTimer.current = setTimeout(seat, Z.restMs)
+						},
+					},
 					parts,
 					h(Detail, {
 						node: hover ? hover.node : null,
@@ -1204,10 +1168,16 @@ window.__ModuleLoader__.load({
 
 			api.settings = settingsStore(ctx)
 
+			// ⚠️ 必须挂 `shell.overlay`，**不能**挂 `conversation.session.*`。
+			//    宿主把 conversation.session.header.utilities 声明成 `scope: 'session'`
+			//    （见 dsh-client-ui-conversation 的 slot 注册），切会话时整个 session 子树
+			//    连同我们的组件一起卸载重挂：box / activeTurn / 缓存的树全部清零，outlines
+			//    还要重新 fetch —— 导轨真的会"消失再出现"，机器越卡越明显。
+			//    shell.overlay 是 `scope: 'root'`，由 AppFrame 常驻渲染，切会话只是 current 变了。
 			ctx.effect(
 				() =>
-					ctx.slots.inject('conversation.session.header.utilities', () =>
-						ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'dsh-tree', order: 90, inject: () => ({ api }) }, Rail),
+					ctx.slots.inject('shell.overlay', () =>
+						ctx.slots.register({ name: 'shell.overlay', id: 'dsh-tree', order: 90, inject: () => ({ api }) }, Rail),
 					),
 				'dsh-tree: rail',
 			)
@@ -1227,7 +1197,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, bridgeBox, nodeUnder, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

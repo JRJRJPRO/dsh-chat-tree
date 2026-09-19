@@ -172,75 +172,76 @@ console.log('\n用例 5：节点样式的 key 集合必须恒定，且边框不�
 	console.log(`  ${variants.length} 种形态组合，key 集合一致（${reference.length} 个），边框全是 longhand`)
 }
 
-console.log('\n用例 6：走廊必须盖住鼠标去 ＋ 路上的每一个命中区')
+console.log('\n用例 6：hover intent —— 赶路途中谁都不许抢走卡片')
 {
 	// 为什么要守这条：列间距 14px 而命中区宽 18px，往左挪 5px 就进了左邻居的地盘。
-	// ＋ 在卡片右缘（导轨外侧），鼠标必须横穿左边所有列才够得着 —— 沿途每个点
-	// 都会抢走悬停，于是 ＋ 永远变成最左边那个点的。走廊就是用来挡这一路抢夺的。
+	// ＋ 在卡片上（导轨外侧），鼠标必须横穿左边所有列才够得着。
+	//
+	// 上一版靠"透明走廊 + 梯形 clip-path + 掉头就让位 + 超时拆除"四套启发式互相兜底，
+	// 实测仍然够不着。现在改成业界标准的 hover intent：**只有鼠标停下来才换目标**。
+	// 下面这个 replay 是 client.js 里那个 onMouseMove 的纯逻辑版本。
 	const { Z } = pure
-	const HIT = 18 // 命中区宽度，和 client.js 里画的那条对齐
 
-	// 走廊是个梯形（clip-path），所以"盖没盖住"要按多边形算，不能只比左右边界。
-	// 传进来的是**绝对坐标**（导轨内坐标系，y 以悬停点为 0）。
-	const inWedge = (span, ax, ay) => {
-		const lx = ax - span.left
-		const ly = ay + span.height / 2
-		let inside = false
-		for (let i = 0, j = span.points.length - 1; i < span.points.length; j = i++) {
-			const [xi, yi] = span.points[i]
-			const [xj, yj] = span.points[j]
-			if (yi > ly !== yj > ly && lx < ((xj - xi) * (ly - yi)) / (yj - yi) + xi) inside = !inside
+	/**
+	 * 把一条鼠标轨迹喂进 hover intent，返回最终停在哪个点上。
+	 * @param seats - 可见的点
+	 * @param path - 轨迹，每项 {x, y, pause}；pause=true 表示在这里停够了 restMs
+	 * @param from - 起始已开着的卡片（null = 还没开）
+	 * @returns 最终悬停的点
+	 */
+	const replay = (seats, path, from) => {
+		let hover = from
+		let pending
+		for (const step of path) {
+			const at = pure.nodeAt(seats, step.x, step.y, Z.hit, Z.row)
+			pending = undefined // 每次移动都清计时器 —— 这是整套机制的关键
+			const want = pure.hoverNext(hover, at)
+			if (want === 'now') hover = at
+			else if (want === 'rest') pending = at
+			if (step.pause && pending !== undefined) hover = pending
 		}
-		return inside
+		return hover
 	}
 
 	for (const maxColumn of [1, 2, 5]) {
 		const railWidth = 18 + maxColumn * Z.lane
 		const xOf = (column) => railWidth - 9 - column * Z.lane
+		const seats = Array.from({ length: maxColumn + 1 }, (_, column) => ({ x: xOf(column), y: 0, node: `c${column}` }))
+
 		for (let hovered = 0; hovered <= maxColumn; hovered++) {
-			const hx = xOf(hovered)
-			const span = pure.bridgeBox(hx, Z.dot, Z.row)
 			const tag = `maxColumn=${maxColumn} 悬停第${hovered}列`
+			// 从这个点一路向左走到卡片右缘(-4)，每 1px 采一个点，中途不停
+			const path = []
+			for (let x = xOf(hovered); x >= -4; x -= 1) path.push({ x, y: 0 })
+			check(replay(seats, path, `c${hovered}`) === `c${hovered}`, `${tag}：横穿 ${xOf(hovered) + 4}px 到卡片，卡片被别的点抢走了`)
+		}
 
-			check(span.left <= -4, `${tag}：走廊左缘 ${span.left} 没够到卡片右缘 -4`)
-			check(!inWedge(span, hx, 0), `${tag}：走廊盖住了自己的圆心，点不动了`)
-
-			// ＋ 在卡片右端，和点同高 —— 这是整条路的终点，必须在走廊里
-			check(inWedge(span, -4, 0), `${tag}：卡片右缘(-4)没被走廊盖住，最后一步就被抢`)
-
-			for (let other = hovered + 1; other <= maxColumn; other++) {
-				// 左邻居命中区的右端 —— 沿途最先抢的就是它
-				check(inWedge(span, xOf(other) + HIT / 2, 0), `${tag}：第${other}列的命中区右端露在走廊外面，鼠标一过就被抢`)
-			}
+		// 反过来：真想选左边那个点时，停下来就得换过去 —— 不能为了防抢把正常选择也堵死
+		if (maxColumn >= 1) {
+			const path = []
+			for (let x = xOf(0); x >= xOf(1); x -= 1) path.push({ x, y: 0 })
+			path[path.length - 1].pause = true
+			check(replay(seats, path, 'c0') === 'c1', `maxColumn=${maxColumn}：停在第 1 列上却没换过去，正常选择被堵死了`)
 		}
 	}
-	console.log('  3 种列宽 × 每一列悬停，左侧命中区全部被盖住，自身圆心和卡片右缘都对')
+	console.log('  3 种列宽 × 每一列，不停地走 → 卡片不被抢；停下来 → 正常换目标')
 
-	// 梯形的意义：越靠近卡片张得越开（斜着奔 ＋ 不掉出去），越靠近点越窄（想脱身往上下行走一步就行）。
+	// 还没开卡片时要跟手：第一次碰到点就立刻开，不能也等 restMs
 	{
-		const span = pure.bridgeBox(80, Z.dot, Z.row)
-		check(span.far > span.near, `走廊没张开：近端半高 ${span.near}，远端 ${span.far}`)
-		check(inWedge(span, -4, span.near + 3), `卡片那一端不够高，斜着奔 ＋ 会掉出去`)
-		check(!inWedge(span, 80 - Z.dot / 2 - 2, span.near + 3), `贴着点那一端太胖，往上下行脱身要绕远`)
-		console.log(`  梯形：贴着点 ±${span.near}，贴着卡片 ±${span.far}`)
+		const seats = [{ x: 100, y: 0, node: 'A' }]
+		check(replay(seats, [{ x: 100, y: 0 }], null) === 'A', '卡片还没开的时候第一次碰到点没立刻开，手感发粘')
 	}
 
-	// 走廊高度：树压缩时 rowH 会掉到 rowMin(7px)，直接拿 rowH 当高度的话走廊成了一条窄缝，
-	// 鼠标竖直抖一下就滑出去被上下行抢走。至少要盖住一个点的直径。
-	for (const rowH of [Z.row, Z.rowMin, 5]) {
-		const height = pure.bridgeBox(100, Z.dot, rowH).height
-		check(height >= Z.dot * 2, `rowH=${rowH} 时走廊只有 ${height}px 高，竖直方向抖一下就滑出去`)
-		check(height >= rowH, `rowH=${rowH} 时走廊 ${height}px 比行还矮，本行自己都盖不满`)
+	// 命中测试本身：压中 / 偏一点 / 够不着 / 隔壁行 / 空行
+	{
+		const seats = [{ x: 100, y: 0, node: 'A' }, { x: 86, y: 0, node: 'B' }, { x: 100, y: 20, node: 'C' }]
+		check(pure.nodeAt(seats, 86, 0, Z.hit, Z.row) === 'B', '正压着 B 却没选中 B')
+		check(pure.nodeAt(seats, 90, 0, Z.hit, Z.row) === 'B', '偏 B 一点应该还是 B（离 B 4px，离 A 10px）')
+		check(pure.nodeAt(seats, 40, 0, Z.hit, Z.row) === undefined, '离所有点都远，不该硬塞一个')
+		check(pure.nodeAt(seats, 100, 20, Z.hit, Z.row) === 'C', '下一行的点没认出来')
+		check(pure.nodeAt([], 86, 0, Z.hit, Z.row) === undefined, '空行不该崩')
+		console.log('  命中测试：压中 / 偏一点 / 够不着 / 隔壁行 / 空行，五种都对')
 	}
-	console.log(`  行高 ${Z.row}/${Z.rowMin}/5 三档，走廊高度都不小于 ${Z.dot * 2}px`)
-
-	// 让位那一刻要自己算鼠标压着谁：元素在静止的鼠标下出现不会触发 mouseenter。
-	const seats = [{ x: 100, node: 'A' }, { x: 86, node: 'B' }, { x: 72, node: 'C' }]
-	check(pure.nodeUnder(seats, 86, 9) === 'B', '正压着 B 却没选中 B')
-	check(pure.nodeUnder(seats, 90, 9) === 'B', '偏 B 一点应该还是 B（离 B 4px，离 A 10px）')
-	check(pure.nodeUnder(seats, 40, 9) === undefined, '离所有点都远，不该硬塞一个')
-	check(pure.nodeUnder([], 86, 9) === undefined, '空行不该崩')
-	console.log('  让位时的取点：压中 / 偏一点 / 够不着 / 空行，四种都对')
 }
 
 console.log('\n用例 7：几个孩子的横线叠在一起时，蓝线必须压在最上面')
