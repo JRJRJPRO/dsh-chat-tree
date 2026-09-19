@@ -180,25 +180,59 @@ console.log('\n用例 6：走廊必须盖住鼠标去 ＋ 路上的每一个命�
 	const { Z } = pure
 	const HIT = 18 // 命中区宽度，和 client.js 里画的那条对齐
 
+	// 走廊是个梯形（clip-path），所以"盖没盖住"要按多边形算，不能只比左右边界。
+	// 传进来的是**绝对坐标**（导轨内坐标系，y 以悬停点为 0）。
+	const inWedge = (span, ax, ay) => {
+		const lx = ax - span.left
+		const ly = ay + span.height / 2
+		let inside = false
+		for (let i = 0, j = span.points.length - 1; i < span.points.length; j = i++) {
+			const [xi, yi] = span.points[i]
+			const [xj, yj] = span.points[j]
+			if (yi > ly !== yj > ly && lx < ((xj - xi) * (ly - yi)) / (yj - yi) + xi) inside = !inside
+		}
+		return inside
+	}
+
 	for (const maxColumn of [1, 2, 5]) {
 		const railWidth = 18 + maxColumn * Z.lane
 		const xOf = (column) => railWidth - 9 - column * Z.lane
 		for (let hovered = 0; hovered <= maxColumn; hovered++) {
 			const hx = xOf(hovered)
-			const span = pure.bridgeBox(hx, Z.dot)
-			const left = span.left
-			const right = span.left + span.width
+			const span = pure.bridgeBox(hx, Z.dot, Z.row)
+			const tag = `maxColumn=${maxColumn} 悬停第${hovered}列`
 
-			check(left <= -4, `maxColumn=${maxColumn} 悬停第${hovered}列：走廊左缘 ${left} 没够到卡片右缘 -4`)
-			check(right < hx, `maxColumn=${maxColumn} 悬停第${hovered}列：走廊盖住了自己的圆心，点不动了`)
+			check(span.left <= -4, `${tag}：走廊左缘 ${span.left} 没够到卡片右缘 -4`)
+			check(!inWedge(span, hx, 0), `${tag}：走廊盖住了自己的圆心，点不动了`)
+
+			// ＋ 在卡片右端，和点同高 —— 这是整条路的终点，必须在走廊里
+			check(inWedge(span, -4, 0), `${tag}：卡片右缘(-4)没被走廊盖住，最后一步就被抢`)
 
 			for (let other = hovered + 1; other <= maxColumn; other++) {
-				const hitRight = xOf(other) + HIT / 2 // 左邻居命中区的右端 —— 最先抢的就是它
-				check(hitRight <= right, `maxColumn=${maxColumn} 悬停第${hovered}列：第${other}列的命中区右端 ${hitRight} 露在走廊(${left}..${right})外面，鼠标一过就被抢`)
+				// 左邻居命中区的右端 —— 沿途最先抢的就是它
+				check(inWedge(span, xOf(other) + HIT / 2, 0), `${tag}：第${other}列的命中区右端露在走廊外面，鼠标一过就被抢`)
 			}
 		}
 	}
-	console.log('  3 种列宽 × 每一列悬停，左侧命中区全部被盖住，自身圆心全部露出')
+	console.log('  3 种列宽 × 每一列悬停，左侧命中区全部被盖住，自身圆心和卡片右缘都对')
+
+	// 梯形的意义：越靠近卡片张得越开（斜着奔 ＋ 不掉出去），越靠近点越窄（想脱身往上下行走一步就行）。
+	{
+		const span = pure.bridgeBox(80, Z.dot, Z.row)
+		check(span.far > span.near, `走廊没张开：近端半高 ${span.near}，远端 ${span.far}`)
+		check(inWedge(span, -4, span.near + 3), `卡片那一端不够高，斜着奔 ＋ 会掉出去`)
+		check(!inWedge(span, 80 - Z.dot / 2 - 2, span.near + 3), `贴着点那一端太胖，往上下行脱身要绕远`)
+		console.log(`  梯形：贴着点 ±${span.near}，贴着卡片 ±${span.far}`)
+	}
+
+	// 走廊高度：树压缩时 rowH 会掉到 rowMin(7px)，直接拿 rowH 当高度的话走廊成了一条窄缝，
+	// 鼠标竖直抖一下就滑出去被上下行抢走。至少要盖住一个点的直径。
+	for (const rowH of [Z.row, Z.rowMin, 5]) {
+		const height = pure.bridgeBox(100, Z.dot, rowH).height
+		check(height >= Z.dot * 2, `rowH=${rowH} 时走廊只有 ${height}px 高，竖直方向抖一下就滑出去`)
+		check(height >= rowH, `rowH=${rowH} 时走廊 ${height}px 比行还矮，本行自己都盖不满`)
+	}
+	console.log(`  行高 ${Z.row}/${Z.rowMin}/5 三档，走廊高度都不小于 ${Z.dot * 2}px`)
 
 	// 让位那一刻要自己算鼠标压着谁：元素在静止的鼠标下出现不会触发 mouseenter。
 	const seats = [{ x: 100, node: 'A' }, { x: 86, node: 'B' }, { x: 72, node: 'C' }]
@@ -207,6 +241,50 @@ console.log('\n用例 6：走廊必须盖住鼠标去 ＋ 路上的每一个命�
 	check(pure.nodeUnder(seats, 40, 9) === undefined, '离所有点都远，不该硬塞一个')
 	check(pure.nodeUnder([], 86, 9) === undefined, '空行不该崩')
 	console.log('  让位时的取点：压中 / 偏一点 / 够不着 / 空行，四种都对')
+}
+
+console.log('\n用例 7：几个孩子的横线叠在一起时，蓝线必须压在最上面')
+{
+	// A 的第 1 轮后面挂了 4 条后续：A 自己走直线（同列），B/C/D 各占左边一列。
+	// 这几条的横段都贴在 A:1 那一行，越远的横段越长 —— 短的会整段盖住长的右半截。
+	// 站在 D 上时只有 D 的横段是蓝的，B、C 的是灰的；灰的要是后画，
+	// 屏幕上就是 John 报的"横线只有左边一半是蓝的，右边一半是灰的"。
+	const A = branch('A', undefined, undefined, [1, 2, 3])
+	const B = branch('B', 'A', 1, [2, 3])
+	const C = branch('C', 'A', 1, [2])
+	const D = branch('D', 'A', 1, [2])
+	const sessions = [A, B, C, D]
+	const visible = new Set(sessions.map((item) => item.id))
+	const bent = (node) => node.parent !== undefined && node.column !== node.parent.column
+	let total = 0
+
+	for (const currentId of ['A', 'B', 'C', 'D']) {
+		const graph = pure.buildGraph(pure.conversationOf(pure.visibleTree(sessions, visible), currentId), currentId)
+
+		// 照 client.js 的顺序刷一遍"油漆"：横段占 [lo列, hi列) 这些单位区间，后画的盖先画的。
+		const paint = new Map()
+		const span = (node) => {
+			const lo = Math.min(node.column, node.parent.column)
+			const hi = Math.max(node.column, node.parent.column)
+			return Array.from({ length: hi - lo }, (_, i) => `${node.parent.depth}:${lo + i}`)
+		}
+		for (const node of pure.edgeOrder(graph.nodes)) {
+			if (!bent(node)) continue // 直上直下的边只有竖段，各占各的列，不会打架
+			for (const cell of span(node)) paint.set(cell, node.active ? 'blue' : 'gray')
+		}
+
+		let lit = 0
+		for (const node of graph.nodes) {
+			if (!bent(node) || !node.active) continue
+			for (const cell of span(node)) {
+				lit += 1
+				check(paint.get(cell) === 'blue', `当前 ${currentId}：${node.parent.key} → ${node.key} 的横段在格 ${cell} 被灰线盖掉了`)
+			}
+		}
+		total += lit
+		console.log(`  当前 ${currentId} → 横段共 ${paint.size} 段，其中该蓝的 ${lit} 段`)
+	}
+	check(total > 0, '这组用例一条带折角的蓝线都没造出来，等于什么都没测')
 }
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)

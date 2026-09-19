@@ -32,6 +32,7 @@ export const SETTINGS_NS = 'dsh-tree'
  */
 export const SETTINGS_SCHEMA = Schema.object({
 	visibleRadius: Schema.natural().max(30).default(10).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
+	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
 })
 
 // ===== 第 1 步：fold —— 从事件折出一个分支的大纲 =====

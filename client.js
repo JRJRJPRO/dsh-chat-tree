@@ -34,6 +34,9 @@ window.__ModuleLoader__.load({
 		/** 省略半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
 		const RADIUS = { min: 5, max: 30, fallback: 10, off: 0 }
 
+		/** 节点缩放，百分比。 */
+		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
+
 		const LS_KEY = 'dsh-tree.labels'
 
 		/** @returns {Record<string,string>} */
@@ -322,17 +325,46 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 连线的绘制顺序。
+		 *
+		 * ⚠️ 蓝线必须最后画。同一个父节点的几个孩子，横段都贴在父节点那一行，越远的
+		 *    孩子横段越长 —— 短的会整段盖住长的右半截。谁后画谁赢（都没设 z-index，
+		 *    DOM 顺序说了算），所以灰的先来，蓝的压在最上面。
+		 *    别改成给蓝线加 z-index：那会连节点圆点一起盖住。
+		 * @param nodes - 图上全部节点
+		 * @returns 有父节点的那些，灰的在前蓝的在后
+		 */
+		function edgeOrder(nodes) {
+			const linked = nodes.filter((node) => node.parent !== undefined)
+			return [...linked.filter((node) => !node.active), ...linked.filter((node) => node.active)]
+		}
+
+		/**
 		 * 走廊的横向范围（导轨内坐标系）。
 		 *
 		 * 左缘越过卡片右缘 2px 压住缝；右缘停在悬停点的圆边上 —— 再往右就盖住这个点
 		 * 自己，它就点不动了；再往左则露出左邻居命中区的右端（在 x-5），白挡。
+		 *
+		 * 形状是个**朝卡片张开的梯形**（safe triangle 的变体）：右端贴着点只有一行高，
+		 * 左端贴着卡片张到 `Z.mouth*2`。斜着奔卡片也掉不出去，而贴着点那一头仍然窄，
+		 * 想往上下行走一步就能脱身。clip-path 同时裁掉命中区，所以梯形外面是"透明"的，
+		 * 底下的点照常收 mouseenter —— 让位不再需要谁去主动拆走廊。
+		 *
+		 * ⚠️ 近端高度不能直接用 rowH：树压缩时 rowH 会掉到 7px，走廊变成一条窄缝，
+		 *    鼠标竖直方向抖一下就滑出去，被上下行的点抢走。至少要盖住一个点的上下各一半。
 		 * @param x - 悬停点的圆心
 		 * @param size - 悬停点的直径
-		 * @returns 绝对定位要的 left / width
+		 * @param rowH - 行高
+		 * @returns left/width/height（top 由调用方按圆心居中算）+ 盒内局部坐标的多边形
 		 */
-		function bridgeBox(x, size) {
+		function bridgeBox(x, size, rowH, z) {
+			const sized = z === undefined ? Z : z // 缺省=100%，老调用点和测试不用改
 			const left = -6
-			return { left, width: x - size / 2 - left }
+			const width = x - size / 2 - left
+			const near = Math.max(rowH, sized.dot * 2) / 2 // 贴着点那一端的半高
+			const far = Math.max(near, sized.mouth) // 贴着卡片那一端的半高
+			const points = [[width, far - near], [width, far + near], [0, far * 2], [0, 0]]
+			return { left, width, height: far * 2, near, far, points, clip: `polygon(${points.map(([px, py]) => `${px}px ${py}px`).join(',')})` }
 		}
 
 		/**
@@ -356,7 +388,26 @@ window.__ModuleLoader__.load({
 
 		// ===== 第 4 步：尺寸与形态 =====
 
-		const Z = { row: 20, rowMin: 7, dot: 9, lane: 14, pad: 16, card: 270, gap: 20, bridgeMs: 260 }
+		// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的宽度（圆心在 hit/2 处）。
+		// 以前 18 和 9 是散在渲染里的魔数，收进来才能跟着缩放一起动。
+		const Z = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14, pad: 16, card: 270, gap: 20, mouth: 16, bridgeMs: 450 }
+
+		/**
+		 * 按百分比缩放尺寸。**只缩几何量** —— `bridgeMs` 是时间、`card` 是文字卡片宽度，
+		 * 跟着点一起放大只会挡住聊天区，所以都不动。
+		 *
+		 * 小例子（percent=150）：dot 9→13.5、lane 14→21、hit 18→27，
+		 * 于是点变大、列变宽、命中区同比变宽，图整体等比例放大。
+		 *
+		 * @param percent - 百分比，100 = 原样
+		 * @returns 新的尺寸表；`scaleZ(100)` 必须与 Z 逐字段相等
+		 */
+		function scaleZ(percent) {
+			const k = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1
+			const out = Object.assign({}, Z)
+			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'ell', 'mouth']) out[key] = Z[key] * k
+			return out
+		}
 		const C = {
 			line: '#30363d', lineActive: 'rgba(88,166,255,.6)',
 			dim: '#6e7681', dimActive: 'rgba(88,166,255,.9)',
@@ -376,10 +427,12 @@ window.__ModuleLoader__.load({
 			// ⚠️ 所有分支必须返回**相同的 key 集合**，边框只用 longhand，不许写 `border` 简写。
 			//    React 会把"上一帧有、这一帧没有"的属性置空，简写和 longhand 混用时
 			//    切回普通态会掉成白边框 —— 滑过一个点白一个（DESIGN.md §5）。
+			// 描边和外发光都按直径同比例走，否则点放大后边框细得看不见。
+			const k = size / Z.dot
 			const base = {
 				width: `${size}px`, height: `${size}px`,
 				borderRadius: '50%',
-				borderWidth: '1.5px',
+				borderWidth: `${1.5 * k}px`,
 				borderStyle: 'solid',
 				borderColor: active ? C.dimActive : C.dim,
 				// 路径上的点垫一层淡蓝填充：只靠描边在小尺寸下看着像白的
@@ -391,8 +444,8 @@ window.__ModuleLoader__.load({
 				transform: hover ? 'scale(1.4)' : 'scale(1)',
 			}
 			// 只换填充，边框仍由 active 决定
-			if (kind === 'current') return Object.assign(base, { background: C.blue, borderColor: active ? C.blue : C.dim, opacity: 1, boxShadow: '0 0 0 3px rgba(88,166,255,.22)' })
-			if (kind === 'compact') return Object.assign(base, { borderRadius: '2px', borderColor: C.orange, background: 'rgba(255,166,87,.3)', transform: `${hover ? 'scale(1.4) ' : ''}rotate(45deg)` })
+			if (kind === 'current') return Object.assign(base, { background: C.blue, borderColor: active ? C.blue : C.dim, opacity: 1, boxShadow: `0 0 0 ${3 * k}px rgba(88,166,255,.22)` })
+			if (kind === 'compact') return Object.assign(base, { borderRadius: `${2 * k}px`, borderColor: C.orange, background: 'rgba(255,166,87,.3)', transform: `${hover ? 'scale(1.4) ' : ''}rotate(45deg)` })
 			if (kind === 'empty') return Object.assign(base, { borderStyle: 'dashed', borderColor: active ? C.dimActive : '#7d8590' })
 			return base
 		}
@@ -425,9 +478,22 @@ window.__ModuleLoader__.load({
 			const [box, setBox] = react.useState(undefined)
 			react.useEffect(() => {
 				let raf = 0
+				let observed
+				let observer
 				const measure = () => {
 					const el = document.querySelector('[data-conversation-scroll]')
-					if (el === null) return setBox(undefined)
+					// ⚠️ 量不到时保留上一次的尺寸，别退回 undefined。切换会话时宿主会把聊天区
+					//    整个卸了重挂，中间有一帧找不到容器 —— 一旦清空，导轨立刻掉到"视口兜底"
+					//    那套几何（top/height 全变），rowH 跟着重算，整棵树跳一下再跳回来。
+					//    这就是切路径时看到的那一闪。兜底只在**首次**量到之前用。
+					if (el === null) return
+					// ⚠️ 容器被换过就改盯新的：ResizeObserver 绑的是元素实例，旧元素卸载后它再也不会响，
+					//    聊天区再变宽变高就只能等 800ms 的轮询兜底。
+					if (observer !== undefined && el !== observed) {
+						if (observed !== undefined) observer.unobserve(observed)
+						observer.observe(el)
+						observed = el
+					}
 					const rect = el.getBoundingClientRect()
 					setBox((prev) =>
 						prev && Math.abs(prev.top - rect.top) < 1 && Math.abs(prev.height - rect.height) < 1 && Math.abs(prev.right - rect.right) < 1
@@ -439,10 +505,8 @@ window.__ModuleLoader__.load({
 					cancelAnimationFrame(raf)
 					raf = requestAnimationFrame(measure)
 				}
+				observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
 				measure()
-				const el = document.querySelector('[data-conversation-scroll]')
-				const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
-				if (observer && el) observer.observe(el)
 				window.addEventListener('resize', schedule)
 				const timer = setInterval(measure, 800)
 				return () => {
@@ -481,6 +545,10 @@ window.__ModuleLoader__.load({
 							break
 						}
 					}
+					// ⚠️ 没量到任何一轮就保留上一次。切会话中间有几帧聊天行还没挂上，
+					//    清成 undefined 的话 anchorNode 会退到“当前路径最深的点”，
+					//    elide 的可视窗口跳到末端再跳回来 —— 又是一闪。
+					if (best === undefined) return
 					setTurn((previous) => (previous === best ? previous : best))
 				}
 				const schedule = () => {
@@ -613,8 +681,11 @@ window.__ModuleLoader__.load({
 			)
 		}
 
-		/** 滑杆的档位：5..30，最后一格是"不省略"。 */
+		/** 省略半径的档位：5..30，最后一格是"不省略"。 */
 		const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
+
+		/** 缩放的档位：50%..250%，每档 10。 */
+		const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step + 1 }, (_, i) => SCALE.min + i * SCALE.step)
 
 		/**
 		 * 一档的人话。
@@ -623,6 +694,25 @@ window.__ModuleLoader__.load({
 		function stepText(step) {
 			return step === RADIUS.off ? '不省略' : `${step} 步以内`
 		}
+
+		/**
+		 * 缩放档位的人话。
+		 * @param step - 百分比
+		 */
+		function scaleText(step) {
+			return `${step}%`
+		}
+
+		/**
+		 * 卡片上的两行设置。加新设置项就往这儿加一条，卡片和 store 都不用改。
+		 * `field` 必须和 host 半 SETTINGS_SCHEMA 里的字段名一致。
+		 */
+		const FIELDS = [
+			{ field: 'visibleRadius', label: '显示范围', steps: STEPS, text: stepText, fallback: RADIUS.fallback,
+				hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
+			{ field: 'nodeScale', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback,
+				hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
+		]
 
 		/**
 		 * 宿主设置卡片的设计令牌，照抄 ui-settings-plugins 的 PluginCard / fields。
@@ -680,13 +770,37 @@ window.__ModuleLoader__.load({
 			const [hover, setHover] = react.useState(false)
 			const [failed, setFailed] = react.useState('')
 
-			const at = Math.max(0, STEPS.indexOf(Number.isFinite(state.value) ? state.value : RADIUS.fallback))
 			const on = state.writable === true
+			const values = state.values || {}
+			const user = state.user || {}
 			const write = (run) => {
 				setFailed('')
 				Promise.resolve()
 					.then(run)
 					.catch((error) => setFailed(String((error && error.message) || error)))
+			}
+
+			const row = (spec) => {
+				const now = Number.isFinite(values[spec.field]) ? values[spec.field] : spec.fallback
+				const at = Math.max(0, spec.steps.indexOf(now))
+				const changed = user[spec.field] === true
+				return h('div', { key: spec.field, style: S.field }, [
+					h('div', { key: 'hd', style: S.fieldHead }, [
+						h('label', { key: 'l', style: S.label }, spec.label),
+						h('span', { key: 'v', style: S.value }, spec.text(spec.steps[at])),
+						changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
+						changed ? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => write(() => store.reset(spec.field)) }, '重置') : null,
+					]),
+					h('input', {
+						key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
+						disabled: !on, style: S.range(on),
+						onChange: (event) => {
+							const picked = spec.steps[Number(event.target.value)]
+							write(() => store.set(spec.field, picked))
+						},
+					}),
+					h('p', { key: 'p', style: S.hint }, spec.hint),
+				])
 			}
 
 			return h('li', {
@@ -697,31 +811,15 @@ window.__ModuleLoader__.load({
 				h('button', { key: 'h', type: 'button', style: S.header, 'aria-expanded': open, onClick: () => setOpen(!open) }, [
 					h('span', { key: 't', style: S.headText }, [
 						h('span', { key: 'n', style: S.name }, '对话树'),
-						h('span', { key: 'd', style: S.description }, '聊天区旁边那棵分支树画多大范围'),
+						h('span', { key: 'd', style: S.description }, '聊天区旁边那棵分支树的显示范围与大小'),
 					]),
 					h(Chevron, { key: 'c', open }),
 				]),
 				open
 					? h('div', { key: 'b', style: S.body }, [
-							h('div', { key: 'f', style: S.field }, [
-								h('div', { key: 'hd', style: S.fieldHead }, [
-									h('label', { key: 'l', style: S.label }, '显示范围'),
-									h('span', { key: 'v', style: S.value }, stepText(STEPS[at])),
-									state.overridden ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
-									state.overridden ? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => write(() => store.reset()) }, '重置') : null,
-								]),
-								h('input', {
-									key: 'i', type: 'range', min: 0, max: STEPS.length - 1, step: 1, value: at,
-									disabled: !on, style: S.range(on),
-									onChange: (event) => {
-										const picked = STEPS[Number(event.target.value)]
-										write(() => store.set(picked))
-									},
-								}),
-								h('p', { key: 'p', style: S.hint }, '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。'),
-							]),
+							...FIELDS.map(row),
 							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
-							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认 ${RADIUS.fallback} 步画。`),
+							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),
 						])
 					: null,
 			])
@@ -736,9 +834,18 @@ window.__ModuleLoader__.load({
 		 *    可写与否交给快照逐帧说了算，别做成一次性的。
 		 * @param ctx - 浏览器根 context
 		 */
-		function radiusStore(ctx) {
+		function settingsStore(ctx) {
 			let scope
-			let state = { value: RADIUS.fallback, writable: false, overridden: false, status: undefined, mode: undefined }
+			const blank = () => {
+				const values = {}
+				const user = {}
+				for (const spec of FIELDS) {
+					values[spec.field] = spec.fallback
+					user[spec.field] = false
+				}
+				return { values, user, writable: false, status: undefined, mode: undefined }
+			}
+			let state = blank()
 			const listeners = new Set()
 			const need = () => (scope === undefined ? Promise.reject(new Error('设置服务还没就绪')) : undefined)
 			const store = {
@@ -747,22 +854,28 @@ window.__ModuleLoader__.load({
 					listeners.add(fn)
 					return () => listeners.delete(fn)
 				},
-				set: (next) => need() || scope.set('visibleRadius', next),
-				reset: () => need() || scope.unset('visibleRadius'),
+				set: (field, next) => need() || scope.set(field, next),
+				reset: (field) => need() || scope.unset(field),
 			}
+			const same = (a, b) =>
+				a.writable === b.writable && a.status === b.status && a.mode === b.mode &&
+				FIELDS.every((spec) => a.values[spec.field] === b.values[spec.field] && a.user[spec.field] === b.user[spec.field])
 			try {
 				ctx.inject(['settingsScope'], (scoped) => {
 					scope = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
 					const pull = () => {
 						const snapshot = scope.getSnapshot() || {}
-						const next = {
-							value: snapshot.value && Number.isFinite(snapshot.value.visibleRadius) ? snapshot.value.visibleRadius : RADIUS.fallback,
-							writable: snapshot.writable === true,
-							overridden: snapshot.user !== null && typeof snapshot.user === 'object' && 'visibleRadius' in snapshot.user,
-							status: snapshot.status,
-							mode: snapshot.mode,
+						const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
+						const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
+						const next = blank()
+						next.writable = snapshot.writable === true
+						next.status = snapshot.status
+						next.mode = snapshot.mode
+						for (const spec of FIELDS) {
+							if (Number.isFinite(from[spec.field])) next.values[spec.field] = from[spec.field]
+							next.user[spec.field] = spec.field in raw
 						}
-						if (Object.keys(next).every((key) => next[key] === state[key])) return
+						if (same(next, state)) return
 						state = next
 						for (const fn of listeners) fn()
 					}
@@ -771,7 +884,7 @@ window.__ModuleLoader__.load({
 					scoped.effect(() => scope.subscribe(pull), 'dsh-tree: 设置订阅')
 				})
 			} catch (error) {
-				console.warn('[dsh-tree] 设置服务不可用，按默认半径画', error)
+				console.warn('[dsh-tree] 设置服务不可用，按默认值画', error)
 			}
 			return store
 		}
@@ -783,8 +896,10 @@ window.__ModuleLoader__.load({
 			const workspaceState = useObservable(api.workspaces)
 			const box = useChatBox()
 			const activeTurn = useActiveTurn()
-			const settings = useObservable(api.radius) || {}
-			const radius = Number.isFinite(settings.value) ? settings.value : RADIUS.fallback
+			const settings = useObservable(api.settings) || {}
+			const tuned = settings.values || {}
+			const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
+			const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 			const current = listState && listState.current
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
@@ -792,6 +907,7 @@ window.__ModuleLoader__.load({
 
 			const [hover, setHover] = react.useState(null)
 			const [tick, setTick] = react.useState(0)
+			const lastGraph = react.useRef(undefined) // 数据空窗期顶上去的那棵树，见下面 ⚠️
 			const labels = react.useMemo(() => readLabels(), [tick])
 
 			// 走廊：鼠标从点走到卡片上的 ＋，必须横穿左边每一列，途中每个点都会抢走悬停
@@ -823,15 +939,19 @@ window.__ModuleLoader__.load({
 			if (!visible.has(current)) visible.add(current)
 
 			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current)
-			if (picked.length === 0) return null
 
+			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
+			//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
+			//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
 			let graph
 			try {
-				graph = buildGraph(picked, current)
+				graph = picked.length > 0 ? buildGraph(picked, current) : undefined
 			} catch (error) {
 				console.warn('[dsh-tree] buildGraph failed', error)
-				return null
 			}
+			if (graph !== undefined) lastGraph.current = graph
+			else graph = lastGraph.current
+			if (graph === undefined) return null
 
 			// 自诊断钩子：症状出现时在浏览器控制台敲 __dshTree() 就能把当时的真实状态倒出来。
 			// 加这个是因为"某些点莫名变白"这类问题光看代码猜不出来，
@@ -842,7 +962,8 @@ window.__ModuleLoader__.load({
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
 					省略半径: radius === RADIUS.off ? '不省略' : radius,
-					设置: `值=${settings.value} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode} 改过=${settings.overridden}`,
+					缩放: `${scale}%`,
+					设置: `半径=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
 					分支: picked.map((item) => `${item.id.slice(8, 14)} ← ${item.parentId ? item.parentId.slice(8, 14) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || []).filter((t) => !t.inherited).map((t) => t.turn).join(',')}`),
 					节点: graph.nodes
 						.filter((node) => node.entry !== undefined)
@@ -859,15 +980,16 @@ window.__ModuleLoader__.load({
 			const rowOfNode = (node) => view.rowOf.get(node.depth) + padTop
 
 			// 放不下就压行高（下限 rowMin）
-			const available = (box ? box.height : window.innerHeight * 0.72) - Z.pad * 2
+			const z = scaleZ(scale)
+			const available = (box ? box.height : window.innerHeight * 0.72) - z.pad * 2
 			const rows = view.rows + padTop + padBottom
-			const rowH = Math.max(Z.rowMin, Math.min(Z.row, available / rows))
+			const rowH = Math.max(z.rowMin, Math.min(z.row, available / rows))
 			const treeHeight = rows * rowH
 			// 列宽用 graph.maxColumn 而不是可见列 —— 省略随滚动变化，导轨宽度不该跟着跳
-			const railWidth = 18 + graph.maxColumn * Z.lane
-			const xOf = (column) => railWidth - 9 - column * Z.lane
+			const railWidth = z.hit + graph.maxColumn * z.lane
+			const xOf = (column) => railWidth - z.hit / 2 - column * z.lane
 			const yOf = (row) => row * rowH + rowH / 2
-			const dotSize = Math.max(6, Math.min(Z.dot, rowH - 5))
+			const dotSize = Math.max(z.dotMin, Math.min(z.dot, rowH - z.dotPad))
 
 			const parts = []
 
@@ -886,8 +1008,7 @@ window.__ModuleLoader__.load({
 				}))
 			}
 
-			for (const node of graph.nodes) {
-				if (node.parent === undefined) continue
+			const edge = (node) => {
 				const color = node.active ? C.lineActive : C.line
 				const mine = view.shown.has(node)
 				const theirs = view.shown.has(node.parent)
@@ -896,6 +1017,7 @@ window.__ModuleLoader__.load({
 				else if (mine && padTop > 0) line(node.key, xOf(node.column), xOf(node.column), yOf(0), yOf(rowOfNode(node)), color)
 				else if (theirs && padBottom > 0) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rows - 1), color)
 			}
+			for (const node of edgeOrder(graph.nodes)) edge(node)
 
 			// 省略号
 			for (const [column, row] of [...[...view.bandTop].map((c) => [c, 0]), ...[...view.bandBottom].map((c) => [c, rows - 1])]) {
@@ -903,9 +1025,9 @@ window.__ModuleLoader__.load({
 					key: `e${row}:${column}`,
 					title: `还有 ${view.hidden} 个节点被省略（设置里可以调范围）`,
 					style: {
-						position: 'absolute', left: `${xOf(column) - 7}px`, top: `${yOf(row) - 7}px`,
-						width: '14px', height: '14px', lineHeight: '14px', textAlign: 'center',
-						color: C.dim, fontSize: '12px', letterSpacing: '0.5px', userSelect: 'none',
+						position: 'absolute', left: `${xOf(column) - z.ell / 2}px`, top: `${yOf(row) - z.ell / 2}px`,
+						width: `${z.ell}px`, height: `${z.ell}px`, lineHeight: `${z.ell}px`, textAlign: 'center',
+						color: C.dim, fontSize: `${(z.ell * 12) / Z.ell}px`, letterSpacing: '0.5px', userSelect: 'none',
 					},
 				}, '⋯'))
 			}
@@ -933,7 +1055,7 @@ window.__ModuleLoader__.load({
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
-					style: { position: 'absolute', left: `${x - 9}px`, top: `${y - rowH / 2}px`, width: '18px', height: `${rowH}px`, cursor: 'pointer' },
+					style: { position: 'absolute', left: `${x - z.hit / 2}px`, top: `${y - rowH / 2}px`, width: `${z.hit}px`, height: `${rowH}px`, cursor: 'pointer' },
 					onMouseEnter: activate,
 					onClick: go,
 				}))
@@ -941,29 +1063,50 @@ window.__ModuleLoader__.load({
 
 			// 走廊。必须压在所有点之上，否则挡不住抢夺。右缘停在悬停点的圆边上，
 			// 让那个点自己仍然点得到（左邻居的命中区右端在 x-5，已被盖住）。
+			//
+			// 让位有三条路，缺一不可 —— 左邻居正好**躺在**去卡片的必经之路上，
+			// 光靠形状躲不开它，不给出路的话开着卡片就永远选不中它们：
+			//   ① 走出梯形（往上下行去）→ clip-path 外面不拦，底下的点自己收 mouseenter
+			//   ② 掉头往右 → 不是去卡片，是想选底下那个点，立刻让位
+			//   ③ 停住不动超过 bridgeMs → 同上，让位
 			if (hover !== null && bridge && view.shown.has(hover.node)) {
 				const hx = xOf(hover.node.column)
 				const hy = yOf(rowOfNode(hover.node))
-				const span = bridgeBox(hx, hover.node.kind === 'empty' ? dotSize + 2 : dotSize)
-				const yield_ = () => {
+				const span = bridgeBox(hx, hover.node.kind === 'empty' ? dotSize + 2 : dotSize, rowH, z)
+				const row = rowOfNode(hover.node)
+				const handOver = () => {
 					setBridge(false)
-					const row = rowOfNode(hover.node)
 					const seats = graph.nodes
 						.filter((node) => view.shown.has(node) && rowOfNode(node) === row)
 						.map((node) => ({ x: xOf(node.column), node }))
-					const under = nodeUnder(seats, pointerX.current, 9)
+					const under = nodeUnder(seats, pointerX.current, z.hit / 2)
 					if (under !== undefined && under !== hover.node) setHover({ node: under, y: yOf(row) })
 				}
+				// ⚠️ 计时器必须在 mousemove 上**重新**计时。只在 mouseenter 起算的话它就不是
+				//    "停住不动"而是"进来后 bridgeMs 无条件拆"：跨 3 列 42px，手慢一点就超时，
+				//    走廊当场消失、nodeUnder 就近抓一个点顶上去（列距 14 < 命中 18，
+				//    导轨里没有抓不到点的位置），卡片被抢，＋ 永远够不着。
+				const arm = () => {
+					clearTimeout(bridgeTimer.current)
+					bridgeTimer.current = setTimeout(handOver, Z.bridgeMs)
+				}
+				// ⚠️ mouseenter 里必须先记一次坐标，否则第一次 mousemove 拿 0 当上一帧，
+				//    算出来是"往右掉头"，人还没动就把卡片让出去了。
+				const at = (event) => event.clientX - event.currentTarget.getBoundingClientRect().left + span.left
 				parts.push(h('span', {
 					key: 'bridge',
-					style: { position: 'absolute', left: `${span.left}px`, top: `${hy - rowH / 2}px`, width: `${span.width}px`, height: `${rowH}px` },
-					onMouseEnter: () => {
+					style: { position: 'absolute', left: `${span.left}px`, top: `${hy - span.height / 2}px`, width: `${span.width}px`, height: `${span.height}px`, clipPath: span.clip },
+					onMouseEnter: (event) => {
 						hold()
-						clearTimeout(bridgeTimer.current)
-						bridgeTimer.current = setTimeout(yield_, Z.bridgeMs)
+						pointerX.current = at(event)
+						arm()
 					},
 					onMouseMove: (event) => {
-						pointerX.current = event.clientX - event.currentTarget.getBoundingClientRect().left + span.left
+						const x = at(event)
+						const back = x - pointerX.current
+						pointerX.current = x
+						if (back > 2) handOver()
+						else arm()
 					},
 					onMouseLeave: () => clearTimeout(bridgeTimer.current),
 				}))
@@ -1059,7 +1202,7 @@ window.__ModuleLoader__.load({
 				},
 			}
 
-			api.radius = radiusStore(ctx)
+			api.settings = settingsStore(ctx)
 
 			ctx.effect(
 				() =>
@@ -1073,7 +1216,7 @@ window.__ModuleLoader__.load({
 			try {
 				ctx.inject(['settingsScope'], (scoped) =>
 					scoped.slots.inject('settings.plugin.item', () =>
-						scoped.slots.register({ name: 'settings.plugin.item', key: SETTINGS_NS, inject: () => ({ store: api.radius }) }, SettingsCard),
+						scoped.slots.register({ name: 'settings.plugin.item', key: SETTINGS_NS, inject: () => ({ store: api.settings }) }, SettingsCard),
 					),
 				)
 			} catch (error) {
@@ -1084,7 +1227,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, bridgeBox, nodeUnder, dotStyle, elide, anchorNode, radiusStore, stepText, STEPS, RADIUS, Z }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, bridgeBox, nodeUnder, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

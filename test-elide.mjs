@@ -225,6 +225,7 @@ console.log('用例 8：设置 store —— 第一帧不可写，之后必须能
 {
 	// 假的 settingsScope：先给 loading/不可写，再给 ready/可写，模拟真实时序
 	let snapshot = { status: 'loading', value: undefined, user: undefined, writable: false, mode: 'host' }
+	const radiusOf = (store) => store.getSnapshot().values.visibleRadius
 	const fans = new Set()
 	const written = []
 	const scope = {
@@ -250,26 +251,59 @@ console.log('用例 8：设置 store —— 第一帧不可写，之后必须能
 		inject: (_deps, run) => run({ settingsScope: { bind: () => scope }, effect: (make) => make() }),
 	}
 
-	const store = pure.radiusStore(ctx)
-	const first = store.getSnapshot()
-	check(first.value === pure.RADIUS.fallback, `第一帧该退回默认 ${pure.RADIUS.fallback}，实际 ${first.value}`)
-	check(first.writable === false, '第一帧该是不可写')
+	const store = pure.settingsStore(ctx)
+	check(radiusOf(store) === pure.RADIUS.fallback, `第一帧该退回默认 ${pure.RADIUS.fallback}，实际 ${radiusOf(store)}`)
+	check(store.getSnapshot().values.nodeScale === pure.SCALE.fallback, `缩放第一帧该是 ${pure.SCALE.fallback}`)
+	check(store.getSnapshot().writable === false, '第一帧该是不可写')
 
-	push({ status: 'ready', value: { visibleRadius: 7 }, user: { visibleRadius: 7 }, writable: true, mode: 'host' })
+	push({ status: 'ready', value: { visibleRadius: 7, nodeScale: 150 }, user: { visibleRadius: 7 }, writable: true, mode: 'host' })
 	const later = store.getSnapshot()
-	check(later.value === 7, `后来该读到 7，实际 ${later.value}`)
+	check(later.values.visibleRadius === 7, `后来该读到 7，实际 ${later.values.visibleRadius}`)
+	check(later.values.nodeScale === 150, `缩放该读到 150，实际 ${later.values.nodeScale}`)
 	check(later.writable === true, '后来该变成可写 —— 这就是滑杆点不动那个 bug')
-	check(later.overridden === true, 'user 层里有值就该标"已修改"')
+	check(later.user.visibleRadius === true, 'user 层里有值就该标"已修改"')
+	check(later.user.nodeScale === false, 'user 层里没有的字段不该标"已修改"')
 	check(typeof store.set === 'function', 'set 不许在不可写那一帧被删掉')
 
-	store.set(12)
-	store.reset()
-	check(JSON.stringify(written) === JSON.stringify([['visibleRadius', 12], ['visibleRadius', 'unset']]), `写入路径不对：${JSON.stringify(written)}`)
-
-	// 继承自 base（user 里没有）时不该显示"已修改"
-	push({ status: 'ready', value: { visibleRadius: 10 }, user: {}, writable: true, mode: 'host' })
-	check(store.getSnapshot().overridden === false, 'user 里没有这个字段就不该标"已修改"')
+	store.set('visibleRadius', 12)
+	store.set('nodeScale', 80)
+	store.reset('nodeScale')
+	const want = [['visibleRadius', 12], ['nodeScale', 80], ['nodeScale', 'unset']]
+	check(JSON.stringify(written) === JSON.stringify(want), `写入路径不对：${JSON.stringify(written)}`)
 	console.log(`  loading→ready 全程 set 健在，写入 ${JSON.stringify(written)}`)
+}
+
+console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，其余等比例')
+{
+	const Z = pure.Z
+	const same = pure.scaleZ(100)
+	const bad = Object.keys(Z).filter((key) => same[key] !== Z[key])
+	check(bad.length === 0, `scaleZ(100) 必须和 Z 一模一样，不同的字段：${bad.join(',')}`)
+
+	const big = pure.scaleZ(200)
+	for (const key of ['row', 'rowMin', 'dot', 'lane', 'hit', 'ell', 'mouth']) {
+		check(big[key] === Z[key] * 2, `${key} 在 200% 下该是 ${Z[key] * 2}，实际 ${big[key]}`)
+	}
+	// 时间和文字卡片宽度不是几何量，不许跟着缩
+	check(big.bridgeMs === Z.bridgeMs, 'bridgeMs 是时间，不该被缩放')
+	check(big.card === Z.card, 'card 是文字卡片宽度，跟着放大只会挡住聊天区')
+	check(pure.scaleZ(undefined).dot === Z.dot && pure.scaleZ(0).dot === Z.dot, '非法百分比该退回 100%')
+
+	// 列间距和命中区必须一起缩放，否则放大后命中区盖不住相邻列 / 缩小后互相抢
+	for (const percent of [50, 100, 150, 250]) {
+		const z = pure.scaleZ(percent)
+		check(Math.abs(z.hit / z.lane - Z.hit / Z.lane) < 1e-9, `${percent}% 时命中区与列距的比例变了`)
+	}
+	console.log(`  100% 逐字段相等；200% 下 dot ${Z.dot}→${big.dot}、lane ${Z.lane}→${big.lane}、hit ${Z.hit}→${big.hit}`)
+}
+
+console.log('用例 11：走廊跟着缩放 —— 放大后不能还按原尺寸开口')
+{
+	const small = pure.bridgeBox(100, 9, 20, pure.scaleZ(100))
+	const big = pure.bridgeBox(100, 18, 40, pure.scaleZ(200))
+	check(big.far === small.far * 2, `200% 时走廊开口该翻倍：${small.far} → ${big.far}`)
+	check(pure.bridgeBox(100, 9, 20).far === small.far, '不传 z 时必须等价于 100%')
+	console.log(`  开口半高 ${small.far} → ${big.far}`)
 }
 
 console.log('用例 9：档位文案')

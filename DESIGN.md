@@ -199,6 +199,20 @@ host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-tree`（**不�
 ⚠️ `writable` 要**逐帧**判断。第一帧几乎必然是 `status:'loading'` + `writable:false`，
 当时若把 `set` 删掉就再也加不回来，滑杆永远是灰的（踩过，test-elide.mjs 用例 8 钉着）。
 
+设置项写在 `FIELDS` 表里，卡片按表渲染、store 按表取值 —— 加一项只改这张表和 host 的
+schema，别再去动卡片。**字段名两边必须一模一样**。
+
+### 缩放（`scaleZ`）
+
+`Z` 里的几何量按百分比整体缩放：`dot` / `lane` / `hit` / `row` / `ell` / `mouth`。
+`bridgeMs`（时间）和 `card`（详情卡宽度）**不缩** —— 卡片跟着放大只会挡住聊天区。
+
+关键不变式：`scaleZ(100)` 必须与 `Z` **逐字段相等**，否则"默认值"会悄悄改掉现有画法
+（用例 10 钉着）。另外 `hit / lane` 的比值必须恒定 —— 命中区比列距宽 4px 是走廊那一套
+的前提（§走廊），只缩一个会让相邻列互相抢悬停。
+
+描边宽度和外发光在 `dotStyle` 里按 `size / Z.dot` 同比走，不然点放大后边框细得看不见。
+
 ### 节点四态
 
 | | 长相 |
