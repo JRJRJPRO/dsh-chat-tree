@@ -190,6 +190,14 @@ host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-tree`（**不�
 
 宿主只在「host 服务了这个 namespace」**且**「有卡片认领它」时才渲染，所以 host 半没重启时
 卡片整个不出现，前端自动退回默认半径 10 —— 这也是为什么改完 `index.js` 必须重启 dsh。
+**反过来说：卡片只要出现了，就证明 host 注册成功了**，这时候再出问题一定在前端。
+
+卡片外观照抄 `ui-settings-plugins` 的 `PluginCard` / `fields`：外层 `<li>`（宿主铺的是
+`<ul>`）、16px 圆角、点标题行展开、14px 折角箭头转 180°。颜色一律走 `--dsw-alias-*`
+变量而不是写死色号，换主题自动跟随。
+
+⚠️ `writable` 要**逐帧**判断。第一帧几乎必然是 `status:'loading'` + `writable:false`，
+当时若把 `set` 删掉就再也加不回来，滑杆永远是灰的（踩过，test-elide.mjs 用例 8 钉着）。
 
 ### 节点四态
 

@@ -584,70 +584,158 @@ window.__ModuleLoader__.load({
 		const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
 
 		/**
-		 * 设置 → 插件 → 插件配置 里的那张卡。容器归我们自己画（宿主只排版和派发）。
-		 * @param props.store - 半径 store，`set` 不存在说明 host 没注册 namespace
+		 * 一档的人话。
+		 * @param step - 档位值
+		 */
+		function stepText(step) {
+			return step === RADIUS.off ? '不省略' : `${step} 步以内`
+		}
+
+		/**
+		 * 宿主设置卡片的设计令牌，照抄 ui-settings-plugins 的 PluginCard / fields。
+		 * 值全是 `--dsw-alias-*` 变量而不是写死的色号 —— 换主题时跟着一起变。
+		 */
+		const S = {
+			card: (open, hover) => ({
+				listStyle: 'none', borderWidth: '.5px', borderStyle: 'solid',
+				borderColor: open || hover ? 'var(--dsw-alias-label-dimmed)' : 'var(--dsw-alias-border-l4)',
+				background: open ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-layer-3)',
+				borderRadius: '16px', transition: 'border-color .16s, background .16s',
+			}),
+			header: {
+				appearance: 'none', width: '100%', font: 'inherit', color: 'inherit', textAlign: 'left',
+				cursor: 'pointer', background: 'none', border: 0, borderRadius: '12px',
+				display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px',
+			},
+			headText: { display: 'flex', flexDirection: 'column', flex: 1, gap: '4px', minWidth: 0 },
+			name: { color: 'var(--dsw-alias-label-primary)', fontSize: '15px', fontWeight: 600, lineHeight: 1.4 },
+			description: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '13px', lineHeight: 1.5 },
+			chevron: (open) => ({ flex: 'none', color: 'var(--dsw-alias-label-tertiary)', transition: 'transform .16s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }),
+			body: { borderTop: '.5px solid var(--dsw-alias-border-l2)', margin: '0 16px', paddingBottom: '8px' },
+			field: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '12px 0' },
+			fieldHead: { display: 'flex', alignItems: 'center', gap: '8px' },
+			label: { flex: 1, minWidth: 0, color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontWeight: 500, lineHeight: 1.5 },
+			value: { color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontVariantNumeric: 'tabular-nums' },
+			tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+			reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
+			range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+			hint: { color: 'var(--dsw-alias-label-tertiary)', margin: 0, fontSize: '12px', lineHeight: 1.5 },
+			note: { color: 'var(--dsw-alias-label-tertiary)', margin: '12px 0 0', fontSize: '12px', lineHeight: 1.5 },
+		}
+
+		/** 和宿主同款的 14px 折角箭头（IconChevronDownOutline14）。 */
+		function Chevron(props) {
+			return h(
+				'svg',
+				{ width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true, style: S.chevron(props.open) },
+				h('path', { d: 'M3.5 5.5 L7 9 L10.5 5.5', stroke: 'currentColor', strokeWidth: 1.25, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+			)
+		}
+
+		/**
+		 * 设置 → 插件 → 插件配置 里的那张卡。
+		 *
+		 * 容器归我们自己画 —— 宿主的契约是"带前端的插件自己拥有自己的卡"，它只铺一个
+		 * `<ul>` 再按 namespace 派发，所以这里**必须是 `<li>`**，样式也照抄 PluginCard：
+		 * 收起时只有标题+说明+箭头，点开才露出控件。
+		 * @param props.store - 半径 store
 		 */
 		function SettingsCard(props) {
 			const store = props.store || {}
-			const value = useObservable(store)
-			const at = Math.max(0, STEPS.indexOf(Number.isFinite(value) ? value : RADIUS.fallback))
-			const writable = typeof store.set === 'function'
-			const shown = STEPS[at] === RADIUS.off ? '不省略' : `${STEPS[at]} 步以内`
+			const state = useObservable(store) || {}
+			const [open, setOpen] = react.useState(false)
+			const [hover, setHover] = react.useState(false)
+			const [failed, setFailed] = react.useState('')
 
-			return h('div', {
-				style: {
-					background: C.bg, border: `1px solid ${C.line}`, borderRadius: '8px',
-					padding: '12px 14px', color: C.text,
-					font: '13px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif',
-				},
+			const at = Math.max(0, STEPS.indexOf(Number.isFinite(state.value) ? state.value : RADIUS.fallback))
+			const on = state.writable === true
+			const write = (run) => {
+				setFailed('')
+				Promise.resolve()
+					.then(run)
+					.catch((error) => setFailed(String((error && error.message) || error)))
+			}
+
+			return h('li', {
+				style: S.card(open, hover),
+				onMouseEnter: () => setHover(true),
+				onMouseLeave: () => setHover(false),
 			}, [
-				h('div', { key: 'h', style: { fontWeight: 600, marginBottom: '2px' } }, '对话树'),
-				h('div', { key: 's', style: { color: C.muted, fontSize: '12px', marginBottom: '10px' } },
-					'离你正在看的那一轮多远之内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。'),
-				h('div', { key: 'r', style: { display: 'flex', alignItems: 'center', gap: '10px' } }, [
-					h('input', {
-						key: 'i', type: 'range', min: 0, max: STEPS.length - 1, step: 1, value: at,
-						disabled: !writable,
-						style: { flex: '1 1 auto', accentColor: C.blue, cursor: writable ? 'pointer' : 'not-allowed' },
-						onChange: (event) => store.set(STEPS[Number(event.target.value)]),
-					}),
-					h('span', { key: 'v', style: { flex: '0 0 auto', minWidth: '72px', textAlign: 'right', color: C.blue, fontVariantNumeric: 'tabular-nums' } }, shown),
+				h('button', { key: 'h', type: 'button', style: S.header, 'aria-expanded': open, onClick: () => setOpen(!open) }, [
+					h('span', { key: 't', style: S.headText }, [
+						h('span', { key: 'n', style: S.name }, '对话树'),
+						h('span', { key: 'd', style: S.description }, '聊天区旁边那棵分支树画多大范围'),
+					]),
+					h(Chevron, { key: 'c', open }),
 				]),
-				writable ? null : h('div', { key: 'w', style: { color: C.muted, fontSize: '12px', marginTop: '8px' } },
-					'当前不可写：host 半没注册设置（改了 index.js 要重启 dsh）。现在按默认值 10 显示。'),
+				open
+					? h('div', { key: 'b', style: S.body }, [
+							h('div', { key: 'f', style: S.field }, [
+								h('div', { key: 'hd', style: S.fieldHead }, [
+									h('label', { key: 'l', style: S.label }, '显示范围'),
+									h('span', { key: 'v', style: S.value }, stepText(STEPS[at])),
+									state.overridden ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
+									state.overridden ? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => write(() => store.reset()) }, '重置') : null,
+								]),
+								h('input', {
+									key: 'i', type: 'range', min: 0, max: STEPS.length - 1, step: 1, value: at,
+									disabled: !on, style: S.range(on),
+									onChange: (event) => {
+										const picked = STEPS[Number(event.target.value)]
+										write(() => store.set(picked))
+									},
+								}),
+								h('p', { key: 'p', style: S.hint }, '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。'),
+							]),
+							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
+							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认 ${RADIUS.fallback} 步画。`),
+						])
+					: null,
 			])
 		}
 
 		/**
 		 * 半径的唯一来源。host 注册了 namespace 就跟着设置走，没有就用默认值。
-		 * 形状故意长得和宿主的 ObservableSnapshot 一样，好直接喂给 useObservable。
+		 * 快照形状和宿主的 ObservableSnapshot 一样，好直接喂给 useObservable。
+		 *
+		 * ⚠️ 别在 `writable === false` 时把 `set` 删掉：第一帧几乎必然是
+		 *    `status:'loading'` + `writable:false`，删了就再也加不回来，滑杆永远是灰的。
+		 *    可写与否交给快照逐帧说了算，别做成一次性的。
 		 * @param ctx - 浏览器根 context
 		 */
 		function radiusStore(ctx) {
-			let value = RADIUS.fallback
+			let scope
+			let state = { value: RADIUS.fallback, writable: false, overridden: false, status: undefined, mode: undefined }
 			const listeners = new Set()
+			const need = () => (scope === undefined ? Promise.reject(new Error('设置服务还没就绪')) : undefined)
 			const store = {
-				getSnapshot: () => value,
+				getSnapshot: () => state,
 				subscribe: (fn) => {
 					listeners.add(fn)
 					return () => listeners.delete(fn)
 				},
+				set: (next) => need() || scope.set('visibleRadius', next),
+				reset: () => need() || scope.unset('visibleRadius'),
 			}
 			try {
 				ctx.inject(['settingsScope'], (scoped) => {
-					const bound = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
-					store.set = (next) => Promise.resolve(bound.set('visibleRadius', next)).catch((error) => console.warn('[dsh-tree] 写设置失败', error))
+					scope = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
 					const pull = () => {
-						const snapshot = bound.getSnapshot() || {}
-						const next = snapshot.value && Number.isFinite(snapshot.value.visibleRadius) ? snapshot.value.visibleRadius : RADIUS.fallback
-						if (snapshot.writable === false) delete store.set
-						if (next === value) return
-						value = next
+						const snapshot = scope.getSnapshot() || {}
+						const next = {
+							value: snapshot.value && Number.isFinite(snapshot.value.visibleRadius) ? snapshot.value.visibleRadius : RADIUS.fallback,
+							writable: snapshot.writable === true,
+							overridden: snapshot.user !== null && typeof snapshot.user === 'object' && 'visibleRadius' in snapshot.user,
+							status: snapshot.status,
+							mode: snapshot.mode,
+						}
+						if (Object.keys(next).every((key) => next[key] === state[key])) return
+						state = next
 						for (const fn of listeners) fn()
 					}
 					pull()
 					// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
-					scoped.effect(() => bound.subscribe(pull), 'dsh-tree: 设置订阅')
+					scoped.effect(() => scope.subscribe(pull), 'dsh-tree: 设置订阅')
 				})
 			} catch (error) {
 				console.warn('[dsh-tree] 设置服务不可用，按默认半径画', error)
@@ -662,8 +750,8 @@ window.__ModuleLoader__.load({
 			const workspaceState = useObservable(api.workspaces)
 			const box = useChatBox()
 			const activeTurn = useActiveTurn()
-			const radiusRaw = useObservable(api.radius)
-			const radius = Number.isFinite(radiusRaw) ? radiusRaw : RADIUS.fallback
+			const settings = useObservable(api.radius) || {}
+			const radius = Number.isFinite(settings.value) ? settings.value : RADIUS.fallback
 
 			const current = listState && listState.current
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
@@ -709,6 +797,7 @@ window.__ModuleLoader__.load({
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
 					省略半径: radius === RADIUS.off ? '不省略' : radius,
+					设置: `值=${settings.value} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode} 改过=${settings.overridden}`,
 					分支: picked.map((item) => `${item.id.slice(8, 14)} ← ${item.parentId ? item.parentId.slice(8, 14) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || []).filter((t) => !t.inherited).map((t) => t.turn).join(',')}`),
 					节点: graph.nodes
 						.filter((node) => node.entry !== undefined)
@@ -920,7 +1009,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, dotStyle, elide, anchorNode, STEPS, RADIUS }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, dotStyle, elide, anchorNode, radiusStore, stepText, STEPS, RADIUS }
 		return module.exports
 	},
 })

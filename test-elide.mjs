@@ -221,6 +221,64 @@ console.log('用例 7：真实日志回归 —— 任意半径下留下的节点
 	}
 }
 
+console.log('用例 8：设置 store —— 第一帧不可写，之后必须能恢复')
+{
+	// 假的 settingsScope：先给 loading/不可写，再给 ready/可写，模拟真实时序
+	let snapshot = { status: 'loading', value: undefined, user: undefined, writable: false, mode: 'host' }
+	const fans = new Set()
+	const written = []
+	const scope = {
+		getSnapshot: () => snapshot,
+		subscribe: (fn) => {
+			fans.add(fn)
+			return () => fans.delete(fn)
+		},
+		set: (field, value) => {
+			written.push([field, value])
+			return Promise.resolve()
+		},
+		unset: (field) => {
+			written.push([field, 'unset'])
+			return Promise.resolve()
+		},
+	}
+	const push = (next) => {
+		snapshot = next
+		for (const fn of [...fans]) fn()
+	}
+	const ctx = {
+		inject: (_deps, run) => run({ settingsScope: { bind: () => scope }, effect: (make) => make() }),
+	}
+
+	const store = pure.radiusStore(ctx)
+	const first = store.getSnapshot()
+	check(first.value === pure.RADIUS.fallback, `第一帧该退回默认 ${pure.RADIUS.fallback}，实际 ${first.value}`)
+	check(first.writable === false, '第一帧该是不可写')
+
+	push({ status: 'ready', value: { visibleRadius: 7 }, user: { visibleRadius: 7 }, writable: true, mode: 'host' })
+	const later = store.getSnapshot()
+	check(later.value === 7, `后来该读到 7，实际 ${later.value}`)
+	check(later.writable === true, '后来该变成可写 —— 这就是滑杆点不动那个 bug')
+	check(later.overridden === true, 'user 层里有值就该标"已修改"')
+	check(typeof store.set === 'function', 'set 不许在不可写那一帧被删掉')
+
+	store.set(12)
+	store.reset()
+	check(JSON.stringify(written) === JSON.stringify([['visibleRadius', 12], ['visibleRadius', 'unset']]), `写入路径不对：${JSON.stringify(written)}`)
+
+	// 继承自 base（user 里没有）时不该显示"已修改"
+	push({ status: 'ready', value: { visibleRadius: 10 }, user: {}, writable: true, mode: 'host' })
+	check(store.getSnapshot().overridden === false, 'user 里没有这个字段就不该标"已修改"')
+	console.log(`  loading→ready 全程 set 健在，写入 ${JSON.stringify(written)}`)
+}
+
+console.log('用例 9：档位文案')
+{
+	check(pure.stepText(pure.RADIUS.off) === '不省略', `0 该显示"不省略"，实际 ${pure.stepText(pure.RADIUS.off)}`)
+	check(pure.stepText(12) === '12 步以内', `12 该显示"12 步以内"，实际 ${pure.stepText(12)}`)
+	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}`)
+}
+
 console.log('')
 if (failures === 0) console.log('✓ 全部断言通过')
 else {
