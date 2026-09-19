@@ -1,0 +1,23 @@
+{
+  "name": "dsh-tree",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness 对话树：把一个对话的所有分支画成一棵可点击的树",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
