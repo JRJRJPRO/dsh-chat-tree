@@ -434,13 +434,14 @@ window.__ModuleLoader__.load({
 		 *    画到圆心的话线会从圆环 / 菱形正中间透出来，很难看。
 		 *    菱形是正方形转 45°，半高是半边长的 √2 倍，得多让一点。
 		 * @param kind - 节点形态
+		 * @param active - 在当前路径上（形状可能和路径外不同）
 		 * @param dotSize - 当前点的直径
 		 * @param theme - 主题（形状会影响让开量）
 		 * @returns 像素，恒大于 0
 		 */
-		function reachFor(kind, dotSize, theme) {
+		function reachFor(kind, active, dotSize, theme) {
 			const size = kind === 'empty' ? dotSize + 2 : dotSize
-			return (shapeOf(kind, theme).spin ? size * 0.71 : size / 2) + 1
+			return (shapeOf(kind, active, theme).spin ? size * 0.71 : size / 2) + 1
 		}
 
 		/**
@@ -451,6 +452,10 @@ window.__ModuleLoader__.load({
 		 *    看着像"经过 3 之后转个弯到 4"。
 		 *
 		 * 两端各让开 gapFrom / gapTo；折角处不让（那里没有节点）。
+		 *
+		 * ⚠️ 线是 1px 宽的方块，**要把它的中心压在节点中心上**，所以 left/top 各减半个线宽。
+		 *    不减的话线占的是 [x, x+1)，中心在 x+0.5，而点的中心在 x —— 整条线整体偏右
+		 *    半个像素，线性的树看着就是"一段线一个点"左右不对称（John 报的）。
 		 * @param xFrom - 父节点圆心 x
 		 * @param xTo - 子节点圆心 x
 		 * @param yFrom - 父节点圆心 y
@@ -461,17 +466,19 @@ window.__ModuleLoader__.load({
 		 */
 		function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo) {
 			const out = []
+			const half = 0.5 // 线宽的一半：把线的中心对齐到节点中心
 			const bent = xTo !== xFrom
 			if (bent) {
 				const near = xFrom + (xTo > xFrom ? gapFrom : -gapFrom)
+				// 横段往折角那头多伸半个线宽，好和竖段的笔画严丝合缝（否则拐角缺个小口）
 				const width = Math.abs(near - xTo)
-				if (width > 0) out.push({ tag: 'hz', left: Math.min(xTo, near), top: yFrom, width, height: 1 })
+				if (width > 0) out.push({ tag: 'hz', left: Math.min(xTo, near) - half, top: yFrom - half, width: width + 2 * half, height: 1 })
 			}
 			const down = yTo > yFrom
 			const top = yFrom + (bent ? 0 : down ? gapFrom : -gapFrom)
 			const bottom = yTo + (down ? -gapTo : gapTo)
 			const height = Math.abs(bottom - top)
-			if (height > 0) out.push({ tag: 'v', left: xTo, top: Math.min(top, bottom), width: 1, height })
+			if (height > 0) out.push({ tag: 'v', left: xTo - half, top: Math.min(top, bottom), width: 1, height })
 			return out
 		}
 
@@ -558,19 +565,29 @@ window.__ModuleLoader__.load({
 			blue: '#58a6ff', orange: '#ffa657', bg: '#161b22',
 		}
 
-		/** 可选的节点形状。`spin` = 要不要转 45° 变成菱形。 */
+		/** 自定义形状的前缀：`char:★` = 直接把那个字画上去。 */
+		const CUSTOM = 'char:'
+
+		/**
+		 * 预设形状。三种画法：
+		 *   · `radius` + `spin` —— border-radius 画方/圆，`spin` 再转 45° 成菱形
+		 *   · `clip` —— clip-path 剪出多边形，画 border-radius 画不出来的（三角）
+		 *   · 表外的 `char:<字>` —— 见 shapeSpec，直接画那个字
+		 * 表里**不写中文名**：选择器上直接画出形状本身，不需要"圆形""菱形"这种字。
+		 */
 		const SHAPES = [
-			{ value: 'circle', label: '圆形', radius: '50%', spin: false },
-			{ value: 'rounded', label: '圆角方', radius: '30%', spin: false },
-			{ value: 'square', label: '方形', radius: 'px', spin: false },
-			{ value: 'diamond', label: '菱形', radius: 'px', spin: true },
+			{ value: 'circle', radius: '50%', spin: false },
+			{ value: 'rounded', radius: '30%', spin: false },
+			{ value: 'square', radius: 'px', spin: false },
+			{ value: 'diamond', radius: 'px', spin: true },
+			{ value: 'triangle', radius: 'px', spin: false, clip: 'polygon(50% 100%, 0% 0%, 100% 0%)' },
 		]
 
 		/** 三种角色各自的默认颜色与形状。设置里改的就是这张表。 */
 		const THEME = {
 			normalColor: C.dim, normalShape: 'circle',
 			currentColor: C.blue, currentShape: 'circle',
-			compactColor: C.orange, compactShape: 'diamond',
+			compactColor: C.orange, compactShape: 'triangle',
 		}
 
 		/**
@@ -588,14 +605,56 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 某个角色该用什么形状。
-		 * @param kind - 节点形态
-		 * @param theme - 主题
-		 * @returns SHAPES 里的一项
+		 * 一个形状值解析成画法。认不得的一律退回圆形 —— 存进设置的是任意字符串，
+		 * 手改配置文件写错了不该把树画成空白。
+		 * @param want - 预设 id，或 `char:<字>`
+		 * @returns `{value, radius, spin, clip?, glyph?}`
 		 */
-		function shapeOf(kind, theme) {
-			const want = kind === 'compact' ? (theme || THEME).compactShape : (theme || THEME).normalShape
-			return SHAPES.find((one) => one.value === want) || SHAPES[0]
+		function shapeSpec(want) {
+			const text = typeof want === 'string' ? want : ''
+			if (text.startsWith(CUSTOM)) {
+				const glyph = text.slice(CUSTOM.length).trim()
+				if (glyph !== '' && [...glyph].length <= 2) return { value: text, radius: 'px', spin: false, glyph }
+			}
+			return SHAPES.find((one) => one.value === text) || SHAPES[0]
+		}
+
+		/**
+		 * 设置里那颗小预览：按形状值画出形状本身。和树上的点共用 shapeSpec，
+		 * 所以选择器上看到的就是节点将来长的样子 —— 不需要"圆形""菱形"这些字。
+		 * @param want - 形状值
+		 * @param color - 用什么颜色画
+		 * @param size - 边长
+		 * @returns 一个 <span>
+		 */
+		function preview(want, color, size) {
+			const spec = shapeSpec(want)
+			return h('span', {
+				style: {
+					display: 'inline-block', boxSizing: 'border-box', width: `${size}px`, height: `${size}px`,
+					borderRadius: spec.radius === 'px' ? '2px' : spec.radius,
+					background: spec.glyph === undefined ? color : 'none',
+					clipPath: spec.clip === undefined ? 'none' : spec.clip,
+					color, fontSize: `${size}px`, lineHeight: `${size}px`, textAlign: 'center',
+					transform: spec.spin ? 'rotate(45deg) scale(.78)' : 'none',
+				},
+			}, spec.glyph === undefined ? null : spec.glyph)
+		}
+
+		/**
+		 * 某个节点该用什么形状。
+		 *
+		 * ⚠️ 三个角色**各有各的形状**：压缩看 compactShape，在当前路径上看 currentShape，
+		 *    其余看 normalShape。以前这里把 current 和 normal 合成一个，于是设置里
+		 *    "当前路径形状"怎么改都没反应 —— John 报的"改了好像没反应"就是这条。
+		 * @param kind - 节点形态（normal / compact / empty）
+		 * @param active - 在当前路径上
+		 * @param theme - 主题
+		 * @returns 画法
+		 */
+		function shapeOf(kind, active, theme) {
+			const skin = theme || THEME
+			return shapeSpec(kind === 'compact' ? skin.compactShape : active ? skin.currentShape : skin.normalShape)
 		}
 
 		/**
@@ -621,18 +680,34 @@ window.__ModuleLoader__.load({
 			const skin = theme || THEME
 			const k = size / Z.dot
 			const compact = kind === 'compact'
-			const shape = compact ? shapeOf('compact', skin) : shapeOf(kind, skin)
+			const shape = shapeOf(kind, active, skin)
 			const accent = compact ? skin.compactColor : skin.currentColor
 			const idle = compact ? skin.compactColor : skin.normalColor
+			const ink = focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : idle
+			// 这个角色此刻的"正色"（必是主题里的 #rrggbb），派生色都从它 fade 出来
+			const base = focused ? accent : compact ? skin.compactColor : active ? skin.currentColor : idle
+			// 剪出来的形状描不了边（斜边会被 clip-path 切掉），字形更没有边可描 ——
+			// 这两类一律整块填色，靠颜色深浅表状态，外发光也换成跟着轮廓走的 drop-shadow
+			const carved = shape.clip !== undefined || shape.glyph !== undefined
 			return {
 				width: `${size}px`, height: `${size}px`,
 				borderRadius: shape.radius === 'px' ? `${1.5 * k}px` : shape.radius,
-				borderWidth: `${1.5 * k}px`,
+				borderWidth: carved ? '0px' : `${1.5 * k}px`,
 				borderStyle: kind === 'empty' ? 'dashed' : 'solid',
-				borderColor: focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : idle,
+				borderColor: ink,
 				// 路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
-				background: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
-				boxShadow: focused ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
+				background: shape.glyph !== undefined
+					? 'none'
+					: shape.clip !== undefined
+						? (focused ? accent : fade(base, 0.55))
+						: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
+				clipPath: shape.clip === undefined ? 'none' : shape.clip,
+				color: ink,
+				fontSize: `${size}px`,
+				lineHeight: `${size}px`,
+				textAlign: 'center',
+				boxShadow: focused && !carved ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
+				filter: focused && carved ? `drop-shadow(0 0 ${2 * k}px ${fade(accent, 0.75)})` : 'none',
 				boxSizing: 'border-box',
 				opacity: focused || active ? 1 : 0.4,
 				transition: 'transform .12s ease, opacity .12s ease',
@@ -918,7 +993,7 @@ window.__ModuleLoader__.load({
 		 * `field` 必须和 host 半 SETTINGS_SCHEMA 里的字段名一致。
 		 */
 		const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
-		const isShape = (value) => SHAPES.some((one) => one.value === value)
+		const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
 		/**
 		 * 设置项总表。卡片按表渲染、store 按表取值 —— 加一项只改这张表和 host 的 schema。
@@ -929,16 +1004,25 @@ window.__ModuleLoader__.load({
 				hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
 			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
-			{ field: 'normalColor', kind: 'color', label: '普通节点颜色', fallback: THEME.normalColor, accept: isHex,
-				hint: '不在当前路径上的节点用这个颜色。' },
+			{ field: 'normalColor', kind: 'color', label: '普通节点颜色', fallback: THEME.normalColor, accept: isHex, hint: '' },
 			{ field: 'normalShape', kind: 'shape', label: '普通节点形状', fallback: THEME.normalShape, accept: isShape, hint: '' },
-			{ field: 'currentColor', kind: 'color', label: '当前路径颜色', fallback: THEME.currentColor, accept: isHex,
-				hint: '当前这条路径的节点、连线，以及"正看着这一轮"的实心填充，都跟着这个颜色走。' },
-			{ field: 'currentShape', kind: 'shape', label: '当前路径形状', fallback: THEME.currentShape, accept: isShape,
-				hint: '和普通节点共用一种形状 —— 形状用来区分"是不是压缩节点"，颜色才用来区分状态。' },
+			{ field: 'currentColor', kind: 'color', label: '当前路径颜色', fallback: THEME.currentColor, accept: isHex, hint: '' },
+			{ field: 'currentShape', kind: 'shape', label: '当前路径形状', fallback: THEME.currentShape, accept: isShape, hint: '' },
 			{ field: 'compactColor', kind: 'color', label: '压缩节点颜色', fallback: THEME.compactColor, accept: isHex, hint: '' },
-			{ field: 'compactShape', kind: 'shape', label: '压缩节点形状', fallback: THEME.compactShape, accept: isShape,
-				hint: '和上面两种设成一样的话就分不出压缩节点了。' },
+			{ field: 'compactShape', kind: 'shape', label: '压缩节点形状', fallback: THEME.compactShape, accept: isShape, hint: '' },
+		]
+
+		/**
+		 * 卡片上的外观分组：一个角色一行，**左边颜色右边形状**，不再一项占一行。
+		 * 颜色和形状是同一个角色的两面，拆成两行既浪费竖直空间又要来回对照。
+		 */
+		const ROWS = [
+			{ key: 'normal', label: '普通节点', color: 'normalColor', shape: 'normalShape',
+				hint: '不在当前路径上的节点。' },
+			{ key: 'current', label: '当前路径', color: 'currentColor', shape: 'currentShape',
+				hint: '当前这条路径的节点、连线，以及"正看着这一轮"的实心填充，都跟着这个颜色走。' },
+			{ key: 'compact', label: '压缩节点', color: 'compactColor', shape: 'compactShape',
+				hint: '被 /compact 压缩掉的那一轮。三个角色的形状各自独立，设成一样就分不出来了。' },
 		]
 
 		/**
@@ -969,6 +1053,25 @@ window.__ModuleLoader__.load({
 			tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
 			reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
 			range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+			pair: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
+			swatch: (on) => ({ flex: '0 0 56px', height: '26px', padding: 0, border: 'none', background: 'none', cursor: on ? 'pointer' : 'default' }),
+			picks: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+			// 形状按钮：里面画的就是那个形状本身，所以按钮上不写任何字
+			chip: (picked, on) => ({
+				appearance: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+				width: '26px', height: '26px', padding: 0, cursor: on ? 'pointer' : 'default',
+				borderWidth: '.5px', borderStyle: 'solid',
+				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
+				background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
+				borderRadius: '6px',
+			}),
+			own: (picked, on) => ({
+				width: '58px', height: '26px', boxSizing: 'border-box', font: 'inherit', fontSize: '12px',
+				textAlign: 'center', color: 'var(--dsw-alias-label-primary)', background: 'none',
+				borderWidth: '.5px', borderStyle: 'solid',
+				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
+				borderRadius: '6px', cursor: on ? 'text' : 'default',
+			}),
 			hint: { color: 'var(--dsw-alias-label-tertiary)', margin: 0, fontSize: '12px', lineHeight: 1.5 },
 			note: { color: 'var(--dsw-alias-label-tertiary)', margin: '12px 0 0', fontSize: '12px', lineHeight: 1.5 },
 		}
@@ -1007,52 +1110,81 @@ window.__ModuleLoader__.load({
 					.catch((error) => setFailed(String((error && error.message) || error)))
 			}
 
-			// 一行一个设置项。控件按 spec.kind 分派，标题那一行三种都一样。
-			const control = (spec, now) => {
-				if (spec.kind === 'color') {
-					return h('input', {
-						key: 'i', type: 'color', value: now, disabled: !on,
-						style: { width: '100%', height: '30px', padding: 0, border: 'none', background: 'none', cursor: on ? 'pointer' : 'default' },
-						onChange: (event) => write(() => store.set(spec.field, event.target.value)),
-					})
-				}
-				if (spec.kind === 'shape') {
-					return h(
-						'select',
-						{
-							key: 'i', value: now, disabled: !on,
-							style: { width: '100%', height: '30px', font: 'inherit', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-3)', border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', cursor: on ? 'pointer' : 'default' },
-							onChange: (event) => write(() => store.set(spec.field, event.target.value)),
-						},
-						SHAPES.map((one) => h('option', { key: one.value, value: one.value }, one.label)),
-					)
-				}
-				const at = Math.max(0, spec.steps.indexOf(now))
-				return h('input', {
-					key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
-					disabled: !on, style: S.range(on),
-					onChange: (event) => write(() => store.set(spec.field, spec.steps[Number(event.target.value)])),
-				})
+			/** 取一项的当前值：设置里存的认不得就用默认。 */
+			const valueOf = (field) => {
+				const spec = FIELDS.find((one) => one.field === field)
+				return spec.accept(values[field]) ? values[field] : spec.fallback
 			}
 
-			const readout = (spec, now) => {
-				if (spec.kind === 'color') return String(now).toUpperCase()
-				if (spec.kind === 'shape') return (SHAPES.find((one) => one.value === now) || SHAPES[0]).label
-				return spec.text(spec.steps[Math.max(0, spec.steps.indexOf(now))])
+			/** 标题那一行：名字 + 读数 + 已修改 / 重置。`fields` 里任意一项被改过就算改过。 */
+			const head = (label, text, fields) => {
+				const changed = fields.some((field) => user[field] === true)
+				return h('div', { key: 'hd', style: S.fieldHead }, [
+					h('label', { key: 'l', style: S.label }, label),
+					h('span', { key: 'v', style: S.value }, text),
+					changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
+					changed
+						? h('button', {
+								key: 'r', type: 'button', style: S.reset, disabled: !on,
+								onClick: () => write(() => Promise.all(fields.map((field) => store.reset(field)))),
+							}, '重置')
+						: null,
+				])
 			}
 
+			/** 滑杆那两项（显示范围 / 节点大小），仍然一项一行。 */
 			const row = (spec) => {
-				const now = spec.accept(values[spec.field]) ? values[spec.field] : spec.fallback
-				const changed = user[spec.field] === true
+				const now = valueOf(spec.field)
+				const at = Math.max(0, spec.steps.indexOf(now))
 				return h('div', { key: spec.field, style: S.field }, [
-					h('div', { key: 'hd', style: S.fieldHead }, [
-						h('label', { key: 'l', style: S.label }, spec.label),
-						h('span', { key: 'v', style: S.value }, readout(spec, now)),
-						changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
-						changed ? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => write(() => store.reset(spec.field)) }, '重置') : null,
-					]),
-					control(spec, now),
+					head(spec.label, spec.text(spec.steps[at]), [spec.field]),
+					h('input', {
+						key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
+						disabled: !on, style: S.range(on),
+						onChange: (event) => write(() => store.set(spec.field, spec.steps[Number(event.target.value)])),
+					}),
 					spec.hint === '' ? null : h('p', { key: 'p', style: S.hint }, spec.hint),
+				])
+			}
+
+			/**
+			 * 形状选择器：按钮里**画出形状本身**，不写"圆形""菱形"这种字。
+			 * 最后一格是自定义 —— 填一个字符（emoji 也行），节点就画成那个字。
+			 */
+			const shapes = (field, now, color) =>
+				h('div', { key: 'sp', style: S.picks }, [
+					...SHAPES.map((one) =>
+						h('button', {
+							key: one.value, type: 'button', disabled: !on, title: one.value,
+							style: S.chip(now === one.value, on),
+							onClick: () => write(() => store.set(field, one.value)),
+						}, preview(one.value, color, 13)),
+					),
+					h('input', {
+						key: 'own', type: 'text', maxLength: 4, disabled: !on,
+						value: String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '',
+						placeholder: '自定义', title: '填一个字符（emoji 也行），节点就画成它',
+						style: S.own(String(now).startsWith(CUSTOM), on),
+						onChange: (event) => {
+							const text = event.target.value.trim()
+							write(() => (text === '' ? store.reset(field) : store.set(field, CUSTOM + text)))
+						},
+					}),
+				])
+
+			/** 一个角色一行：左边颜色，右边形状。 */
+			const pair = (spot) => {
+				const color = valueOf(spot.color)
+				return h('div', { key: spot.key, style: S.field }, [
+					head(spot.label, String(color).toUpperCase(), [spot.color, spot.shape]),
+					h('div', { key: 'bd', style: S.pair }, [
+						h('input', {
+							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
+							onChange: (event) => write(() => store.set(spot.color, event.target.value)),
+						}),
+						shapes(spot.shape, valueOf(spot.shape), color),
+					]),
+					h('p', { key: 'p', style: S.hint }, spot.hint),
 				])
 			}
 
@@ -1064,13 +1196,14 @@ window.__ModuleLoader__.load({
 				h('button', { key: 'h', type: 'button', style: S.header, 'aria-expanded': open, onClick: () => setOpen(!open) }, [
 					h('span', { key: 't', style: S.headText }, [
 						h('span', { key: 'n', style: S.name }, '对话树'),
-						h('span', { key: 'd', style: S.description }, '聊天区旁边那棵分支树的显示范围与大小'),
+						h('span', { key: 'd', style: S.description }, '聊天区旁边那棵分支树的显示范围、大小与配色'),
 					]),
 					h(Chevron, { key: 'c', open }),
 				]),
 				open
 					? h('div', { key: 'b', style: S.body }, [
-							...FIELDS.map(row),
+							...FIELDS.filter((spec) => spec.kind === 'range').map(row),
+							...ROWS.map(pair),
 							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),
 						])
@@ -1272,7 +1405,7 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			const reachOf = (node) => reachFor(node.kind, dotSize, theme)
+			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme)
 
 			const edge = (node) => {
 				const color = node.active ? fade(theme.currentColor, 0.6) : C.line
@@ -1310,11 +1443,13 @@ window.__ModuleLoader__.load({
 				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
 				//    否则赶路途中压过的每个点都会抢走卡片 —— ＋ 就永远够不着（DESIGN.md §6）。
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
+				// 自定义形状是个字，直接当子节点画进去；预设形状没有子节点
+				const glyph = shapeOf(node.kind, node.active, theme).glyph
 				parts.push(h('span', {
 					key: `d${node.key}`,
-					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
+					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
 					onClick: go,
-				}))
+				}, glyph === undefined ? null : glyph))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
@@ -1486,7 +1621,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, fade, shapeOf, reachFor, segments, SHAPES, THEME, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, fade, shapeSpec, shapeOf, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

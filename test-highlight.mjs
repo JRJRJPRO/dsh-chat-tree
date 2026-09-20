@@ -184,22 +184,24 @@ console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand
 	}
 	console.log(`  ${variants.length} 种形态组合，key 集合一致（${reference.length} 个），边框全是 longhand`)
 
-	// 形状必须和状态正交：压缩节点**任何状态下**都得是菱形。
+	// 形状必须和状态正交：压缩节点**任何状态下**的形状都一样，且和普通节点不一样。
 	// 老做法 `kind = focused ? 'current' : node.kind` 会让它一滑到就变回蓝圆点 ——
 	// "一眼看出是压缩节点"恰好在最该看清的时候失效。
-	const spun = /rotate\(45deg\)/
-	for (const variant of variants) {
-		const want = variant.kind === 'compact'
-		check(spun.test(variant.style.transform) === want, `${variant.label}：${want ? '压缩节点没转成菱形' : '普通节点不该旋转'}`)
-		check((variant.style.borderRadius === '50%') === !want, `${variant.label}：${want ? '压缩节点还是个正圆' : '普通节点该是正圆'}`)
-	}
+	// 这里不写死"菱形"，只比形状指纹 —— 默认形状是可以改的（现在压缩节点默认是倒三角）。
+	const fingerprint = (style) => `${style.borderRadius}|${style.clipPath}|${/rotate\(45deg\)/.test(style.transform)}`
+	const packed = variants.filter((one) => one.kind === 'compact')
+	const plain = variants.filter((one) => one.kind === 'normal')
+	for (const variant of packed) check(fingerprint(variant.style) === fingerprint(packed[0].style), `${variant.label}：压缩节点换了个状态就换了形状`)
+	for (const variant of plain) check(fingerprint(variant.style) !== fingerprint(packed[0].style), `${variant.label}：普通节点和压缩节点长得一样，一眼看不出哪个是压缩的`)
 
 	// "当前轮"只该换填充和外发光，不许动形状
 	const lit = pure.dotStyle('compact', true, false, 9, true)
 	const dim = pure.dotStyle('compact', true, false, 9, false)
-	check(lit.transform === dim.transform && lit.borderRadius === dim.borderRadius, '压缩节点滑到时形状变了')
-	check(lit.background !== dim.background && lit.boxShadow !== dim.boxShadow, '压缩节点滑到时看不出是当前轮')
-	console.log('  压缩节点四种状态全是菱形；当前轮只换填充和外发光')
+	check(fingerprint(lit) === fingerprint(dim), '压缩节点滑到时形状变了')
+	check(lit.background !== dim.background, '压缩节点滑到时填充没变，看不出是当前轮')
+	// 外发光：能描边的用 box-shadow，剪出来的形状用 drop-shadow（box-shadow 会被一起剪掉）
+	check(lit.boxShadow !== dim.boxShadow || lit.filter !== dim.filter, '压缩节点滑到时没有外发光')
+	console.log('  压缩节点四种状态形状一致且区别于普通节点；当前轮只换填充和外发光')
 }
 
 console.log('\n用例 6：hover intent —— 赶路途中谁都不许抢走卡片')
@@ -537,6 +539,19 @@ console.log('\n用例 12：自定义颜色与形状')
 	const off = pure.dotStyle('normal', false, false, 9, false, skin)
 	check(off.borderColor === '#112233', `路径外该用普通节点色，实际 ${off.borderColor}`)
 
+	// 当前路径的形状**必须独立生效**。曾经 shapeOf 把 current 和 normal 合成一个，
+	// 于是设置里"当前路径形状"怎么改都没反应 —— John 报的"改了好像没反应"就是这条。
+	check(onPath.borderRadius === '30%', `当前路径该用 currentShape（圆角方 30%），实际 ${onPath.borderRadius}`)
+	check(off.borderRadius !== onPath.borderRadius, '路径内外形状设得不一样，画出来却一样')
+	const swapped = Object.assign({}, skin, { currentShape: 'diamond' })
+	check(/rotate\(45deg\)/.test(pure.dotStyle('normal', true, false, 9, false, swapped).transform), '当前路径设成菱形却没转 45°')
+	check(!/rotate/.test(pure.dotStyle('normal', false, false, 9, false, swapped).transform), '只把当前路径设成菱形，路径外的点不该跟着转')
+	// 让开量也得跟着当前路径的形状走，否则菱形的尖角会戳到线上
+	check(
+		pure.reachFor('normal', true, 9, swapped) > pure.reachFor('normal', false, 9, swapped),
+		'当前路径是菱形、路径外是方形，让开量却一样',
+	)
+
 	// 压缩节点：颜色独立，形状也独立（这里特意设成圆形，就不该再转 45°）
 	const packed = pure.dotStyle('compact', true, false, 9, false, skin)
 	check(packed.borderColor === '#ff00ff', `压缩节点该用自己的颜色，实际 ${packed.borderColor}`)
@@ -565,7 +580,7 @@ console.log('\n用例 12：自定义颜色与形状')
 	// fade() 本身
 	check(pure.fade('#58a6ff', 0.5) === 'rgba(88,166,255,0.5)', `fade 算错了：${pure.fade('#58a6ff', 0.5)}`)
 	check(pure.fade('nope', 0.5) === 'nope', 'fade 认不出来时该原样返回')
-	console.log('  主色联动派生色 / 三种角色各自独立 / key 集合恒定 / 脏值退回默认')
+	console.log('  主色联动派生色 / 三个角色各自独立（含当前路径形状）/ key 集合恒定 / 脏值退回默认')
 }
 
 console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节点')
@@ -577,14 +592,14 @@ console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节�
 	const dot = Z.dot
 
 	// 让开量：圆形是半径，菱形要多让（正方形转 45°，半高是半边长的 √2 倍），且恒大于 0
-	const circle = pure.reachFor('normal', dot, pure.THEME)
-	const diamond = pure.reachFor('compact', dot, pure.THEME) // 默认压缩节点就是菱形
-	const empty = pure.reachFor('empty', dot, pure.THEME)
+	const circle = pure.reachFor('normal', false, dot, pure.THEME)
+	const diamond = pure.reachFor('compact', false, dot, Object.assign({}, pure.THEME, { compactShape: 'diamond' }))
+	const empty = pure.reachFor('empty', false, dot, pure.THEME)
 	check(circle > dot / 2, `圆形让开量该超过半径，实际 ${circle}`)
 	check(diamond > circle, `菱形该比圆形让得多，实际 ${diamond} vs ${circle}`)
 	check(empty > circle, `树根空节点画得大一圈，该让得更多，实际 ${empty}`)
 	// 把形状改成圆形，让开量就该降回圆形那档
-	check(pure.reachFor('compact', dot, Object.assign({}, pure.THEME, { compactShape: 'circle' })) === circle, '压缩节点改成圆形后，让开量该和普通节点一致')
+	check(pure.reachFor('compact', false, dot, Object.assign({}, pure.THEME, { compactShape: 'circle' })) === circle, '压缩节点改成圆形后，让开量该和普通节点一致')
 
 	/** 某个 y 落在哪一段线上（用来判断线有没有压到节点身上）。 */
 	const covers = (parts, x, y) =>
@@ -618,7 +633,62 @@ console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节�
 			`行距被压扁时冒出了非正尺寸的段：${JSON.stringify(parts)}`,
 		)
 	}
-	console.log(`  让开量 圆${circle} / 菱${diamond.toFixed(1)} / 空${empty}；直线与折线两端都不压节点`)
+	// 线要和节点**左右对称**：1px 的线占 [x, x+1)，中心在 x+0.5，而点的中心在 x。
+	// 不把线往左挪半像素，线性的树看着就是"一段线一个点"整体偏右（John 报的）。
+	{
+		const straight = pure.segments(100, 100, 0, 40, circle, circle)[0]
+		check(straight.left + straight.width / 2 === 100, `竖线没和节点对中：中心 ${straight.left + straight.width / 2}，节点在 100`)
+		const bent = pure.segments(100, 72, 0, 40, circle, circle)
+		const hz = bent.find((part) => part.tag === 'hz')
+		const v = bent.find((part) => part.tag === 'v')
+		check(hz.top + hz.height / 2 === 0, `横段没和父节点那一行对中：中心 ${hz.top + hz.height / 2}`)
+		check(v.left + v.width / 2 === 72, `拐弯后的竖线没和子节点对中：中心 ${v.left + v.width / 2}`)
+		// 折角要严丝合缝：横段得盖住竖线的整个笔画宽度，否则拐角上缺个小口
+		check(hz.left <= v.left && hz.left + hz.width >= v.left + v.width, `折角缺口：横段 ${hz.left}..${hz.left + hz.width}，竖线 ${v.left}..${v.left + v.width}`)
+	}
+
+	console.log(`  让开量 圆${circle} / 菱${diamond.toFixed(1)} / 空${empty}；直线与折线两端都不压节点；笔画与节点对中`)
+}
+
+console.log('\n用例 14：三角与自定义字符形状')
+{
+	// 压缩节点默认改成倒三角；另外形状允许填 `char:<字>`，节点就画成那个字。
+	const shapeField = pure.FIELDS.find((one) => one.field === 'compactShape')
+
+	check(pure.THEME.compactShape === 'triangle', `压缩节点默认该是三角，实际 ${pure.THEME.compactShape}`)
+	const tri = pure.shapeSpec('triangle')
+	check(typeof tri.clip === 'string' && /50% 100%/.test(tri.clip), `倒三角该是尖朝下，实际 ${tri.clip}`)
+
+	// 三角是剪出来的，斜边描不了边 —— 必须整块填色，不能留个 border 在那儿画半条边
+	const packed = pure.dotStyle('compact', true, false, 9, false)
+	check(packed.borderWidth === '0px', `剪出来的形状不该还描边，实际 ${packed.borderWidth}`)
+	check(packed.clipPath === tri.clip, `三角没套上 clip-path，实际 ${packed.clipPath}`)
+	check(packed.background !== '#161b22', '三角是空的 —— 剪掉边框后必须靠填充才看得见')
+	// 外发光换成 drop-shadow：box-shadow 会被 clip-path 一起剪掉，等于没有
+	const litTri = pure.dotStyle('compact', true, false, 9, true)
+	check(litTri.boxShadow === 'none' && /drop-shadow/.test(litTri.filter), `三角的外发光该走 filter，实际 ${litTri.filter} / ${litTri.boxShadow}`)
+	check(litTri.background !== packed.background, '三角被选中时和没选中长得一模一样，分不出当前是哪一轮')
+
+	// 自定义字符
+	check(shapeField.accept('char:★'), 'char:★ 该是合法形状')
+	check(shapeField.accept('char:🌟'), 'emoji 也该收（代理对算一个字）')
+	check(!shapeField.accept('char:'), '空的自定义值不该算数')
+	check(!shapeField.accept('char:一二三'), '塞一串字进去不该算数')
+	check(!shapeField.accept('八边形'), '认不得的预设名不该算数')
+	check(pure.shapeSpec('char:★').glyph === '★', '自定义形状没把字取出来')
+	check(pure.shapeSpec('char:一二三').value === 'circle', '超长的自定义值该退回圆形')
+
+	const starred = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: 'char:★' }))
+	check(starred.background === 'none', '画成字的节点不该再有底色')
+	check(starred.borderWidth === '0px', '画成字的节点不该再描边')
+	check(starred.color === pure.dotStyle('normal', true, false, 9, false).borderColor, '字的颜色该和原本描边的颜色一致')
+
+	// key 集合仍然恒定 —— 三角 / 字 / 圆都得逐字段对齐
+	const base = Object.keys(pure.dotStyle('normal', true, false, 9, false)).sort()
+	for (const one of [packed, litTri, starred]) {
+		check(JSON.stringify(Object.keys(one).sort()) === JSON.stringify(base), `key 集合变了：${JSON.stringify(Object.keys(one).sort())}`)
+	}
+	console.log('  倒三角整块填色 + drop-shadow 发光 / char:<字> 合法性与取字 / key 集合恒定')
 }
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
