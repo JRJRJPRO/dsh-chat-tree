@@ -89,6 +89,13 @@ export function apply(ctx) {
 
 	api.settings = settingsStore(ctx)
 
+	// 自诊断钩子（window.__dshTree）是 Rail 每帧覆盖上去的，**它是个全局变量，
+	// 没人替我们收**。插件被停用之后还留在那儿的话，敲出来的是停用那一刻的陈年数据，
+	// 而看的人完全不知道它已经不更新了 —— 调试工具骗人比没有更糟。
+	ctx.effect(() => () => {
+		if (typeof window !== 'undefined') delete window.__dshTree
+	}, 'dsh-tree: 自诊断钩子')
+
 	// ⚠️ 必须挂 `shell.overlay`，**不能**挂 `conversation.session.*`。
 	//    宿主把 conversation.session.header.utilities 声明成 `scope: 'session'`
 	//    （见 dsh-client-ui-conversation 的 slot 注册），切会话时整个 session 子树

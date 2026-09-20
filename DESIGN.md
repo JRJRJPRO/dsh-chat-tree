@@ -758,7 +758,7 @@ settings 里。
 
 ## 6. 测试
 
-九个离线脚本，都不用开浏览器（`npm test` 会先构建再一起跑）。
+十个离线脚本，都不用开浏览器（`npm test` 会先构建再一起跑）。
 **每个断言都验证过"能抓住对应的 bug"**（把修复退回去会当场炸）。
 
 ```bash
@@ -770,6 +770,7 @@ node test-rewind.mjs          # 撤回：done 的口径、区间比对、成图�
 node test-merge.mjs           # 合并 / 接回去：分组可传递、挑单子列树不列节点、在跑就拦
 node test-shape.mjs           # 拿**真实会话**跑合并 / 分离：分离再接回逐节点复原
 node test-http.mjs             # 路由外壳：方法分发、出错码、图片不许被 JSON 编码
+node test-lifecycle.mjs       # 启用 / 停用 / 再启用：两半都不许留东西
 DSH_HOME_REAL='...' node test-branch.mjs   # 把真实分支倒带到"刚出生"那一刻，重放接管逻辑
 ```
 

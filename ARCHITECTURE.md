@@ -25,7 +25,7 @@ host 半是普通 ESM，`index.js` 直接 import `src/host/`，没有构建。
 ```bash
 npm run build     # 重新拼 client.js
 npm run watch     # 改哪个 part 就自动重拼（配合 dsh 的热重载，刷新浏览器即可）
-npm test          # 先构建再跑九个测试脚本
+npm test          # 先构建再跑十个测试脚本
 ```
 
 改了 `src/host/` 或 `index.js` 要**重启 dsh**；只改 `src/client/` 的话
@@ -131,9 +131,33 @@ npm test          # 先构建再跑九个测试脚本
 
 ---
 
-## 6. 测试
+## 6. 装出去之后：启用 / 停用
 
-九个离线脚本，共用 `test-kit.mjs`（一条断言、一个收尾、一份"把浏览器半骗起来"的加载器）。
+插件市场的「已安装」列表读的是 **profile `package.json` 的 `dependencies`**
+（`dshmarket` 的 `readInstalled()`）。所以只往 `cordis.patch.yml` 里写一条
+`file:///` 的 `insert` 是**看不见的** —— 那不是依赖，只是一条补丁。
+
+市场里的开关做两件事，我们要配合的是第二件：
+
+| 它做什么 | 对我们的要求 |
+|---|---|
+| 热挂载 / 卸载我们的 fiber | `apply()` 登记的每样东西都必须挂在 fiber 上，dispose 时自动收 |
+| 往 `cordis.patch.yml` 写 `- id: dsh-tree / disabled: true\|false` | 我们的 `cordis.patch.yml` 只 `insert` 自己这一个 id |
+
+第二条不只是整洁问题：市场按 `bundlePatchInsertedIds()` 决定给哪些 id 写
+`disabled`，**只认 `insert:` 底下的行**。要是我们的 patch 还去 `config` 别人的行，
+停用我们就会顺手把别人也关掉（dshmarket #147 踩过）。
+
+`test-lifecycle.mjs` 钉的就是第一条：路由、`agent/created` 监听、设置 namespace、
+两个 slot、`window.__dshTree`，装上要有、停用要没、再启用要能回来。
+**设置 namespace 那条最要命** —— 没释放的话再启用会抛 `already registered`，
+插件直接起不来，而这条路径只有"停用再启用"才会走到。
+
+---
+
+## 7. 测试
+
+十个离线脚本，共用 `test-kit.mjs`（一条断言、一个收尾、一份"把浏览器半骗起来"的加载器）。
 
 ```js
 import { check, report, loadClientPure } from './test-kit.mjs'

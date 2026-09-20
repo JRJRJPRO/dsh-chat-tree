@@ -47,18 +47,36 @@ export function report() {
  * @returns client.js 的 __pure 出口
  */
 export async function loadClientPure() {
+	return (await loadClient()).__pure
+}
+
+/**
+ * 同上，但把 bundle 的**全部出口**给出来（`apply` / `inject` / `__pure`）。
+ *
+ * 测启用、停用这类生命周期的东西要调 `apply`，光有纯函数不够。
+ *
+ * ⚠️ 只加载一次：`import('./client.js')` 第二次会命中 ESM 缓存，factory 不会重跑，
+ *    所以结果缓存在模块里，谁来要都是同一份。
+ * @returns client.js 的 module.exports
+ */
+export async function loadClient() {
+	if (loaded !== undefined) return loaded
 	const fakeReact = new Proxy({}, { get: () => () => undefined })
-	let pure
+	let exported
 	globalThis.window = {
 		__ModuleLoader__: {
 			load: (definition) => {
-				pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
+				exported = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null }))
 			},
 		},
 	}
 	globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
 	globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
 	await import('./client.js')
-	if (pure === undefined) throw new Error('client.js 没有导出 __pure，测试无法进行')
-	return pure
+	if (exported === undefined || exported.__pure === undefined) throw new Error('client.js 没有导出 __pure，测试无法进行')
+	loaded = exported
+	return loaded
 }
+
+/** `loadClient()` 的缓存。 */
+let loaded

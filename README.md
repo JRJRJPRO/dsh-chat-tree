@@ -20,18 +20,32 @@
 dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ```
 
-重启 `dsh web`。卸载 `dsh plugin --profile web remove dsh-tree`。
+装完刷新浏览器就能用，**不用重启 dsh**（它会被热挂载）。卸载
+`dsh plugin --profile web remove dsh-tree`。
 
-临时关掉不用卸载——往 `cordis.patch.yml` 加两行，约 1 秒生效，刷新浏览器即可：
+装完之后它会出现在**插件市场的「已安装」里**，那儿的开关就是启用 / 停用：
+开关写的是 `cordis.patch.yml` 的 `disabled` 行，约 1 秒生效，同样不用重启
+（停用后连 `/plugins/dsh-tree/*` 那三个接口一起消失，不会留一半在跑）。
+手动改也行，效果一样：
 
 ```yaml
 - id: dsh-tree
   disabled: true
 ```
 
-从源码跑：先 `npm install`（要一个 `schemastery`），再把
-`- insert: - id: dsh-tree, name: 'file:///绝对路径/index.js'` 写进 `cordis.patch.yml`，
-别和上面的装法同时用（同一个 id 插两次，dsh 起不来）。
+没有 `prepare` 脚本，`client.js` 是**提交进仓库的成品**，所以 git 安装不会触发
+pnpm 的构建闸（不用去 `pnpm-workspace.yaml` 里加 `allowBuilds`）。
+
+**本地开发**：`npm install`（要一个 `schemastery`），然后把工作目录直接链进 profile ——
+
+```sh
+dsh plugin --profile web add link:D:/绝对路径/dsh-tree
+```
+
+这样 `node_modules/dsh-tree` 是个指向你工作目录的符号链接：市场照样把它列进「已安装」，
+而你改完 `npm run build` 刷新页面就见效，不用重装。
+⚠️ 别再往 `cordis.patch.yml` 里写 `file:///…` 的 `insert` —— 和上面的装法同时用
+会让同一个 id 插两次，cordis 直接拒绝启动。
 
 代码分成 host 半（`src/host/`，入口 `index.js`）和浏览器半（`src/client/`）。
 浏览器半必须是一个文件（dsh 的规矩），所以 `client.js` 是 `npm run build` 拼出来的
@@ -115,7 +129,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ## 测
 
 ```bash
-npm test                   # 先构建，再九套一起跑
+npm test                   # 先构建，再十套一起跑
 
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮、hover intent、连线遮挡
@@ -126,6 +140,7 @@ node test-merge.mjs        # 合并 / 接回去
 node test-shape.mjs        # 拿真实会话跑合并 / 分离的端到端
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
 node test-http.mjs         # 路由外壳：方法分发、出错码、图片走原样字节
+node test-lifecycle.mjs    # 启用 / 停用 / 再启用：两半都不许留东西
 ```
 
 单独跑某一个之前记得 `npm run build` —— 测的是生成物 `client.js`。
