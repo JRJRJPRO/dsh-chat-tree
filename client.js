@@ -7,7 +7,8 @@
  * 三条规矩（改之前先看 DESIGN.md §5）：
  *   · y = 树深度，不是行号 —— 同一岔路分出去的两条支线，第一个节点同高度。
  *   · x = 列，**与"当前在哪条分支"无关** —— 切分支只换颜色，图的形状不动。
- *   · 太远的节点省略掉（elide），剪断处画「⋯」；半径设为 0 就退回"永远画全"。
+ *   · 太远的节点省略掉（elide），最外两圈**鱼眼淡出**（越远越小越淡），不画「⋯」这类记号；
+ *     半径设为 0 就退回"永远画全"。
  *
  * 高亮两条判据，别混：
  *   边框蓝 ⟺ 节点在当前会话的对话里；填充蓝 ⟺ 边框已蓝 且 轮次 == 现在滑到的那一轮。
@@ -268,23 +269,55 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 鱼眼淡出：最外 `rings` 圈越画越小、越画越淡，到边界正好消失。
+		 *
+		 * 这是给"省略"收尾用的。以前是在剪断处画一个「⋯」，两个毛病：`⋯` 是**文字**，
+		 * 和整张图的几何语言（点＋线）不是一套，糊在一堆小圆点里很扎眼；而且它只说"这里断了"，
+		 * 不说断得有多软。现在换成不硬切 —— 树自己淡下去，边界处没有任何新元素。
+		 *
+		 * ⚠️ 淡出圈吃的是**半径自己的最外层**，不是额外往外多画两圈。
+		 *    「12 步」说的就是最远画到 12 步：第 10 步以内正常，第 11 / 12 步淡出。
+		 *    反过来（radius + rings）会让设置说谎，还凭空多占两行 —— 导轨本来就在压行高。
+		 *
+		 * 代价说清楚：一棵正好长到第 12 步就到头的树，末端也会淡，看着像"后面还有"。
+		 *    换成"只有真被砍了才淡"的话，同一行里会出现一个亮叶子挨着一个淡节点，更怪。
+		 *    按距离淡是鱼眼的本义（远＝不重要），不是"外面还有东西"的信号。
+		 */
+		const FADE = { rings: 2, scale: [1, 0.74, 0.52], alpha: [1, 0.66, 0.4] }
+
+		/**
+		 * 第 level 圈画多小、多淡。
+		 * @param level - 0 = 正常，往外每圈 +1；超出 rings 的一律按最外圈算
+		 * @returns `{scale, alpha}`，两者都 ∈ (0, 1]
+		 */
+		function fisheye(level) {
+			const at = Math.min(Math.max(Math.trunc(level) || 0, 0), FADE.rings)
+			return { scale: FADE.scale[at], alpha: FADE.alpha[at] }
+		}
+
+		/**
 		 * 按「离你正在看的那一轮多远」把太远的节点省略掉。
 		 *
 		 * 距离是树上的无向步数：父节点 1 步，父节点的另一个孩子 2 步（上一步再下一步）。
 		 * 藏掉的行不留空档 —— depth 重新压实成连续的 row，否则省略了也腾不出地方。
 		 *
-		 * 小例子（线性 1..20，站在 10，半径 3）：
-		 *   显示 7 8 9 [10] 11 12 13，上下各一个「⋯」。
+		 * 小例子（线性 1..20，站在 10，半径 5）：
+		 *   留下 5..15；其中 7..13 正常画，6 和 14 缩到 74%、淡到 66%，5 和 15 缩到 52%、淡到 40%。
 		 *
 		 * @param nodes - buildGraph 出来的全部节点
 		 * @param anchor - 从哪个节点量距离
 		 * @param radius - 保留半径；<=0 表示不省略
-		 * @returns {shown, rowOf, rows, bandTop, bandBottom, hidden}
+		 * @returns {shown, rowOf, dimOf, rows, hidden}
 		 */
 		function elide(nodes, anchor, radius) {
 			const shown = new Set()
+			// 每个留下来的节点在第几圈淡出。0 = 正常画
+			const dimOf = new Map()
 			if (!(radius > 0) || anchor === undefined) {
-				for (const node of nodes) shown.add(node)
+				for (const node of nodes) {
+					shown.add(node)
+					dimOf.set(node, 0)
+				}
 			} else {
 				const step = new Map([[anchor, 0]])
 				const queue = [anchor]
@@ -298,21 +331,17 @@ window.__ModuleLoader__.load({
 						queue.push(near)
 					}
 				}
-				for (const node of step.keys()) shown.add(node)
+				for (const [node, walked] of step) {
+					shown.add(node)
+					// 再套一层 min(walked, …)：半径比 rings 还小时（配置文件里手改出来的），
+					// 不加这层连基准点自己都会被淡掉 —— 你正看着的那一轮必须永远是实的。
+					dimOf.set(node, Math.min(walked, Math.max(0, FADE.rings - (radius - walked))))
+				}
 			}
 
 			const depths = [...new Set([...shown].map((node) => node.depth))].sort((left, right) => left - right)
 			const rowOf = new Map(depths.map((depth, index) => [depth, index]))
-
-			// 省略号画在"树被剪断的地方"：留下来的节点丢了父亲 → 它这一列上方有省略号；
-			// 留下来的节点丢了孩子 → 那个孩子所在的列下方有省略号（岔路被砍掉也看得见）。
-			const bandTop = new Set()
-			const bandBottom = new Set()
-			for (const node of shown) {
-				if (node.parent !== undefined && !shown.has(node.parent)) bandTop.add(node.column)
-				for (const kid of node.children) if (!shown.has(kid)) bandBottom.add(kid.column)
-			}
-			return { shown, rowOf, rows: depths.length, bandTop, bandBottom, hidden: nodes.length - shown.size }
+			return { shown, rowOf, dimOf, rows: depths.length, hidden: nodes.length - shown.size }
 		}
 
 		/**
@@ -437,10 +466,11 @@ window.__ModuleLoader__.load({
 		 * @param active - 在当前路径上（形状可能和路径外不同）
 		 * @param dotSize - 当前点的直径
 		 * @param theme - 主题（形状会影响让开量）
+		 * @param grow - 鱼眼缩放，缺省 1；淡出圈的点画得小，线就得多连一截过去
 		 * @returns 像素，恒大于 0
 		 */
-		function reachFor(kind, active, dotSize, theme) {
-			const size = kind === 'empty' ? dotSize + 2 : dotSize
+		function reachFor(kind, active, dotSize, theme, grow) {
+			const size = (kind === 'empty' ? dotSize + 2 : dotSize) * (grow === undefined ? 1 : grow)
 			const shape = shapeOf(kind, active, theme)
 			// 多边形按它实际画多大让（三角放大了 1.34 倍），不然尖角会戳到线上
 			return (shape.spin ? size * 0.71 : shapeBox(shape, size) / 2) + 1
@@ -548,9 +578,9 @@ window.__ModuleLoader__.load({
 		 * 前八项（`scaleZ` 会缩的那些）是**老基准的 1.2 倍再取整** —— 原来要调到 120%
 		 * 才顺眼，那就把 120% 挪成默认的 100%。取整是为了 1px 描边落在整像素上不发虚，
 		 * 代价是各项相对老基准差 ±2% 以内。
-		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18 / ell 14
+		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
 		 */
-		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, ell: 17, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -565,7 +595,7 @@ window.__ModuleLoader__.load({
 		function scaleZ(percent) {
 			const k = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1
 			const out = Object.assign({}, Z)
-			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'ell']) out[key] = Z[key] * k
+			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit']) out[key] = Z[key] * k
 			return out
 		}
 		const C = {
@@ -791,9 +821,10 @@ window.__ModuleLoader__.load({
 		 * @param size - 直径
 		 * @param focused - 正看着这一轮
 		 * @param theme - 颜色与形状，缺省用 THEME
+		 * @param alpha - 鱼眼透明度，缺省 1；乘在原有透明度上，不是覆盖
 		 * @returns 内联样式
 		 */
-		function dotStyle(kind, active, hover, size, focused, theme) {
+		function dotStyle(kind, active, hover, size, focused, theme, alpha) {
 			const k = size / Z.dot
 			const shape = shapeOf(kind, active, theme)
 			const { accent, ink, fill } = inkOf(kind, active, focused, theme)
@@ -815,7 +846,9 @@ window.__ModuleLoader__.load({
 				boxShadow: focused && !drawn ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
 				filter: focused && drawn ? `drop-shadow(0 0 ${2 * k}px ${fade(accent, 0.75)})` : 'none',
 				boxSizing: 'border-box',
-				opacity: focused || active ? 1 : 0.4,
+				// 鱼眼的淡是**乘**上去的：路径外的点本来就只有 0.4，再乘一次才是"更远更淡"。
+				// 直接赋值的话最外圈反而比路径外的普通点更亮，越远越显眼，正好反了。
+				opacity: (focused || active ? 1 : 0.4) * (alpha === undefined ? 1 : alpha),
 				transition: 'transform .12s ease, opacity .12s ease',
 				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${shape.spin ? ' rotate(45deg)' : ''}`,
 			}
@@ -1650,6 +1683,11 @@ window.__ModuleLoader__.load({
 			else graph = lastGraph.current
 			if (graph === undefined) return null
 
+			// 省略太远的节点。radius=0 时 elide 全留，下面这一整套退化成原来的画法。
+			// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
+			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), radius)
+			const rowOfNode = (node) => view.rowOf.get(node.depth)
+
 			// 自诊断钩子：症状出现时在浏览器控制台敲 __dshTree() 就能把当时的真实状态倒出来。
 			// 加这个是因为"某些点莫名变白"这类问题光看代码猜不出来，
 			// 而每猜错一轮都要 John 重启一次。
@@ -1659,6 +1697,8 @@ window.__ModuleLoader__.load({
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
 					省略半径: radius === RADIUS.off ? '不省略' : radius,
+					省掉几个: view.hidden,
+					淡出几个: [...view.shown].filter((node) => view.dimOf.get(node) > 0).length,
 					缩放: `${scale}%`,
 					设置: `半径=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
 					分支: picked.map((item) => `${item.id.slice(8, 14)} ← ${item.parentId ? item.parentId.slice(8, 14) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || []).filter((t) => !t.inherited).map((t) => t.turn).join(',')}`),
@@ -1670,16 +1710,11 @@ window.__ModuleLoader__.load({
 				})
 			}
 
-			// 省略太远的节点。radius=0 时 elide 全留，下面这一整套退化成原来的画法。
-			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), radius)
-			const padTop = view.bandTop.size > 0 ? 1 : 0
-			const padBottom = view.bandBottom.size > 0 ? 1 : 0
-			const rowOfNode = (node) => view.rowOf.get(node.depth) + padTop
-
 			// 放不下就压行高（下限 rowMin）
 			const z = scaleZ(scale)
 			const available = box.height - z.pad * 2 // box 必定有值：上面已经 return 过了
-			const rows = view.rows + padTop + padBottom
+			// 鱼眼不额外占行：淡出的那两圈本来就在半径里面，顶底不再留"放省略号"的空行
+			const rows = view.rows
 			const rowH = Math.max(z.rowMin, Math.min(z.row, available / rows))
 			const treeHeight = rows * rowH
 			// 列宽用 graph.maxColumn 而不是可见列 —— 省略随滚动变化，导轨宽度不该跟着跳
@@ -1692,42 +1727,30 @@ window.__ModuleLoader__.load({
 
 			// 先铺线。跨列的折角**必须先横后竖**：反过来的话从节点 2 岔到 4 的竖线
 			// 会一路压过节点 3 再拐弯，看着像"经过 3 转个弯到 4"。
-			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo) => {
+			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha) => {
 				const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo)
 				for (const part of cut) {
 					parts.push(h('span', {
 						key: `${part.tag}${key}`,
-						style: { position: 'absolute', left: `${part.left}px`, top: `${part.top}px`, width: `${part.width}px`, height: `${part.height}px`, background: color },
+						style: { position: 'absolute', left: `${part.left}px`, top: `${part.top}px`, width: `${part.width}px`, height: `${part.height}px`, background: color, opacity: alpha },
 					}))
 				}
 			}
 
-			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme)
+			// 鱼眼：越靠近半径边界的点画得越小越淡
+			const eyeOf = (node) => fisheye(view.dimOf.get(node))
+			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme, eyeOf(node).scale)
 
 			const edge = (node) => {
+				// 两头都在才连。只剩一头的那条边整个不画 —— 鱼眼的收尾靠点自己淡掉，
+				// 再拖一截"通向空处"的线出来反而是个新的硬边界。
+				if (!view.shown.has(node) || !view.shown.has(node.parent)) return
 				const color = node.active ? fade(theme.currentColor, 0.6) : C.line
-				const mine = view.shown.has(node)
-				const theirs = view.shown.has(node.parent)
-				const ell = z.ell / 2 + 1 // 省略号那一端让开的量
-				// 两头都在 → 正常连；只剩一头 → 接到省略号那一行，别让树看着断开
-				if (mine && theirs) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node))
-				else if (mine && padTop > 0) line(node.key, xOf(node.column), xOf(node.column), yOf(0), yOf(rowOfNode(node)), color, ell, reachOf(node))
-				else if (theirs && padBottom > 0) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rows - 1), color, reachOf(node.parent), ell)
+				// 线按**淡的那一头**走：亮点连着淡点时，线跟着亮会显得那个淡点还没退场
+				const alpha = Math.min(eyeOf(node).alpha, eyeOf(node.parent).alpha)
+				line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha)
 			}
 			for (const node of edgeOrder(graph.nodes)) edge(node)
-
-			// 省略号
-			for (const [column, row] of [...[...view.bandTop].map((c) => [c, 0]), ...[...view.bandBottom].map((c) => [c, rows - 1])]) {
-				parts.push(h('span', {
-					key: `e${row}:${column}`,
-					title: `还有 ${view.hidden} 个节点被省略（设置里可以调范围）`,
-					style: {
-						position: 'absolute', left: `${xOf(column) - z.ell / 2}px`, top: `${yOf(row) - z.ell / 2}px`,
-						width: `${z.ell}px`, height: `${z.ell}px`, lineHeight: `${z.ell}px`, textAlign: 'center',
-						color: C.dim, fontSize: `${(z.ell * 12) / Z.ell}px`, letterSpacing: '0.5px', userSelect: 'none',
-					},
-				}, '⋯'))
-			}
 
 			// 再画点
 			for (const node of graph.nodes) {
@@ -1736,7 +1759,11 @@ window.__ModuleLoader__.load({
 				const y = yOf(rowOfNode(node))
 				const isFocused = isFocusedNode(node, activeTurn)
 				const isHover = hover !== null && hover.node === node
-				const size = node.kind === 'empty' ? dotSize + 2 : dotSize
+				const eye = eyeOf(node)
+				const size = (node.kind === 'empty' ? dotSize + 2 : dotSize) * eye.scale
+				// 滑上去就把淡出撤掉，但**不改尺寸** —— size 决定 left/top，一变就整个点跳一下，
+				// transition 只过渡 transform/opacity，拦不住这种位移。放大交给已有的 scale(1.4)。
+				const alpha = isHover ? 1 : eye.alpha
 				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
 				//    否则赶路途中压过的每个点都会抢走卡片 —— ＋ 就永远够不着（DESIGN.md §6）。
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
@@ -1745,7 +1772,7 @@ window.__ModuleLoader__.load({
 				const skin = inkOf(node.kind, node.active, isFocused, theme)
 				parts.push(h('span', {
 					key: `d${node.key}`,
-					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
+					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha)),
 					onClick: go,
 				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, node.kind === 'empty')))
 				// 透明加宽命中区：点很小，直接点很难中
@@ -1919,7 +1946,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

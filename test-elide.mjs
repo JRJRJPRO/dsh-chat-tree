@@ -8,7 +8,7 @@
  * 阅读顺序：
  *   第1步  取 client 的真函数
  *   第2步  造树的小工具
- *   第3步  用例：线性窗口 / 兄弟算 2 步 / 不省略 / 省略号位置 / 行号压实 / 真日志回归
+ *   第3步  用例：线性窗口 / 兄弟算 2 步 / 不省略 / 鱼眼淡出 / 行号压实 / 真日志回归
  *
  * 跑法：node test-elide.mjs
  *
@@ -91,6 +91,28 @@ function run(graph, activeTurn, radius) {
 	}
 }
 
+/**
+ * 独立重算一遍树上的无向步数 —— 不复用被测代码，这样"淡出圈往外多画了两圈"之类的
+ * 改动会当场露馅。
+ * @param graph - buildGraph 的结果
+ * @param anchor - 起点
+ * @returns Map<node, 步数>
+ */
+function distOf(graph, anchor) {
+	const seen = new Set(graph.nodes)
+	const dist = new Map([[anchor, 0]])
+	const queue = [anchor]
+	for (let head = 0; head < queue.length; head += 1) {
+		const node = queue[head]
+		for (const near of [node.parent, ...node.children]) {
+			if (near === undefined || !seen.has(near) || dist.has(near)) continue
+			dist.set(near, dist.get(node) + 1)
+			queue.push(near)
+		}
+	}
+	return dist
+}
+
 // ===== 第 3 步：用例 =====
 
 console.log('用例 1：线性 1..20，站在第 10 轮，半径 3 → 只剩 7..13')
@@ -101,7 +123,12 @@ console.log('用例 1：线性 1..20，站在第 10 轮，半径 3 → 只剩 7.
 	const want = [7, 8, 9, 10, 11, 12, 13].map((t) => `A:${t}`).sort()
 	check(JSON.stringify(got.keys) === JSON.stringify(want), `期望 ${JSON.stringify(want)}，实际 ${JSON.stringify(got.keys)}`)
 	check(got.anchor.entry.turn === 10, `基准点该是第 10 轮，实际 ${got.anchor.entry && got.anchor.entry.turn}`)
-	check(got.view.bandTop.size === 1 && got.view.bandBottom.size === 1, '上下都该有省略号')
+	// 半径 3、淡出 2 圈 → 9/10/11 实心，8/12 淡一档，7/13 淡到底。上下必须对称
+	const dim = (turn) => got.view.dimOf.get(graph.nodes.find((node) => node.key === `A:${turn}`))
+	check(dim(10) === 0, `站着的那一轮必须是实的，实际 ${dim(10)}`)
+	check(dim(9) === 0 && dim(11) === 0, `距离 1 不该淡，实际 ${dim(9)}/${dim(11)}`)
+	check(dim(8) === 1 && dim(12) === 1, `距离 2 该淡一档，实际 ${dim(8)}/${dim(12)}`)
+	check(dim(7) === pure.FADE.rings && dim(13) === pure.FADE.rings, `边界该淡到底，实际 ${dim(7)}/${dim(13)}`)
 	console.log(`  留下 ${got.keys.length} 个：${got.keys.join(' ')}`)
 }
 
@@ -132,33 +159,80 @@ console.log('用例 3：半径 0 = 不省略，且行号与原来完全一致')
 	const graph = graphOf(sessions, 'A')
 	const all = run(graph, 5, 0)
 	check(all.view.shown.size === graph.nodes.length, `不省略时该留下全部 ${graph.nodes.length} 个，实际 ${all.view.shown.size}`)
-	check(all.view.bandTop.size === 0 && all.view.bandBottom.size === 0, '不省略时不该有省略号')
 	check(all.view.hidden === 0, `hidden 该是 0，实际 ${all.view.hidden}`)
+	// 「不省略」这一档不该有任何淡出 —— 没有边界，淡给谁看
+	const faded = graph.nodes.filter((node) => all.view.dimOf.get(node) !== 0)
+	check(faded.length === 0, `不省略时不该有淡出节点，实际 ${faded.length} 个`)
 	// 关键回归：row 必须等于 depth，否则「不省略」这一档会把老画法改掉
 	const bad = graph.nodes.filter((node) => all.view.rowOf.get(node.depth) !== node.depth)
 	check(bad.length === 0, `不省略时 row 必须等于 depth，有 ${bad.length} 个不等`)
 	console.log(`  ${graph.nodes.length} 个节点全留，row === depth`)
 }
 
-console.log('用例 4：省略号画在树被剪断的地方')
+console.log('用例 4：鱼眼淡出 —— 吃半径的最外圈，不往外多画')
 {
 	const sessions = [
-		branch('A', undefined, undefined, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
-		branch('B', 'A', 8, [9, 10]),
+		branch('A', undefined, undefined, Array.from({ length: 30 }, (_, i) => i + 1)),
+		branch('B', 'A', 20, [21, 22, 23]),
 	]
 	const graph = graphOf(sessions, 'A')
-	// 站在第 2 轮、半径 2 → 只剩根..A:4 一带，上面没东西了，下面被剪断
-	const top = run(graph, 2, 2)
-	check(top.view.bandTop.size === 0, `最上面没有被剪断的东西，不该有上省略号（实际 ${top.view.bandTop.size}）`)
-	check(top.view.bandBottom.size === 1, `下面该有省略号（实际 ${top.view.bandBottom.size}）`)
-	// 站在第 9 轮、半径 1 → 上面被剪断
-	const bottom = run(graph, 9, 1)
-	check(bottom.view.bandTop.size === 1, `上面该有省略号（实际 ${bottom.view.bandTop.size}）`)
-	// 岔路被砍掉时，省略号落在那条支线自己的列上
-	const atFork = run(graph, 8, 1)
-	const forkColumn = graph.nodes.find((node) => node.key === 'B:9').column
-	check(atFork.view.bandBottom.has(forkColumn), `被砍掉的岔路该在它自己那列留省略号（列 ${forkColumn}，实际 ${JSON.stringify([...atFork.view.bandBottom])}）`)
-	console.log(`  上=${[...top.view.bandTop]} 下=${[...top.view.bandBottom]}；岔路列=${forkColumn}`)
+	const rings = pure.FADE.rings
+
+	for (const radius of [5, 8, 12, 30]) {
+		const got = run(graph, 15, radius)
+		const dist = distOf(graph, got.anchor)
+
+		// ① 淡出圈**吃的是半径自己的最外层**。要是哪天改成 radius + rings 往外扩，
+		//    这里最远的距离就会超过 radius —— 设置里写着"12 步"就得只画到 12 步。
+		const far = Math.max(...[...got.view.shown].map((node) => dist.get(node)))
+		check(far <= radius, `半径 ${radius}：最远该只到 ${radius} 步，实际 ${far}`)
+
+		// ② 每个节点的档位＝离边界还剩几步，且随距离单调不减
+		for (const node of got.view.shown) {
+			const want = Math.min(dist.get(node), Math.max(0, rings - (radius - dist.get(node))))
+			check(got.view.dimOf.get(node) === want, `半径 ${radius}：${node.key} 距离 ${dist.get(node)} 该是第 ${want} 圈，实际 ${got.view.dimOf.get(node)}`)
+		}
+		check(got.view.dimOf.get(got.anchor) === 0, `半径 ${radius}：基准点被淡掉了 —— 你正看着的那一轮必须是实的`)
+	}
+
+	// ③ 半径小到比淡出圈还少时（配置文件里手改出来的）不许把基准点自己淡掉
+	for (const radius of [1, 2]) {
+		const got = run(graph, 15, radius)
+		check(got.view.dimOf.get(got.anchor) === 0, `半径 ${radius}：基准点该是实的，实际第 ${got.view.dimOf.get(got.anchor)} 圈`)
+		for (const node of got.view.shown) check(got.view.dimOf.get(node) <= rings, `半径 ${radius}：${node.key} 的档位越界`)
+	}
+
+	// ④ 被整段砍掉的岔路：以前在它自己那列留个 `⋯`，现在靠岔路口那几个点淡下去收尾，
+	//    所以岔路上剩下的节点必须也是淡的，不能亮着突然断掉
+	const atFork = run(graph, 20, rings + 1)
+	const kept = graph.nodes.filter((node) => node.key.startsWith('B:') && atFork.view.shown.has(node))
+	check(kept.length > 0, '半径够大时该还能看到岔路上的节点')
+	check(kept.some((node) => atFork.view.dimOf.get(node) > 0), '岔路末端该是淡的')
+	console.log(`  半径 5/8/12/30 的档位与独立 BFS 一致；最外圈 = 第 ${rings} 圈；岔路末端淡出`)
+}
+
+console.log('用例 4b：淡出的坡度 —— 越远越小越淡，且到边界前不许归零')
+{
+	const { rings, scale, alpha } = pure.FADE
+	check(scale.length === rings + 1 && alpha.length === rings + 1, `坡度表该有 ${rings + 1} 档，实际 ${scale.length}/${alpha.length}`)
+	check(pure.fisheye(0).scale === 1 && pure.fisheye(0).alpha === 1, '第 0 圈必须原样画')
+	for (let at = 1; at <= rings; at += 1) {
+		check(pure.fisheye(at).scale < pure.fisheye(at - 1).scale, `第 ${at} 圈该比上一圈小`)
+		check(pure.fisheye(at).alpha < pure.fisheye(at - 1).alpha, `第 ${at} 圈该比上一圈淡`)
+	}
+	// 最外圈也得看得见：真降到 0 就等于硬切，跟原来画 `⋯` 之前那种"说断就断"没区别
+	check(pure.fisheye(rings).scale > 0.3 && pure.fisheye(rings).alpha > 0.25, `最外圈太弱了（${pure.fisheye(rings).scale}/${pure.fisheye(rings).alpha}），等于硬切`)
+	// 越界的档位夹到最外圈，别返回 undefined 把样式写成 NaNpx
+	for (const bad of [rings + 5, -1, undefined, null, NaN, 'x']) {
+		const got = pure.fisheye(bad)
+		check(Number.isFinite(got.scale) && Number.isFinite(got.alpha), `fisheye(${String(bad)}) 该夹住，实际 ${JSON.stringify(got)}`)
+	}
+	// 淡是**乘**在原有透明度上的：路径外的点本来就 0.4，最外圈必须比它更淡
+	const outer = pure.dotStyle('normal', false, false, 10, false, undefined, pure.fisheye(rings).alpha).opacity
+	const plain = pure.dotStyle('normal', false, false, 10, false, undefined).opacity
+	check(outer < plain, `最外圈(${outer})该比路径外的普通点(${plain})更淡，否则越远越显眼`)
+	check(pure.dotStyle('normal', false, false, 10, false, undefined, 1).opacity === plain, 'alpha=1 该与不传时完全一致')
+	console.log(`  scale ${scale.join('→')}；alpha ${alpha.join('→')}；最外圈实际透明度 ${outer.toFixed(3)} < ${plain}`)
 }
 
 console.log('用例 5：行号压实 —— 留下的行必须是 0..n-1 连续')
@@ -281,7 +355,7 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 	check(bad.length === 0, `scaleZ(100) 必须和 Z 一模一样，不同的字段：${bad.join(',')}`)
 
 	const big = pure.scaleZ(200)
-	for (const key of ['row', 'rowMin', 'dot', 'lane', 'hit', 'ell']) {
+	for (const key of ['row', 'rowMin', 'dot', 'lane', 'hit']) {
 		check(big[key] === Z[key] * 2, `${key} 在 200% 下该是 ${Z[key] * 2}，实际 ${big[key]}`)
 	}
 	// 时间和文字卡片宽度不是几何量，不许跟着缩
@@ -296,7 +370,8 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 	}
 	// 基准尺寸整体上调过一次：老基准要调到 120% 才顺眼，就把 120% 挪成了默认的 100%。
 	// 钉住这个换算，免得哪天有人"顺手"把 Z 改回去，默认又变小。
-	const was = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14 }
+	// （ell 是省略号那个字的字号，换成鱼眼淡出之后整个没了）
+	const was = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18 }
 	for (const [key, before] of Object.entries(was)) {
 		check(Z[key] === Math.round(before * 1.2), `${key} 该是老基准 ${before} 的 1.2 倍取整（${Math.round(before * 1.2)}），实际 ${Z[key]}`)
 	}

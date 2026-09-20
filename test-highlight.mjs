@@ -602,6 +602,21 @@ console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节�
 	// 把形状改成圆形，让开量就该降回圆形那档
 	check(pure.reachFor('compact', false, dot, Object.assign({}, pure.THEME, { compactShape: 'circle' })) === circle, '压缩节点改成圆形后，让开量该和普通节点一致')
 
+	// 鱼眼淡出的点画得小，线就得多连一截过去。不跟着缩的话，边界那两圈的点
+	// 和线之间会各空出一截，看着像"线没接上"
+	{
+		const eye = pure.fisheye(pure.FADE.rings).scale
+		const small = pure.reachFor('normal', false, dot, pure.THEME, eye)
+		check(small < circle, `淡出圈的让开量该比正常的小，实际 ${small} vs ${circle}`)
+		// 恒大于 0 的保证不能被缩没：让开量为 0 时线会画到圆心，正是用例 13 在防的事
+		check(small > 0, `让开量必须恒大于 0，实际 ${small}`)
+		check(pure.reachFor('normal', false, dot, pure.THEME, 1) === circle, 'grow=1 该与不传时完全一致')
+		check(pure.reachFor('normal', false, dot, pure.THEME, undefined) === circle, 'grow 缺省该退回 1')
+		// 空节点那 +2 的"画大一圈"也得跟着缩，否则淡出圈的根节点会多让 2px
+		const smallEmpty = pure.reachFor('empty', false, dot, pure.THEME, eye)
+		check(Math.abs(smallEmpty - small - ((empty - circle) * eye)) < 1e-9, `空节点的加宽没跟着鱼眼缩：${smallEmpty} vs ${small + (empty - circle) * eye}`)
+	}
+
 	/** 某个 y 落在哪一段线上（用来判断线有没有压到节点身上）。 */
 	const covers = (parts, x, y) =>
 		parts.some((part) => x >= part.left && x <= part.left + part.width && y >= part.top && y <= part.top + part.height)
