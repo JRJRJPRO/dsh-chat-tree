@@ -764,7 +764,6 @@ window.__ModuleLoader__.load({
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
 							branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
 							props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
-							isEmpty ? null : button('↺', '这一轮重来', () => props.onRedo(node)),
 						]
 					: null,
 			)
@@ -1190,13 +1189,6 @@ window.__ModuleLoader__.load({
 							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOf(new Map(picked.map((item) => [item.id, item])), shape.groupOf, current))
 							if (action === 'open') return api.open(node.session.id)
 							return api.fork(node.session.id, node.entry.seq)
-						},
-						onRedo: (node) => {
-							const own = (node.session.turns || []).filter((entry) => !entry.inherited)
-							const at = own.findIndex((entry) => entry.turn === node.entry.turn)
-							const before = at > 0 ? own[at - 1] : undefined
-							if (before) api.fork(node.session.id, before.seq)
-							else api.fresh(node.session.cwd)
 						},
 					}),
 				),

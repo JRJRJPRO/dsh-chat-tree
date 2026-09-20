@@ -391,6 +391,35 @@ async function main() {
 		check(said('讲讲 /compact 怎么用').compact !== true, '正文里提到 /compact 不该标')
 		console.log('桥接兑底：/compact 与 /compact 参数 → 标；/compacted 与 正文提到 → 不标')
 	}
+	// 断言 11：宿主自己发起的 fork，树上必须原样接住。
+	//
+	// 我们撤掉了自带的"重做"按钮 —— 它和"在父节点上按 ＋"本来就是同一件事
+	// （都是 sessions.fork({sessionId, atSeq})），而聊天区每条消息旁边本来就有
+	// 宿主自己的分叉入口。撤掉之后，树的正确性就**完全依赖**于能否接住宿主发起的 fork，
+	// 所以这条要盯死：岔路点和继承段必须自洽，自有轮次必须紧接在岔路点之后。
+	//
+	// 顺带一提：dsh 的 fork 是复制不是截断 —— 原来那条分支一轮都不会少，
+	// 所以"重做"不会删掉任何已经发生过的对话，只是多长一条兄弟支线。
+	{
+		const byId = new Map(sessions.map((item) => [item.id, item]))
+		const forked = sessions.filter((item) => item.parentId !== undefined && byId.has(item.parentId))
+		let checked = 0
+		for (const child of forked) {
+			if (child.forkTurn === undefined) continue
+			const own = (child.turns || []).filter((entry) => !entry.inherited)
+			const inherited = (child.turns || []).filter((entry) => entry.inherited)
+			check(inherited.length === child.forkTurn, `${child.id.slice(8, 19)} 岔在第 ${child.forkTurn} 轮，却继承了 ${inherited.length} 轮`)
+			if (own.length > 0) {
+				check(own[0].turn === child.forkTurn + 1, `${child.id.slice(8, 19)} 的第一个自有轮次是 ${own[0].turn}，该紧接岔路点 ${child.forkTurn}`)
+			}
+			// 父分支一轮都不能少：fork 是复制，不是截断
+			const parentOwn = (byId.get(child.parentId).turns || []).filter((entry) => !entry.inherited)
+			check(parentOwn.length > 0, `${child.id.slice(8, 19)} 的父分支被清空了 —— fork 不该动父分支`)
+			checked += 1
+		}
+		check(checked > 0, '数据里一条 fork 出来的分支都没有，这条断言等于没测')
+		console.log(`宿主发起的 fork：${checked} 条，岔路点与继承段全部自洽，父分支无损`)
+	}
 	console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 	process.exit(failures === 0 ? 0 : 1)
 }
