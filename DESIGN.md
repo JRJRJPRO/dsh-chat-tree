@@ -635,7 +635,7 @@ node test-rewind.mjs          # 撤回：done 的口径、区间比对、成图�
 DSH_HOME_REAL='...' node test-branch.mjs   # 把真实分支倒带到"刚出生"那一刻，重放接管逻辑
 ```
 
-除 `test-icon.mjs` 外都取 `client.js` 的 `__pure` 出口或 `index.js` 的真函数 ——
+六个脚本全都从 `client.js` 的 `__pure` 出口或 `index.js` 的 `__test` 出口取函数 ——
 **测的是真代码，不是复制品**。
 
 浏览器控制台里 `__dshTree()` 可以把当前树的真实状态倒出来（每个节点的蓝/白、血缘、岔路点、归档集）。
