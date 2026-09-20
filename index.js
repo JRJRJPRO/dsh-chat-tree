@@ -199,6 +199,7 @@ async function collect(ctx, cwd) {
 	const snapshots = await ctx.sessionPersistence.list()
 	const alive = new Set()
 	const sessions = []
+	const busy = busyProbe(ctx)
 
 	for (const snapshot of snapshots) {
 		const header = snapshot.header
@@ -206,6 +207,8 @@ async function collect(ctx, cwd) {
 		if (cwd && header.cwd !== cwd) continue
 		alive.add(header.id)
 		const outline = await outlineOf(ctx, snapshot)
+		// 撤回过的轮次在日志里原样留着，得靠旁车才认得出来（第 3 步）
+		const rewind = rewindStateOf(busy, header.id)
 		sessions.push({
 			id: header.id,
 			cwd: header.cwd,
@@ -215,8 +218,9 @@ async function collect(ctx, cwd) {
 			title: outline.title,
 			forkTurn: outline.forkTurn,
 			model: outline.model,
-			// 撤回过的轮次在日志里原样留着，得靠旁车才认得出来（第 3 步）
-			turns: markRewound(outline.turns, hiddenRangesOf(header.id)),
+			turns: markRewound(outline.turns, rewind.ranges),
+			// 这一轮没敢读旁车（它正在跑）。前端据此给个提示，并等它跑完再来拉一次。
+			...(rewind.pending ? { rewindPending: true } : {}),
 		})
 	}
 
@@ -242,8 +246,42 @@ async function collect(ctx, cwd) {
 //   · 4 答到一半被中止再撤回 → 这一轮压根没留下什么，节点直接不画，只剩 1-2-3-5。
 // 「留着还是不画」由 `entry.done` 定（见第 1 步），成形放在浏览器半的 buildGraph。
 
+// ===== ⚠️⚠️ 读旁车会打断正在跑的那一轮 —— 这一段的规矩不许放宽 =====
+//
+// Windows 上，**只要有任何别的句柄开着目标文件，`rename` 覆盖它就是 EPERM**。
+// 而 dsh-claude 每 150ms（TEXT_FLUSH_MS）就要把对话正文原子落盘一次：
+// 写 `.tmp` → `rename` 盖掉旁车。那个 rename 抛出来的异常会从它的消息泵里冒出去，
+// 被当成「Claude Code 掉线」——**整轮当场判失败，而且它故意不重发**
+// （那一轮已经动过文件、提过 git，重放会重复副作用）。
+//
+// 这不是推测，是 2026-09-20 真炸过一次：
+//   {"kind":"error","error":{"message":"Claude Code exited after activity; ..."}}
+//   detail: EPERM: operation not permitted, rename '<旁车>.<pid>.<uuid>.tmp' -> '<旁车>'
+// 第一版的我在每次 /outlines 里都 readFileSync 一遍 6.3MB 的旁车，句柄要开约 10ms，
+// 对面每 150ms 一次 rename —— **每读一次就有约 7% 的概率打死正在跑的那一轮**。
+// 复现只要三行：开着读句柄，另一边 renameSync 覆盖，当场 EPERM。
+//
+// 所以规矩是：**这条会话有轮次在跑，就一个字节都不许读。**
+//   · 判据用 `ctx.agents.get(id).status`（权威）——冷会话没有 agent，没人写它，随便读。
+//   · 再加一道 mtime 静默期，挡住 turn/end 之后那次迟到的 flush。
+//   · 读不到就沿用上一次读到的，并把 `rewindPending` 报给前端：撤回不会在一轮**跑着的时候**
+//     发生（按钮在历史消息行上），所以缓存在这一轮里必然还是对的；前端等它跑完再来拉一次。
+//
+// ⚠️ 别改成「缩短读的时间就行」（只读文件尾、只读前 64 字节……）：窗口小了不等于没有，
+//    而代价是整轮对话当场失败。也别改成 mtime 静默期单独判 —— 一轮里跑长命令时
+//    旁车可以安静好几分钟，然后突然写。**必须以"有没有 agent 在跑"为准。**
+
 /** 没有撤回时共用这一个空数组，省得每个会话都新建一个。 */
 const NO_RANGES = []
+
+/** 读不到也没缓存时的答复。 */
+const NO_REWIND = { ranges: NO_RANGES, pending: false }
+
+/**
+ * 旁车静默多久才敢碰。`turn/end` 之后还可能有一次迟到的 flush（TEXT_FLUSH_MS = 150ms），
+ * 给它十倍的余量。
+ */
+const SIDECAR_QUIET_MS = 1500
 
 /**
  * 撤回区间的缓存：sessionId → `{stamp, ranges}`，stamp 是旁车文件的 mtime+size。
@@ -254,24 +292,50 @@ const NO_RANGES = []
 const hiddenCache = new Map()
 
 /**
- * 这个会话被撤回掉的行区间。
- * @param sessionId - dsh 会话 id
- * @returns `[{start, end}]`（界面行 seq，闭区间）；没有旁车 / 没撤回过就是空数组
+ * 造一个「这条会话正在跑吗」的判据。
+ *
+ * ⚠️ 认不出来一律当成**在跑**。宁可这一轮不显示撤回，也不能赌一把去读。
+ * @param ctx - 插件 context
+ * @returns `(sessionId) => boolean`
  */
-function hiddenRangesOf(sessionId) {
+function busyProbe(ctx) {
+	return (sessionId) => {
+		try {
+			const registry = ctx && ctx.agents
+			if (registry === undefined || typeof registry.get !== 'function') return true
+			const agent = registry.get(sessionId)
+			// 冷会话根本没有 agent —— 没人在写它的旁车
+			return agent !== undefined && agent.status === 'running'
+		} catch {
+			return true
+		}
+	}
+}
+
+/**
+ * 这个会话被撤回掉的行区间。
+ * @param busy - `(sessionId) => boolean`，这条会话是不是有轮次在跑
+ * @param sessionId - dsh 会话 id
+ * @returns `{ranges, pending}`；`pending` 表示这次没敢读，用的是上一次的结果
+ */
+function rewindStateOf(busy, sessionId) {
 	const file = sidecarPath(sessionId)
 	let stamp
+	let quiet = false
 	try {
 		const stat = statSync(file)
 		stamp = `${stat.mtimeMs}:${stat.size}`
+		quiet = Date.now() - stat.mtimeMs >= SIDECAR_QUIET_MS
 	} catch {
-		return NO_RANGES
+		hiddenCache.delete(sessionId)
+		return NO_REWIND // 没有旁车 = 不是 claude 会话，压根没有撤回这回事
 	}
 	const hit = hiddenCache.get(sessionId)
-	if (hit !== undefined && hit.stamp === stamp) return hit.ranges
+	if (hit !== undefined && hit.stamp === stamp) return { ranges: hit.ranges, pending: false }
+	if (busy(sessionId) || !quiet) return { ranges: hit === undefined ? NO_RANGES : hit.ranges, pending: true }
 	const ranges = readHiddenRanges(file)
 	hiddenCache.set(sessionId, { stamp, ranges })
-	return ranges
+	return { ranges, pending: false }
 }
 
 /**
@@ -721,7 +785,7 @@ export function graft(childId, parentId, turn) {
 // ===== 第 6 步：装配 =====
 
 /** 内部件出口，仅供离线测试（cordis 只读 name/inject/apply）。 */
-export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX, hiddenRangesOf, markRewound, turnHidden }
+export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX, busyProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS, collect }
 
 /**
  * 从回调实参里把 agent 捞出来。宿主用的是带作用域载体的 emit，实参形状可能随版本变，

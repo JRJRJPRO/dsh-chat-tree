@@ -23,7 +23,8 @@
  *   第2步  造数据的小工具
  *   第3步  用例 1-3：host 半（done / promptSeq / 盖戳）
  *   第4步  用例 4-6：client 半（成图）
- *   第5步  用例 7：拿盘上真实的撤回过的会话兜一遍
+ *   第5步  用例 7-8：拿盘上真实的撤回过的会话兜一遍 + 旁车读写
+ *   第6步  用例 9-10：**读旁车不许打断正在跑的那一轮**（最要命的一条）+ 整条管线
  *
  * 跑法：node test-rewind.mjs
  *
@@ -66,7 +67,8 @@ globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
 globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
 await import('./client.js')
 
-const { markRewound, turnHidden, hiddenRangesOf } = __test
+const { markRewound, turnHidden, rewindStateOf, busyProbe, SIDECAR_QUIET_MS, collect } = __test
+const Z = pure.Z
 
 // ===== 第 2 步：造数据的小工具 =====
 
@@ -303,15 +305,19 @@ console.log('用例 7：真实日志 + 真实旁车')
 	const root = path.join(HOME, 'sessions')
 	let looked = 0
 	let found = 0
+	// ⚠️ 正在跑的会话一个字节都不许读（用例 9 讲了为什么）。测试在 dsh 外面，
+	//    拿不到 ctx.agents，所以拿"日志近十分钟动过"当"可能在跑"。
+	const LIVE_MS = 10 * 60 * 1000
 	if (fs.existsSync(root)) {
 		for (const bucket of fs.readdirSync(root)) {
 			for (const dir of fs.readdirSync(path.join(root, bucket))) {
 				const file = path.join(root, bucket, dir, 'session.v3.jsonl.zstd')
 				if (!fs.existsSync(file)) continue
+				const hot = Date.now() - fs.statSync(file).mtimeMs < LIVE_MS
 				const events = readSession(file)
 				const id = (events[0] || {}).id
 				if (id === undefined) continue
-				const ranges = hiddenRangesOf(id)
+				const ranges = rewindStateOf(() => hot, id).ranges
 				looked += 1
 				if (ranges.length === 0) continue
 				found += 1
@@ -333,39 +339,175 @@ console.log('用例 7：真实日志 + 真实旁车')
 
 console.log('用例 8：旁车读得对、读坏了也不崩、撤回后能刷新')
 {
+	const was = process.env.DSH_HOME
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-rewind-'))
 	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 	fs.mkdirSync(folder, { recursive: true })
 	const fileOf = (id) => path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
-	const write = (id, text) => fs.writeFileSync(fileOf(id), text)
+	/** 写完顺手把 mtime 拨早 —— 静默期只放行"安静了 1.5 秒"的文件，不拨的话每次都会被挡。 */
+	const write = (id, text) => {
+		fs.writeFileSync(fileOf(id), text)
+		const old = new Date(Date.now() - SIDECAR_QUIET_MS * 4)
+		fs.utimesSync(fileOf(id), old, old)
+	}
 	const put = (id, ranges, filler) =>
 		write(id, JSON.stringify({ schemaVersion: 1, revision: 3, activities: [{ text: filler || '' }], binding: {}, rewind: { ranges, anchors: [], snapshots: [] } }))
+	const idle = () => false
+	const ranges = (id) => rewindStateOf(idle, id).ranges
 
-	const was = process.env.DSH_HOME
 	process.env.DSH_HOME = home
 	try {
 		// ⚠️ 正文里故意塞一段长得像 ranges 的话：读旁车前有个"原文里没有 `"ranges":[{` 就
 		//    不 JSON.parse"的快速通道（旁车能到 6.7MB，parse 一次 42ms）。
 		//    正文骗得到它只是多解析一次，**结论必须一样**。
 		put('s-ok', [{ start: 8, end: 17 }], '我在对话里写了 "ranges":[{"start":1}] 这么一串')
-		check(JSON.stringify(hiddenRangesOf('s-ok')) === '[{"start":8,"end":17}]', `正常旁车没读出区间，实际 ${JSON.stringify(hiddenRangesOf('s-ok'))}`)
+		check(JSON.stringify(ranges('s-ok')) === '[{"start":8,"end":17}]', `正常旁车没读出区间，实际 ${JSON.stringify(ranges('s-ok'))}`)
 		put('s-none', [], '我在对话里写了 "ranges":[{"start":1}] 这么一串')
-		check(hiddenRangesOf('s-none').length === 0, '没撤回过却读出了区间')
+		check(ranges('s-none').length === 0, '没撤回过却读出了区间')
 
 		// 读不到 / 版本对不上 / 文件半截 —— 一律当"没撤回"。这东西坏了只是撤回状态没了，
 		// 不该把整条导轨带崩（和 readSidecar 一个脾气）。
 		write('s-old', JSON.stringify({ schemaVersion: 99, rewind: { ranges: [{ start: 1, end: 2 }] } }))
-		check(hiddenRangesOf('s-old').length === 0, '版本对不上还照读')
+		check(ranges('s-old').length === 0, '版本对不上还照读')
 		write('s-bad', '{"rewind":{"ranges":[{"start":1,')
-		check(hiddenRangesOf('s-bad').length === 0, '半截文件没被挡住')
-		check(hiddenRangesOf('s-missing').length === 0, '没有旁车时不该崩')
+		check(ranges('s-bad').length === 0, '半截文件没被挡住')
+		check(ranges('s-missing').length === 0, '没有旁车时不该崩')
+		check(rewindStateOf(idle, 's-missing').pending === false, '没有旁车 = 不是 claude 会话，不该报"还欠着"')
 
 		// ⚠️ 缓存跟着旁车文件的 mtime+size 走，**不能挂在会话 revision 上**：
 		//    撤回一个 dsh 事件都不写，revision 纹丝不动，挂上去就永远刷不出来。
 		put('s-ok', [{ start: 40, end: 50 }], '')
-		fs.utimesSync(fileOf('s-ok'), new Date(), new Date(Date.now() + 5000))
-		check(JSON.stringify(hiddenRangesOf('s-ok')) === '[{"start":40,"end":50}]', `旁车变了却还在吃缓存，实际 ${JSON.stringify(hiddenRangesOf('s-ok'))}`)
+		check(JSON.stringify(ranges('s-ok')) === '[{"start":40,"end":50}]', `旁车变了却还在吃缓存，实际 ${JSON.stringify(ranges('s-ok'))}`)
 		console.log('  正常 / 空 / 老版本 / 半截 / 缺文件 都对；旁车一变就重读')
+	} finally {
+		if (was === undefined) delete process.env.DSH_HOME
+		else process.env.DSH_HOME = was
+		fs.rmSync(home, { recursive: true, force: true })
+	}
+}
+
+// ===== 第 6 步：⚠️ 最要命的一条：正在跑的会话一个字节都不许读 =====
+
+console.log('用例 9：会话在跑就不碰旁车（读它会打死那一轮）')
+{
+	const was = process.env.DSH_HOME
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-busy-'))
+	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
+	fs.mkdirSync(folder, { recursive: true })
+	const fileOf = (id) => path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
+	const put = (id, list, age) => {
+		fs.writeFileSync(fileOf(id), JSON.stringify({ schemaVersion: 1, revision: 1, activities: [], binding: {}, rewind: { ranges: list, anchors: [], snapshots: [] } }))
+		const when = new Date(Date.now() - age)
+		fs.utimesSync(fileOf(id), when, when)
+	}
+	const quiet = SIDECAR_QUIET_MS * 4
+
+	process.env.DSH_HOME = home
+	try {
+		// ① 在跑 = 不读。这一条就是那次"整轮判失败"的修复本体，别放宽。
+		put('s-busy', [{ start: 8, end: 17 }], quiet)
+		const hot = rewindStateOf(() => true, 's-busy')
+		check(hot.ranges.length === 0, '会话正在跑却把旁车读了 —— 这正是打死一整轮的那个动作')
+		check(hot.pending === true, '没读成却不报 pending，前端就不会回来拉第二次')
+
+		// ② 跑完了再问同一条，就该读到了
+		const cool = rewindStateOf(() => false, 's-busy')
+		check(JSON.stringify(cool.ranges) === '[{"start":8,"end":17}]', `跑完了还是没读到，实际 ${JSON.stringify(cool.ranges)}`)
+		check(cool.pending === false, '读到了就不该再报 pending')
+
+		// ③ 静默期：刚写过的文件也不碰。`turn/end` 之后还可能有一次迟到的 flush，
+		//    那次 rename 撞上我们的读句柄同样是 EPERM。
+		put('s-fresh', [{ start: 1, end: 2 }], 0)
+		const fresh = rewindStateOf(() => false, 's-fresh')
+		check(fresh.ranges.length === 0, '旁车刚写过就去读了，没等静默期')
+		check(fresh.pending === true, '因为静默期没读成，也该报 pending')
+
+		// ④ 没读成时要**沿用上一次的结果**，不能退回空。
+		//    撤回只发生在两轮之间（按钮在历史消息行上），所以一轮跑着的时候缓存必然还是对的；
+		//    退回空的话，每跑一轮撤回过的节点就会诈尸一次。
+		put('s-keep', [{ start: 5, end: 9 }], quiet)
+		check(JSON.stringify(rewindStateOf(() => false, 's-keep').ranges) === '[{"start":5,"end":9}]', '先读一次都没读到')
+		put('s-keep', [{ start: 5, end: 99 }], 0) // 变了、而且是热的
+		const kept = rewindStateOf(() => true, 's-keep')
+		check(JSON.stringify(kept.ranges) === '[{"start":5,"end":9}]', `没读成时该沿用上一次，实际 ${JSON.stringify(kept.ranges)}`)
+		check(kept.pending === true, '用的是旧值，就该报 pending')
+
+		// ⑤ 判据认不出来一律当成"在跑"。宁可这一轮不显示撤回，也不能赌一把去读。
+		const probe = busyProbe({})
+		check(probe('whatever') === true, '没有 ctx.agents 时该当成"在跑"')
+		check(busyProbe({ agents: { get: () => { throw new Error('boom') } } })('x') === true, '判据抛异常时该当成"在跑"')
+		check(busyProbe({ agents: { get: () => undefined } })('x') === false, '冷会话没有 agent，没人写它，该允许读')
+		check(busyProbe({ agents: { get: () => ({ status: 'running' }) } })('x') === true, 'status=running 却说不忙')
+		check(busyProbe({ agents: { get: () => ({ status: 'idle' }) } })('x') === false, 'status=idle 却说在忙')
+
+		// ⑥ 前端要据此回来拉第二次，并且在导轨上说明原因
+		check(pure.isRewindPending({ sessions: [{ rewindPending: true }] }) === true, '前端没认出"还欠着"')
+		check(pure.isRewindPending({ sessions: [{}] }) === false, '没欠着却说欠着')
+		check(pure.isRewindPending(undefined) === false, '还没拿到答复时不该崩')
+		check(Z.rewindMs > 0, '没有重拉间隔的话，撤回完那一轮的形状永远不会更正')
+		// 撤回不写 dsh 日志，会话列表毫无动静 —— 前端**不自己回来拉就永远等不到**
+		check(pure.rewindRetryDelay({ sessions: [{ rewindPending: true }] }) === Z.rewindMs, '还欠着却不打算回来拉第二次')
+		check(pure.rewindRetryDelay({ sessions: [{}] }) === 0, '不欠着还一直重拉，白白打扰 host')
+		check(pure.rewindRetryDelay(undefined) === 0, '还没拿到答复就开始重拉')
+		console.log('  在跑 / 刚写过 → 不读、沿用旧值、报 pending；认不出来一律当在跑')
+	} finally {
+		if (was === undefined) delete process.env.DSH_HOME
+		else process.env.DSH_HOME = was
+		fs.rmSync(home, { recursive: true, force: true })
+	}
+}
+
+console.log('用例 10：整条 /outlines 管线（假 ctx）')
+{
+	const was = process.env.DSH_HOME
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-route-'))
+	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
+	fs.mkdirSync(folder, { recursive: true })
+	const id = 'session-route-0001'
+	const file = path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
+	fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, revision: 1, activities: [], binding: {}, rewind: { ranges: [{ start: 15, end: 40 }], anchors: [], snapshots: [] } }))
+	const old = new Date(Date.now() - SIDECAR_QUIET_MS * 4)
+	fs.utimesSync(file, old, old)
+
+	// 第 1 轮答完（seq 11 是真人那行），第 2 轮被中止 —— 撤回区间盖住第 2 轮
+	const events = [
+		{ seq: undefined, id, cwd: '/x' },
+		...turnEvents(1, 4, { kind: 'completed' }),
+		...turnEvents(2, 14, { kind: 'aborted', reason: { kind: 'user' } }),
+	]
+	/**
+	 * 一个刚好够 collect 用的假 ctx。
+	 * @param status - 这条会话的 agent 状态；undefined 表示冷会话（没有 agent）
+	 * @returns 假 ctx
+	 */
+	const fakeCtx = (status) => ({
+		agents: { get: () => (status === undefined ? undefined : { status }) },
+		sessionPersistence: {
+			list: async () => [{ revision: 1, header: { id, cwd: '/x', createdAt: 1 } }],
+			open: async () => ({ read: async () => ({ events }), close: async () => {} }),
+		},
+	})
+
+	process.env.DSH_HOME = home
+	try {
+		// ① 会话空闲 → 读得到撤回区间，第 2 轮盖上戳，且不报 pending
+		const idle = (await collect(fakeCtx('idle'), '/x')).sessions[0]
+		check(idle.rewindPending === undefined, '空闲还报 pending，前端会白白多拉一次')
+		check(idle.turns[0].rewound !== true, '第 1 轮不在区间里，不该盖戳')
+		check(idle.turns[1].rewound === true, `第 2 轮该盖上撤回戳，实际 ${JSON.stringify(idle.turns[1])}`)
+
+		// ② 会话跑起来了，旁车也一直在变（真实情况下每 150ms 一次）→ 一个字节都不读。
+		//    **必须把 pending 报出去**，否则前端不会回来拉第二次，
+		//    撤回完紧接着发的那一轮形状永远不更正。
+		const now = new Date()
+		fs.utimesSync(file, now, now)
+		const busy = (await collect(fakeCtx('running'), '/x')).sessions[0]
+		check(busy.rewindPending === true, '会话在跑、撤回记录没读到，却没把 rewindPending 报给前端')
+		check(pure.isRewindPending({ sessions: [busy] }) === true, '前端认不出 host 报上来的 pending —— 两边字段名对不上')
+		// 沿用上一次读到的：撤回只发生在两轮之间，所以这一轮里旧值必然还是对的。
+		// 退回空的话，每跑一轮撤回过的节点就诈尸一次。
+		check(busy.turns[1].rewound === true, '没读成就把撤回戳丢了 —— 该沿用上一次读到的')
+		console.log('  空闲 → 读到、不报 pending；在跑 → 不读、沿用旧值、报 pending，前端认得出')
 	} finally {
 		if (was === undefined) delete process.env.DSH_HOME
 		else process.env.DSH_HOME = was

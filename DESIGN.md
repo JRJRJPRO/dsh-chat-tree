@@ -92,6 +92,62 @@ John 报的：「1-2-3-4，4 发到一半我撤回了，又发了 5，树上却�
 `snapshot.revision` 纹丝不动，挂上去就永远刷不出来。所以另开一个 `hiddenCache`，
 跟着旁车文件的 `mtime + size` 走。
 
+#### 🚨 读旁车会打死正在跑的那一轮
+
+**这是这个插件里最容易把别人弄坏的一处，规矩不许放宽。**
+
+Windows 上，**只要有任何别的句柄开着目标文件，`rename` 覆盖它就是 EPERM**。
+三行就能复现：
+
+```js
+const fd = openSync(target, 'r')     // 开着读句柄
+renameSync(tmp, target)              // → EPERM: operation not permitted
+```
+
+而 dsh-claude 每 150ms（`TEXT_FLUSH_MS`）就要把对话正文原子落盘一次：写 `.tmp` →
+`rename` 盖掉旁车。那个 `rename` 抛出来的异常会从它的消息泵（`#pump`）里冒出去，
+被 `#handleDisconnect` 当成「Claude Code 掉线」——**整轮当场判失败，而且它故意不重发**
+（那一轮已经动过文件、提过 git，重放会重复副作用）。
+
+2026-09-20 真炸过一次。第一版的实现在每次 `/outlines` 里都 `readFileSync` 一遍
+6.3MB 的旁车，句柄要开约 10ms，对面每 150ms 一次 rename ——
+**每读一次就有约 7% 的概率打死正在跑的那一轮**：
+
+```
+turn/end  {"kind":"error","error":{"message":"Claude Code exited after activity;
+           side-effect outcome is unknown and the prompt was not replayed"}}
+detail    EPERM: operation not permitted, rename '<旁车>.<pid>.<uuid>.tmp' -> '<旁车>'
+```
+
+所以规矩是：**这条会话有轮次在跑，就一个字节都不许读。**
+
+| | |
+|---|---|
+| 判据 | `ctx.agents.get(id).status === 'running'`（权威）。冷会话没有 agent，没人写它，随便读 |
+| 加一道静默期 | 旁车 `mtime` 1.5s 内动过也不碰，挡住 `turn/end` 之后那次迟到的 flush |
+| 认不出来怎么办 | **一律当成在跑**。宁可这一轮不显示撤回，也不能赌一把 |
+| 没读成怎么办 | 沿用上一次读到的，并把 `rewindPending` 报给前端 |
+
+沿用旧值是安全的：**撤回只发生在两轮之间**（按钮在历史消息行上），所以一轮跑着的时候
+缓存必然还是对的。唯一会错的是「撤回完紧接着发下一轮」——那一轮里树上画的还是撤回前的
+形状。前端收到 `rewindPending` 会隔 2s 回来拉一次（撤回不写 dsh 日志，会话列表毫无动静，
+**不自己回来拉就永远等不到**），并在导轨上沿挂一个 ⏳，鼠标停上去说明原因。
+
+> ⚠️ 别改成「把读的时间缩短就行」（只读文件尾、只读前 64 字节……）：窗口变小不等于没有，
+> 而代价是整轮对话当场失败。
+>
+> ⚠️ 也别改成只看 `mtime` 静默期：一轮里跑长命令时旁车可以安静好几分钟，然后突然写。
+> **必须以「有没有 agent 在跑」为准。**
+>
+> ⚠️ **离线测试同样中招。** `npm test` 会拿真实旁车跑，在 dsh 外面拿不到 `ctx.agents`，
+> 所以 `test.mjs` / `test-rewind.mjs` 用「会话日志近十分钟动过」当「可能在跑」，一律跳过。
+> 那次事故有一半就是我一边改一边跑 `npm test` 打出来的。
+
+**还没修的同类风险**：`graft` 里的 `readSidecar` 读的是**父会话**的旁车，没有这道闸。
+它只在 fork 的那一瞬间跑一次（比 `/outlines` 罕见得多），但父会话正在跑时开分支，
+同样会打死父会话那一轮。修法要选：跳过 graft（新分支失忆）还是等父会话空下来
+（`adoptBranch` 现在要求全同步）。
+
 ⚠️ **别把旁车无脑 `JSON.parse`**：它的 `activities` 是整份对话原文，本机实测最大 6.7MB，
 parse 一次 42ms，而 `/outlines` 每次都要过一遍全部会话。所以先在原文里找 `"ranges":[{`
 这个串——非空的 `ranges` 必然长这样，**这一步只会少干活、不会漏判**（正文里凑巧有这串

@@ -606,7 +606,7 @@ window.__ModuleLoader__.load({
 		 * 代价是各项相对老基准差 ±2% 以内。
 		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
 		 */
-		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -1085,6 +1085,7 @@ window.__ModuleLoader__.load({
 		 */
 		function useOutlines(cwd, listState, nonce) {
 			const [data, setData] = react.useState(undefined)
+			const [again, setAgain] = react.useState(0)
 			const stamp = listState
 				? `${(listState.ids || []).length}:${listState.current}:${(listState.ids || []).map((id) => (listState.byId[id] || {}).updatedAt).join(',')}`
 				: ''
@@ -1101,8 +1102,39 @@ window.__ModuleLoader__.load({
 					alive = false
 					clearTimeout(timer)
 				}
-			}, [cwd, stamp, nonce])
+			}, [cwd, stamp, nonce, again])
+
+			// host 说"这条会话正在跑，这次没敢读它的撤回记录"（读旁车会打断那一轮，见 index.js 第 3 步）。
+			// 撤回不写 dsh 日志，会话列表一点动静都没有，**不自己回来拉就永远等不到**：
+			// 撤回完紧接着发的那一轮会一直画着撤回前的形状。跑完自然就读到了。
+			react.useEffect(() => {
+				const wait = rewindRetryDelay(data)
+				if (wait === 0) return undefined
+				const timer = setTimeout(() => setAgain((value) => value + 1), wait)
+				return () => clearTimeout(timer)
+			}, [data])
 			return data
+		}
+
+		/**
+		 * 这次答复里有没有"撤回记录没读到"的会话。
+		 * @param outlines - /outlines 的响应体
+		 * @returns 是否还欠着
+		 */
+		function isRewindPending(outlines) {
+			return ((outlines && outlines.sessions) || []).some((item) => item.rewindPending === true)
+		}
+
+		/**
+		 * 隔多久回来再拉一次。
+		 *
+		 * 抽出来是为了能测：藏在 useEffect 里的话，改成"从不重拉"一条断言都不会响，
+		 * 而症状（撤回完那一轮的形状一直不更正）要人肉点半天才看得出来。
+		 * @param outlines - /outlines 的响应体
+		 * @returns 毫秒；0 = 不用再拉
+		 */
+		function rewindRetryDelay(outlines) {
+			return isRewindPending(outlines) ? Z.rewindMs : 0
 		}
 
 		// ===== 第 6 步：组件 =====
@@ -1834,6 +1866,18 @@ window.__ModuleLoader__.load({
 					style: { position: 'fixed', top: `${top}px`, height: `${height}px`, right: `${right}px`, width: `${railWidth}px`, zIndex: 40, pointerEvents: 'none' },
 					onMouseLeave: release,
 				},
+				// ⏳：这条会话正跑着，撤回记录这一轮读不了（读它会打断那一轮，见 index.js 第 3 步）。
+				// 不说一声的话，撤回完紧接着发的那一轮树上画的还是撤回前的形状，看着就是"这插件又坏了"。
+				// 放在导轨上沿那 16px 空当里，不压到任何一个点；小、淡、鼠标停上去才解释。
+				!isRewindPending(outlines) ? null : h('span', {
+					key: 'rewind-pending',
+					title: '这条会话正在跑，暂时读不了它的撤回记录 —— 读那个文件会打断正在跑的这一轮。\n树上画的是上一次读到的状态，撤回过的轮次可能还画着。这一轮跑完会自动更正。',
+					style: {
+						position: 'absolute', top: '-13px', right: '0px',
+						fontSize: '10px', lineHeight: '12px', color: C.muted, opacity: 0.55,
+						pointerEvents: 'auto', cursor: 'help', userSelect: 'none',
+					},
+				}, '⏳'),
 				h(
 					'div',
 					{
@@ -1983,7 +2027,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, isRewindPending, rewindRetryDelay, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

@@ -74,6 +74,13 @@ function readSession(file) {
 function collect(cwdFilter) {
 	const root = path.join(HOME, 'sessions')
 	const sessions = []
+	// ⚠️ 读 dsh-claude 的旁车会打断正在跑的那一轮（Windows 上开着读句柄，对面的
+	//    原子写 rename 就是 EPERM，整轮判失败 —— index.js 第 3 步有完整说明）。
+	//    测试跑在 dsh 外面，拿不到 ctx.agents，所以用**日志刚写过**当"可能在跑"的判据：
+	//    近十分钟动过的会话一律不碰。历史上那几个撤回过的会话早就凉了，覆盖不受影响。
+	const LIVE_MS = 10 * 60 * 1000
+	const touched = new Map()
+	const busy = (id) => Date.now() - (touched.get(id) || 0) < LIVE_MS
 	for (const bucket of fs.readdirSync(root)) {
 		for (const dir of fs.readdirSync(path.join(root, bucket))) {
 			const file = path.join(root, bucket, dir, 'session.v3.jsonl.zstd')
@@ -81,6 +88,7 @@ function collect(cwdFilter) {
 			const events = readSession(file)
 			const header = events[0] || {}
 			if (cwdFilter && header.cwd !== cwdFilter) continue
+			touched.set(header.id, fs.statSync(file).mtimeMs)
 			const outline = foldOutline(events)
 			sessions.push({
 				id: header.id,
@@ -91,7 +99,7 @@ function collect(cwdFilter) {
 				forkTurn: outline.forkTurn,
 				model: outline.model,
 				// 和 host 的 collect 一样要盖撤回戳，否则这里跑的是一份比现实干净的数据
-				turns: __test.markRewound(outline.turns, __test.hiddenRangesOf(header.id)),
+				turns: __test.markRewound(outline.turns, __test.rewindStateOf(busy, header.id).ranges),
 			})
 		}
 	}
