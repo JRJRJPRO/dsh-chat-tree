@@ -70,8 +70,8 @@ function branch(id, parentId, forkTurn, turns) {
 		parentId,
 		createdAt: clock,
 		forkTurn,
-		// 真实大纲里，分支**也带着**继承来的那几轮（inherited: true），
-		// 平时被 ownTurns 滤掉；但"分离"之后它们要改算自有，所以这里必须造出来。
+		// 真实大纲里，分支**也带着**继承来的那几轮（inherited: true），会被 ownTurns 滤掉。
+		// 照造出来是为了贴近真实数据，别让测试在一份比现实干净的输入上跑绿。
 		turns: [
 			...Array.from({ length: forkTurn === undefined ? 0 : forkTurn }, (_, i) => ({ turn: i + 1, seq: (i + 1) * 10, time: i + 1, prompt: `#${i + 1}`, compact: false, inherited: true })),
 			...turns.map((turn) => ({ turn, seq: turn * 10, time: turn, prompt: `#${turn}`, compact: false, inherited: false })),
@@ -347,18 +347,13 @@ console.log('\n用例 8：＋ 在空节点 / 叶子上该做什么')
 
 console.log('\n用例 9：分组与分离 —— 哪几条对话算同一棵树')
 {
-	// John 定的规矩：分组必须是**主动登记**的。
-	//   · a / b / c 三条互不相干的对话 → 三棵树，互不显示
-	//   · 在 b 的空节点上按 ＋ 开出来的 d → 登记进 b 那棵树，b 和 d 同树
-	//   · 在某个支线起点按"分离" → 那条支线脱离原树，自成一棵
-	//
-	// ⚠️ 曾经试过"整个 cwd 全算一棵"，16 条对话把导轨撑到 326px，且互不相干的
-	//    对话挤在一个空节点下面。别再回去。
-	const pick = (sessions, currentId, shape) => {
+	// 分组：必须**主动登记**。a / b / c 三条互不相干的对话各自成树；
+	// 在 b 的空节点上按 ＋ 开出来的 d 才登记进 b 那棵。
+	// ⚠️ 曾经试过"整个 cwd 全算一棵"，16 条对话把导轨撑到 326px。别再回去。
+	const pick = (sessions, currentId, groupOf) => {
 		const visible = new Set(sessions.map((item) => item.id))
-		const tree = pure.visibleTree(sessions, visible, (shape || {}).detached)
 		return pure
-			.conversationOf(tree, currentId, (shape || {}).groupOf)
+			.conversationOf(pure.visibleTree(sessions, visible), currentId, groupOf)
 			.map((item) => item.id)
 			.sort()
 	}
@@ -366,52 +361,103 @@ console.log('\n用例 9：分组与分离 —— 哪几条对话算同一棵树'
 	const a = branch('a', undefined, undefined, [1, 2])
 	const b = branch('b', undefined, undefined, [1, 2])
 	const c = branch('c', undefined, undefined, [1])
-	const all = [a, b, c]
+	const d = branch('d', undefined, undefined, [1])
+	const all = [a, b, c, d]
 
 	check(JSON.stringify(pick(all, 'a')) === '["a"]', '没登记过分组时 a 该自成一棵')
-	check(JSON.stringify(pick(all, 'b')) === '["b"]', '没登记过分组时 b 该自成一棵')
+	check(JSON.stringify(pick(all, 'b', { d: 'b' })) === '["b","d"]', 'b 和 d 该同树')
+	check(JSON.stringify(pick(all, 'd', { d: 'b' })) === '["b","d"]', '从 d 看过去也该是同一棵')
+	check(JSON.stringify(pick(all, 'a', { d: 'b' })) === '["a"]', 'a 不该被卷进 b 那棵树')
+	console.log('  三条独立对话各自成树；＋ 登记后同树')
+}
 
-	// 在 b 上按 ＋ 开出 d，登记进 b 那棵树
-	const d = branch('d', undefined, undefined, [1])
-	const grouped = { groupOf: { d: 'b' } }
-	check(JSON.stringify(pick([...all, d], 'b', grouped)) === '["b","d"]', 'b 和 d 该同树')
-	check(JSON.stringify(pick([...all, d], 'd', grouped)) === '["b","d"]', '从 d 看过去也该是同一棵')
-	check(JSON.stringify(pick([...all, d], 'a', grouped)) === '["a"]', 'a 不该被卷进 b 那棵树')
+console.log('\n用例 10：分离 —— 剪的是图上的边，不是会话边界')
+{
+	// John 报的：节点 1 后面跟着 2/3/4/5，其中 2 是**会话自己的下一轮**、3/4/5 是 fork。
+	// 老做法只认"fork 出来的新会话"，于是唯独 2 没有分离按钮 —— 但它在图上和 3/4/5
+	// 一样只是 1 的一个孩子，凭什么区别对待。
+	//
+	// 规矩：一路往上只要有哪个祖先有多个孩子，这个节点就能分离。
+	// 剪在 N：新树 = 根到 N 父亲那段路径（前缀）+ N 的整棵子树；旧树 = 原树扣掉 N 的子树。
+	//
+	// 造一棵：主干 M 自有 1,2,6（1→2→6 一条直线），
+	//        三条分支 P/Q/R 都从 M 的第 1 轮岔出，各自有一轮（图上就是 1 的另外三个孩子）。
+	const M = branch('M', undefined, undefined, [1, 2, 6])
+	const P = branch('P', 'M', 1, [3])
+	const Q = branch('Q', 'M', 1, [4])
+	const R = branch('R', 'M', 1, [5])
+	const sessions = [M, P, Q, R]
+	const visible = new Set(sessions.map((item) => item.id))
 
-	// 分离：e 有一条从第 2 轮岔出的支线 f，拆掉后互不相见
-	const e = branch('e', undefined, undefined, [1, 2, 3])
-	const f = branch('f', 'e', 2, [3])
-	check(JSON.stringify(pick([e, f], 'e')) === '["e","f"]', '没拆之前 e 和 f 本来就同树')
-	check(JSON.stringify(pick([e, f], 'e', { detached: ['f'] })) === '["e"]', '拆掉 f 之后 e 那棵不该再看到 f')
-	check(JSON.stringify(pick([e, f], 'f', { detached: ['f'] })) === '["f"]', '拆出来的 f 该自成一棵')
-
-	// 拆出来的那棵不能缺开头：f 自有轮次只有 3，继承的 1-2 必须改算自有
-	{
-		const visible = new Set(['e', 'f'])
-		const tree = pure.visibleTree([e, f], visible, ['f'])
-		const graph = pure.buildGraph(pure.conversationOf(tree, 'f', undefined), 'f')
-		const turns = graph.nodes
+	const graphOf = (currentId, cuts) =>
+		pure.buildGraph(pure.conversationOf(pure.visibleTree(sessions, visible), currentId, undefined), currentId, cuts)
+	const keysOf = (graph) =>
+		graph.nodes
 			.filter((node) => node.entry !== undefined)
-			.map((node) => node.entry.turn)
-			.sort((left, right) => left - right)
-		check(JSON.stringify(turns) === '[1,2,3]', `拆出来的树该是完整的 1-2-3，实际 ${JSON.stringify(turns)}`)
+			.map((node) => node.key)
+			.sort()
+
+	const whole = graphOf('M')
+	const byKey = new Map(whole.nodes.map((node) => [node.key, node]))
+
+	// 能不能分离：1 是独苗（root 只有它一个孩子）→ 不能；2/3/4/5 互为兄弟 → 都能；
+	// 6 跟在 2 后面，虽然自己是独苗，但祖先 1 有四个孩子 → 也能。
+	check(byKey.get('M:1').canDetach === false, '节点 1 头顶没有岔路，不该给分离')
+	for (const key of ['M:2', 'P:3', 'Q:4', 'R:5']) {
+		check(byKey.get(key).canDetach === true, `${key} 是 1 的孩子之一，该能分离`)
 	}
-	console.log('  三条独立对话各自成树；＋ 登记后同树；分离后互不相见且开头不缺')
+	check(byKey.get('M:6').canDetach === true, '6 自己是独苗，但祖先 1 有岔路，该能分离（John 报的第二种）')
+	console.log('  能否分离：1 不能；2/3/4/5 能；跟在 2 后面的 6 也能')
 
-	// 分离按钮该在哪些节点上出现
+	// 剪掉 2（会话自己的下一轮）—— 老做法根本剪不了这种
 	{
-		const seam = { entry: { turn: 3 }, session: { id: 'f', parentId: 'e' }, parent: { session: { id: 'e' } } }
-		const middle = { entry: { turn: 4 }, session: { id: 'f', parentId: 'e' }, parent: { session: { id: 'f' } } }
-		const lone = { entry: { turn: 1 }, session: { id: 'a', parentId: undefined }, parent: { session: { id: 'a' } } }
-		const joined = { entry: { turn: 1 }, session: { id: 'd', parentId: undefined }, parent: { session: { id: 'x' } } }
-		const root = { entry: undefined, session: { id: 'a' }, parent: undefined }
+		const rest = keysOf(graphOf('P', ['M:2']))
+		const gone = keysOf(graphOf('M', ['M:2']))
+		check(JSON.stringify(rest) === '["M:1","P:3","Q:4","R:5"]', `剪掉 2 之后旧树该剩 1/3/4/5，实际 ${JSON.stringify(rest)}`)
+		check(JSON.stringify(gone) === '["M:1","M:2","M:6"]', `拆出来的该是 1-2-6（带前缀 1），实际 ${JSON.stringify(gone)}`)
+	}
 
-		check(pure.detachTarget(seam) === 'f', '支线起点该能分离')
-		check(pure.detachTarget(middle) === undefined, '支线中间某一轮不是接缝，不该给分离')
-		check(pure.detachTarget(lone) === undefined, '本来就独立的对话没什么可分离的')
-		check(pure.detachTarget(joined, { d: 'b' }) === 'd', '被登记进别人那棵树的对话，该能退出来')
-		check(pure.detachTarget(root) === undefined, '空节点不该给分离')
-		console.log('  分离按钮：支线起点 / 登记过的对话 → 给；中间轮 / 独立对话 / 空节点 → 不给')
+	// 剪掉 6（更深的一层）：新树 = 1-2-6，旧树 = 1-2 + 三条分支
+	{
+		const mine = keysOf(graphOf('M', ['M:6']))
+		check(JSON.stringify(mine) === '["M:1","M:2","M:6"]', `站在 M 上该看到 1-2-6，实际 ${JSON.stringify(mine)}`)
+		const other = keysOf(graphOf('P', ['M:6']))
+		check(JSON.stringify(other) === '["M:1","M:2","P:3","Q:4","R:5"]', `旧树该扣掉 6，实际 ${JSON.stringify(other)}`)
+	}
+
+	// 剪掉一条 fork（老做法唯一支持的情形，不能回归）
+	{
+		const cut = keysOf(graphOf('P', ['P:3']))
+		check(JSON.stringify(cut) === '["M:1","P:3"]', `拆出来的支线该是 1-3，实际 ${JSON.stringify(cut)}`)
+		const left = keysOf(graphOf('M', ['P:3']))
+		check(JSON.stringify(left) === '["M:1","M:2","M:6","Q:4","R:5"]', `旧树该扣掉 3，实际 ${JSON.stringify(left)}`)
+	}
+
+	// 剪完之后列宽要跟着缩：剪掉的子树不该还占着列
+	{
+		const before = graphOf('M').maxColumn
+		const after = graphOf('M', ['P:3', 'Q:4', 'R:5']).maxColumn
+		check(after < before, `剪掉三条分支后列宽该变窄（${before} → ${after}）`)
+		console.log(`  剪边后列宽 ${before} → ${after}`)
+	}
+
+	// 剪完之后 canDetach 要自动跟上：只剩独苗链了就都不能再分离
+	{
+		const lone = graphOf('M', ['P:3', 'Q:4', 'R:5'])
+		check(
+			lone.nodes.every((node) => node.canDetach !== true),
+			'旁边的岔路都拆光了，剩下的独苗链不该还显示分离',
+		)
+		console.log('  岔路拆光后，剩下的独苗链自动收起分离按钮')
+	}
+
+	// 老格式（纯会话 id）要还能用，不能让之前拆过的悄悄失效
+	{
+		const legacy = pure.cutSet(['P', 'M:2'], sessions)
+		check(legacy.has('P:3') && legacy.has('M:2'), `老格式该翻成 P:3，实际 ${JSON.stringify([...legacy])}`)
+		check(pure.cutSet(['查无此人'], sessions).size === 0, '找不到落点的老记录该直接丢掉')
+		check(pure.cutSet(undefined, sessions).size === 0, '空清单不该崩')
+		console.log('  老格式的会话 id 自动翻成节点 key')
 	}
 }
 

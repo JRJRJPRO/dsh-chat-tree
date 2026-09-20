@@ -73,18 +73,14 @@ window.__ModuleLoader__.load({
 		 * @param all - host 返回的全部分支（含已归档）
 		 * @param visible - 可见 sessionId 集合
 		 */
-		function visibleTree(all, visible, detached) {
-			const cut = detached instanceof Set ? detached : new Set(detached || [])
+		function visibleTree(all, visible) {
 			const byId = new Map(all.map((item) => [item.id, item]))
 			return all
 				.filter((item) => visible.has(item.id))
 				.map((item) => {
-					// 被手动"分离"的会话当作没有父亲：它自成一棵树，和原树互不显示。
-					// 它继承来的那几轮要在 buildGraph 里改算自有，否则这棵树开头会缺一截。
-					if (cut.has(item.id)) return Object.assign({}, item, { parentId: undefined, detached: true })
 					let parent = item.parentId
 					const guard = new Set()
-					while (parent !== undefined && !cut.has(parent) && !visible.has(parent) && byId.has(parent) && !guard.has(parent)) {
+					while (parent !== undefined && !visible.has(parent) && byId.has(parent) && !guard.has(parent)) {
 						guard.add(parent)
 						parent = byId.get(parent).parentId
 					}
@@ -148,11 +144,9 @@ window.__ModuleLoader__.load({
 		 * @param currentId - 当前会话
 		 * @returns {nodes, maxDepth, maxColumn}
 		 */
-		function buildGraph(sessions, currentId) {
+		function buildGraph(sessions, currentId, cuts) {
 			const byId = new Map(sessions.map((item) => [item.id, item]))
-			// 被"分离"的会话没有父亲可依靠，继承来的那几轮得改算它自己的，
-			// 否则拆出来的那棵树开头会凭空少一截（1-2-4 只剩一个孤零零的 4）。
-			const ownTurns = (session) => (session.turns || []).filter((entry) => session.detached === true || !entry.inherited)
+			const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
 
 			// 父在前、子在后，保证接线时父节点已经建好
 			const ordered = []
@@ -166,7 +160,7 @@ window.__ModuleLoader__.load({
 			for (const session of sessions) emit(session)
 
 			const root = { key: 'root', kind: 'empty', session: ordered[0], entry: undefined, parent: undefined, children: [], depth: 0 }
-			const nodes = [root]
+			let nodes = [root]
 			const nodeOf = new Map()
 			const attachOf = new Map() // 会话 → 它挂在哪个节点下
 
@@ -193,7 +187,36 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			// ③ 高亮范围：给血缘链上每个会话记一个"轮次上限"，
+			// ③ 剪边：被"分离"的节点断开与父亲的连接，自成一棵树。
+			//
+			// 判据是**图上的分叉**，不是会话边界 —— "会话自己的下一轮"和"fork 出来的新会话"
+			// 在图上都只是某个节点的一个孩子，凭什么只准剪后者？
+			//
+			// 剪在 N：新树 = 根到 N 父亲那段路径（前缀，照抄）+ N 的整棵子树；
+			//         旧树 = 原树扣掉 N 的子树。
+			// 所以每个节点归属于"它头顶最近的那个被剪节点"，没有就归 root。
+			const cutAt = cuts instanceof Set ? cuts : new Set(cuts || [])
+			const ownerOf = new Map([[root, root]])
+			for (const node of nodes) {
+				if (node === root) continue
+				ownerOf.set(node, cutAt.has(node.key) ? node : ownerOf.get(node.parent))
+			}
+
+			// 站在哪棵上：取当前会话最深的那个节点；这条会话一轮都还没有就待在 root 那棵
+			let here = root
+			for (const node of nodes) if (node.session.id === currentId && node.depth > here.depth) here = node
+			const mine = ownerOf.get(here) || root
+
+			if (mine !== root || cutAt.size > 0) {
+				const keep = new Set()
+				for (const node of nodes) if (ownerOf.get(node) === mine) keep.add(node)
+				// 前缀：从被剪点的父亲一路抄到根（只抄这条链，不带它身上挂的别的岔路）
+				for (let node = mine.parent; node !== undefined; node = node.parent) keep.add(node)
+				nodes = nodes.filter((node) => keep.has(node))
+				for (const node of nodes) node.children = node.children.filter((kid) => keep.has(kid))
+			}
+
+			// ④ 高亮范围：给血缘链上每个会话记一个"轮次上限"，
 			//    从当前会话往祖先走，上限取一路上岔路点的**最小值**。
 			//    （A→B→C→D 时 D 只继承 C 的前 2 轮而 C 继承 B 的前 3 轮，
 			//     那么 B 的第 3 轮不在 D 的对话里 —— 只看相邻一层会多算。）
@@ -206,9 +229,10 @@ window.__ModuleLoader__.load({
 				if (item.forkTurn !== undefined) running = Math.min(running, item.forkTurn)
 			}
 
-			// ④ 算 column —— **刻意和 currentId 无关**，否则每切一次分支整张图就左右翻一遍。
+			// ⑤ 算 column —— **刻意和 currentId 无关**，否则每切一次分支整张图就左右翻一遍。
 			//    同一会话的延续继承父节点那一列（主干天然是直线），
 			//    岔出去的子分支各领一个新列，按创建时间从右往左排。
+			//    必须排在剪边**之后**：剪掉的子树不该再占着列宽。
 			let nextColumn = 0
 			root.column = 0
 			const assign = (node) => {
@@ -220,7 +244,7 @@ window.__ModuleLoader__.load({
 					assign(kid)
 				}
 			}
-			assign(root)
+			assign(root) // 剪边后 root 必定还在（前缀一路抄到根）
 
 			// 全局编号按时间排：每条分支各自从 1 数会撞车（父的 #3 和子的 #3 是两个节点）
 			const timed = nodes.filter((node) => node.entry !== undefined).sort((left, right) => (left.entry.time || 0) - (right.entry.time || 0))
@@ -233,6 +257,10 @@ window.__ModuleLoader__.load({
 			for (const node of nodes) {
 				// 根部那个空节点永远算在路径上
 				node.active = node.entry === undefined ? true : node.entry.turn <= (limitOf.has(node.session.id) ? limitOf.get(node.session.id) : -1)
+				// 能不能分离：一路往上只要有哪个祖先有多个孩子就能。
+				// 父在前子在后遍历，所以这里可以直接吃父亲算好的结果 —— O(1)，
+				// 不用点击时再回溯，也不会因为别处新增/分离而过期。
+				node.canDetach = node.parent !== undefined && (node.parent.children.length > 1 || node.parent.canDetach === true)
 				maxDepth = Math.max(maxDepth, node.depth)
 				maxColumn = Math.max(maxColumn, node.column || 0)
 			}
@@ -314,23 +342,30 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 这个节点能不能"分离"，能的话分离谁。
+		 * 把存盘的 `detached` 翻成一组**节点 key**。
 		 *
-		 * 只有**支线的起点**才谈得上分离 —— 即某条会话自有轮次里的第一轮，
-		 * 且它上面还挂着别的东西（有父会话，或者它是被登记进别人那棵树的对话首条）。
-		 * 中间某一轮点分离没有意义：那不是接缝。
-		 * @param node - 被点的节点
-		 * @param groupOf - 登记表
-		 * @returns 要分离的 sessionId；不能分离就 undefined
+		 * 现在剪的是图上的边，所以记的是 `<会话>:<轮次>`。早先记的是纯会话 id
+		 * （那一版只会剪"fork 出来的新会话"），遇到就翻成它第一个自有轮次的节点，
+		 * 免得你之前拆过的东西悄悄失效。
+		 * @param detached - 存盘的清单
+		 * @param sessions - 本树的分支，用来给老格式找落点
+		 * @returns 节点 key 集合
 		 */
-		function detachTarget(node, groupOf) {
-			if (node.entry === undefined || node.parent === undefined) return undefined
-			// 不是自有轮次的第一轮 → 不是接缝
-			if (node.parent.session.id === node.session.id) return undefined
-			const grouped = groupOf !== undefined && groupOf !== null && groupOf[node.session.id] !== undefined
-			if (node.session.parentId === undefined && !grouped) return undefined
-			return node.session.id
+		function cutSet(detached, sessions) {
+			const out = new Set()
+			for (const item of detached || []) {
+				if (typeof item !== 'string' || item.length === 0) continue
+				if (item.includes(':')) {
+					out.add(item)
+					continue
+				}
+				const session = (sessions || []).find((one) => one.id === item)
+				const first = session && (session.turns || []).find((entry) => !entry.inherited)
+				if (first !== undefined) out.add(`${item}:${first.turn}`)
+			}
+			return out
 		}
+
 
 		/**
 		 * 在某个节点上按 ＋ 该干什么。
@@ -989,14 +1024,14 @@ window.__ModuleLoader__.load({
 			if (!visible.has(current)) visible.add(current)
 
 			const shape = (outlines && outlines.shape) || {}
-			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible, shape.detached), current, shape.groupOf)
+			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current, shape.groupOf)
 
 			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 			//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
 			//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
 			let graph
 			try {
-				graph = picked.length > 0 ? buildGraph(picked, current) : undefined
+				graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked)) : undefined
 			} catch (error) {
 				console.warn('[dsh-tree] buildGraph failed', error)
 			}
@@ -1145,11 +1180,8 @@ window.__ModuleLoader__.load({
 					h(Detail, {
 						node: hover ? hover.node : null,
 						y: hover ? hover.y : 0,
-						detachable: hover !== null && detachTarget(hover.node, shape.groupOf) !== undefined,
-						onDetach: (node) => {
-							const target = detachTarget(node, shape.groupOf)
-							if (target !== undefined) api.reshape({ session: target, detach: true })
-						},
+						detachable: hover !== null && hover.node.canDetach === true,
+						onDetach: (node) => api.reshape({ session: node.key, detach: true }),
 						railWidth, labels, hold, release,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFork: (node) => {
@@ -1277,7 +1309,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, detachTarget, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

@@ -358,8 +358,7 @@ function writeShape(next) {
 	const target = shapePath()
 	mkdirSync(dirname(target), { recursive: true })
 	const temporary = `${target}.${randomUUID()}.tmp`
-	writeFileSync(temporary, `${JSON.stringify(next)}
-`, { mode: 0o600 })
+	writeFileSync(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600 })
 	renameSync(temporary, target)
 	return next
 }
@@ -367,8 +366,11 @@ function writeShape(next) {
 /**
  * 打一条形状补丁。
  *
- * `group` ：把 `session` 登记到 `group` 这棵树（group 为空则销掉登记）。
- * `detach`：真假—— 把 `session` 拆出来自成一棵 / 收回去。
+ * `group` ：把一条**对话**登记到 `group` 这棵树（group 为空则销掉登记）。
+ * `detach`：把一个**节点**（`<会话>:<轮次>`）从它父亲那里剪下来 / 接回去。
+ *
+ * 两个字段的 `session` 含义不同（会话 id vs 节点 key），但都只是个不透明的字符串，
+ * host 半不解析也不校验形状 —— 怕的是以后改了 key 格式还要来改这里。
  * 两者可以同时给。
  * @param patch - `{session, group?, detach?}`
  * @returns 打完补丁的形状
