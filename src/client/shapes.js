@@ -80,45 +80,32 @@ export function iconUrl(id) {
 	return `${ICON_URL}?id=${encodeURIComponent(id)}`
 }
 
-/**
- * 四个角色各自的默认颜色与形状。设置里改的就是这张表。
- *
- * 空节点默认跟当前路径同色：它本来就永远在当前路径上，今天画出来就是这个蓝的，
- * 不该因为"多了个设置项"就悄悄换个样子。虚线边是它自己的记号，不跟着配置走。
- */
-// ===== 配色方案：两套，每套都有亮色和暗色两个版本 =====
+// ===== 配色：一套，亮色和暗色各一版 =====
 //
 // 为什么要分明暗两版：同一个色号在白底和深底上**观感完全不同**。亮蓝 `#58a6ff`
-// 在深底上清亮，糊到白底上就发飘、和灰的区分度掉一半。所以每套方案的亮色版
-// 都往下压了明度、提了饱和度（深一点才压得住白底），暗色版则相反。
+// 在深底上清亮，糊到白底上就发飘、和灰的区分度掉一半。所以亮色版整体压了明度、
+// 提了饱和度（深一点才压得住白底），暗色版则相反。
 //
 // 只有这四个"角色色"是真实色值，因为它们要参与 `rgba()` 运算（路径垫色、外发光）；
 // 其余中性色全走宿主的 `--dsw-alias-*` 变量（见 const.js 的 C）。
 //
-// ⚠️ 加第三套方案：往这张表里加一项，**亮暗两版都要给**，别只填一半。
+// ⚠️ 改色值的时候**两版一起看**：亮版要压得住白底，暗版要在深底上亮得起来，
+//    只改一边必然有一个模式变难看。test-highlight 的用例 16 盯着这件事。
 
-/** 两套配色。`value` 存进设置，`label` 给卡片上的按钮用。 */
-export const PALETTES = [
-	{
-		value: 'graphite',
-		label: '石墨',
-		hint: '灰底蓝路径，橙色标压缩 —— 默认那套。',
-		dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff' },
-		light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#bc4c00', emptyColor: '#1f6feb' },
-	},
-	{
-		value: 'teal',
-		label: '青竹',
-		hint: '青绿路径配琥珀，和蓝色的宿主界面不撞色。',
-		dark: { normalColor: '#6e7681', currentColor: '#2dd4bf', compactColor: '#fbbf24', emptyColor: '#2dd4bf' },
-		light: { normalColor: '#8c959f', currentColor: '#0f766e', compactColor: '#b45309', emptyColor: '#0f766e' },
-	},
-]
+/**
+ * 唯一那套配色。
+ *
+ * 空节点跟当前路径同色：它本来就永远在当前路径上，不该长得像另一种东西。
+ * 虚线边才是它自己的记号（在 ROLES 里），不跟着颜色走。
+ */
+export const PALETTE = {
+	dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff' },
+	// 压缩色用的是宿主自己的 amber-600（`--dsw-static-amber-600`），
+	// 和界面其它"警示"语义同色；早先那个 #bc4c00 烧焦橙在白底上太闷。
+	light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#dd8629', emptyColor: '#1f6feb' },
+}
 
-/** 默认配色方案。 */
-export const PALETTE_FALLBACK = PALETTES[0].value
-
-/** 四个角色各自的形状默认值。颜色跟着 `PALETTES` 走，不写在这儿。 */
+/** 四个角色各自的形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。 */
 const SHAPE_DEFAULTS = {
 	normalShape: 'circle',
 	currentShape: 'circle',
@@ -127,23 +114,21 @@ const SHAPE_DEFAULTS = {
 }
 
 /**
- * 一套方案在某个明暗下长什么样。
- * @param value - 方案 id；认不得就退回默认那套
+ * 当前明暗下的那一版。
  * @param dark - 是不是暗色
  * @returns 四个角色的颜色 + 形状
  */
-export function paletteOf(value, dark) {
-	const palette = PALETTES.find((one) => one.value === value) || PALETTES[0]
-	return Object.assign({}, SHAPE_DEFAULTS, dark === false ? palette.light : palette.dark)
+export function paletteOf(dark) {
+	return Object.assign({}, SHAPE_DEFAULTS, dark === false ? PALETTE.light : PALETTE.dark)
 }
 
 /**
- * 默认主题 = 默认方案的暗色版。
+ * 默认主题 = 暗色版。
  *
  * 留着它是因为一堆地方要一个"没有设置时也能画"的兜底（`shapeOf(kind, active)`
- * 不传 theme 时用的就是它）。真正画树时 Rail 会按**当前方案 + 当前明暗**现算一份。
+ * 不传 theme 时用的就是它）。真正画树时 Rail 会按**当前明暗**现算一份。
  */
-export const THEME = paletteOf(PALETTE_FALLBACK, true)
+export const THEME = paletteOf(true)
 
 // ===== 角色表：一个节点长什么样，全从这里查 =====
 //

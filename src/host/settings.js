@@ -13,9 +13,8 @@ export const SETTINGS_NS = 'dsh-tree'
 export const SETTINGS_SCHEMA = Schema.object({
 	visibleRadius: Schema.natural().max(30).default(12).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
-	// 配色方案。四个角色的颜色**默认跟着它走**，并且亮色/暗色各有一版；
-	// 下面那几个 *Color 只有用户亲手改过才算数（见浏览器半的 themeFrom）。
-	palette: Schema.string().default('graphite').description('配色方案：graphite 石墨 / teal 青竹；亮暗两套自动切换'),
+	// ⚠️ 下面这几个 *Color 的 default 只是"存进配置文件时的样子"。
+	// 真正画树用的是浏览器半的 themeFrom：**没被用户亲手改过的，跟着亮色/暗色现算**。
 	// 颜色存 `#rrggbb`，形状存 circle / rounded / square / diamond。
 	// 这里只声明成字符串，合法值由浏览器半的 FIELDS.accept 把关 ——
 	// 存进来一个认不得的值不该把树搞崩，而是退回默认。

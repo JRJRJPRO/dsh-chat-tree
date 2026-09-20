@@ -826,7 +826,7 @@ console.log('\n用例 15：空节点也归自己管')
 }
 
 
-console.log('用例 16：亮色 / 暗色两套配色')
+console.log('用例 16：亮色 / 暗色两版')
 {
 	// 亮度（相对亮度的简化版，够用来分辨"深色/浅色"）
 	const lum = (hex) => {
@@ -835,47 +835,44 @@ console.log('用例 16：亮色 / 暗色两套配色')
 	}
 	const roles = ['normalColor', 'currentColor', 'compactColor', 'emptyColor']
 
-	check(pure.PALETTES.length >= 2, `只有 ${pure.PALETTES.length} 套配色，说好的两套`)
-	for (const palette of pure.PALETTES) {
-		for (const mode of ['light', 'dark']) {
-			for (const role of roles) {
-				const hex = palette[mode][role]
-				check(pure.isHex(hex), `${palette.value} 的 ${mode}.${role} 不是合法色值：${hex}`)
-			}
-		}
-		// ⚠️ 两版必须真的不一样。直接把暗色版抄一份当亮色版，是这类"支持亮色模式"
-		//    最常见的假动作 —— 编译过、跑得动、看着依然难看。
-		const same = roles.filter((role) => palette.light[role] === palette.dark[role])
-		check(same.length < roles.length, `${palette.value} 的亮色版和暗色版一模一样：${same.join(' ')}`)
-		// 亮色版要压得住白底，暗色版要在深底上亮得起来
-		for (const role of ['currentColor', 'compactColor']) {
-			check(lum(palette.light[role]) < 0.62, `${palette.value} 亮色版的 ${role} 太浅，白底上会发飘`)
-			check(lum(palette.dark[role]) > 0.38, `${palette.value} 暗色版的 ${role} 太暗，深底上看不清`)
+	for (const mode of ['light', 'dark']) {
+		for (const role of roles) {
+			const hex = pure.PALETTE[mode][role]
+			check(pure.isHex(hex), `${mode}.${role} 不是合法色值：${hex}`)
 		}
 	}
-	console.log(`  ${pure.PALETTES.map((one) => one.label).join(' / ')}，各自亮暗两版都合法且确实不同`)
+	// ⚠️ 两版必须真的不一样。直接把暗色版抄一份当亮色版，是这类"支持亮色模式"
+	//    最常见的假动作 —— 编译过、跑得动、看着依然难看。
+	const same = roles.filter((role) => pure.PALETTE.light[role] === pure.PALETTE.dark[role])
+	check(same.length < roles.length, `亮色版和暗色版一模一样：${same.join(' ')}`)
+
+	// 亮色版要压得住白底，暗色版要在深底上亮得起来
+	for (const role of ['currentColor', 'compactColor']) {
+		check(lum(pure.PALETTE.light[role]) < 0.62, `亮色版的 ${role} 太浅，白底上会发飘`)
+		check(lum(pure.PALETTE.dark[role]) > 0.38, `暗色版的 ${role} 太暗，深底上看不清`)
+	}
+	// ⚠️ 压缩色在亮色下**别再往深里调**：它是个"黄"，调过头就成了烧焦的棕，
+	//    一眼看不出是同一个语义（John 报过一次 #bc4c00 太闷）。
+	check(lum(pure.PALETTE.light.compactColor) > 0.45, `亮色版的压缩色太闷（${pure.PALETTE.light.compactColor}），看着不像黄色了`)
+	console.log(`  亮暗两版都合法且确实不同；亮色压缩色 ${pure.PALETTE.light.compactColor}（亮度 ${lum(pure.PALETTE.light.compactColor).toFixed(2)}）`)
 }
 
-console.log('用例 17：改过的颜色钉死，没改过的跟着方案和明暗走')
+console.log('用例 17：改过的颜色钉死，没改过的跟着明暗走')
 {
-	const dark = pure.themeFrom({ palette: 'teal' }, {}, true)
-	const light = pure.themeFrom({ palette: 'teal' }, {}, false)
-	check(dark.currentColor !== light.currentColor, '换明暗时当前路径色没变 —— 方案没起作用')
-	check(dark.currentColor === pure.paletteOf('teal', true).currentColor, '暗色下没取到青竹的色')
+	const dark = pure.themeFrom({}, {}, true)
+	const light = pure.themeFrom({}, {}, false)
+	check(dark.currentColor !== light.currentColor, '换明暗时当前路径色没变')
+	check(dark.currentColor === pure.paletteOf(true).currentColor, '暗色下没取到暗色版')
 
-	// 用户亲手改过的那一项，换方案换明暗都不许动
-	const pinned = pure.themeFrom({ palette: 'teal', currentColor: '#ff00ff' }, { currentColor: true }, false)
-	check(pinned.currentColor === '#ff00ff', `改过的颜色被方案覆盖了：${pinned.currentColor}`)
-	check(pinned.compactColor === pure.paletteOf('teal', false).compactColor, '没改过的那项反而没跟着方案走')
+	// 用户亲手改过的那一项，换明暗都不许动
+	const pinned = pure.themeFrom({ currentColor: '#ff00ff' }, { currentColor: true }, false)
+	check(pinned.currentColor === '#ff00ff', `改过的颜色被覆盖了：${pinned.currentColor}`)
+	check(pinned.compactColor === pure.paletteOf(false).compactColor, '没改过的那项反而没跟着明暗走')
 
-	// 存了值但没标记成"用户改的"（比如老版本留下的默认值）→ 仍然跟着方案走
-	const stale = pure.themeFrom({ palette: 'graphite', currentColor: '#ff00ff' }, {}, true)
-	check(stale.currentColor !== '#ff00ff', '没标 user 的存量值把方案盖住了')
-
-	// 方案名认不得 → 退回第一套，别把树画空
-	const junk = pure.themeFrom({ palette: '不存在的方案' }, {}, true)
-	check(pure.isHex(junk.currentColor), '认不得的方案名把颜色弄没了')
-	console.log('  换方案/换明暗立刻生效；亲手改过的那一项钉死；脏值和野方案都兜住')
+	// 存了值但没标记成"用户改的"（比如老版本留下的默认值）→ 仍然跟着明暗走
+	const stale = pure.themeFrom({ currentColor: '#ff00ff' }, {}, true)
+	check(stale.currentColor !== '#ff00ff', '没标 user 的存量值把当前配色盖住了')
+	console.log('  换明暗立刻生效；亲手改过的那一项钉死；存量脏值兜住')
 }
 
 console.log('用例 18：普通节点在亮色下必须还是"灰圈 + 淡填充"')

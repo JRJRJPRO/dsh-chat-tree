@@ -4,11 +4,11 @@
  * 容器归我们自己画：宿主只铺一个 `<ul>` 再按 namespace 派发，所以根元素**必须是 `<li>`**。
  */
 import { h, react } from './runtime.js'
-import { CUSTOM, ICON_EDGE, PICTURE, fade, paletteOf, preview } from './shapes.js'
+import { CUSTOM, ICON_EDGE, PICTURE, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
 import { useObservable } from './hooks.js'
 import { useColorScheme } from './theme.js'
-import { FIELDS, PALETTES, ROWS, themeFrom } from './settings-model.js'
+import { FIELDS, ROWS, themeFrom } from './settings-model.js'
 
 /**
  * 宿主设置卡片的设计令牌，照抄 ui-settings-plugins 的 PluginCard / fields。
@@ -45,16 +45,6 @@ export const S = {
 	chip: (picked, on) => ({
 		appearance: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
 		width: '28px', height: '28px', padding: 0, cursor: on ? 'pointer' : 'default', overflow: 'hidden',
-		borderWidth: '.5px', borderStyle: 'solid',
-		borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
-		background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
-		borderRadius: '6px',
-	}),
-	// 配色方案按钮：比形状按钮宽，因为里面要放四个色点 + 方案名
-	scheme: (picked, on) => ({
-		appearance: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
-		height: '28px', padding: '0 10px', cursor: on ? 'pointer' : 'default',
-		color: 'var(--dsw-alias-label-primary)',
 		borderWidth: '.5px', borderStyle: 'solid',
 		borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
 		background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
@@ -243,42 +233,6 @@ export function SettingsCard(props) {
 			}),
 		])
 
-	/**
-	 * 配色方案：两个按钮，每个按钮上直接把那套方案的四个角色色点出来。
-	 * 和形状选择器同一个思路 —— 按钮上看到的就是树上将来的样子，不写"石墨蓝"这种字。
-	 */
-	const scheme = (spec) => {
-		const now = valueOf(spec.field)
-		return h('div', { key: spec.field, style: S.field }, [
-			head(spec.label, (PALETTES.find((one) => one.value === now) || PALETTES[0]).label, [spec.field]),
-			h('div', { key: 'bd', style: S.picks },
-				PALETTES.map((one) => {
-					const colors = paletteOf(one.value, dark)
-					return h('button', {
-						key: one.value, type: 'button', disabled: !on, title: one.hint,
-						style: S.scheme(now === one.value, on),
-						onClick: () => put(spec.field, one.value),
-					}, [
-						h('span', { key: 'd', style: { display: 'inline-flex', gap: '3px', alignItems: 'center' } },
-							ROWS.map((row) =>
-								h('span', {
-									key: row.key,
-									style: {
-										width: '9px', height: '9px', borderRadius: '50%', boxSizing: 'border-box',
-										border: `1.5px solid ${colors[row.color]}`,
-										background: fade(colors[row.color], 0.3),
-									},
-								}),
-							),
-						),
-						h('span', { key: 'l', style: { fontSize: '12px' } }, one.label),
-					])
-				}),
-			),
-			h('p', { key: 'p', style: S.hint }, spec.hint),
-		])
-	}
-
 	/** 一个角色一行：左边颜色，右边形状。 */
 	const pair = (spot) => {
 		const color = valueOf(spot.color)
@@ -310,7 +264,6 @@ export function SettingsCard(props) {
 		open
 			? h('div', { key: 'b', style: S.body }, [
 					...FIELDS.filter((spec) => spec.kind === 'range').map(row),
-					...FIELDS.filter((spec) => spec.kind === 'palette').map(scheme),
 					...ROWS.map(pair),
 					failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 					on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),

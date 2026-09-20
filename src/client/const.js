@@ -54,7 +54,7 @@ export function scaleZ(percent) {
 // 用户改宿主主题的那一刻就跟着变了。
 //
 // 只有"角色色"（普通/当前/压缩/空节点）还是真实色值 —— 它们要参与 `rgba()` 运算
-// （垫色、外发光），而 CSS 变量算不了。那几个在 shapes.js 的 PALETTES 里，分明暗两套。
+// （垫色、外发光），而 CSS 变量算不了。那几个在 shapes.js 的 PALETTE 里，分明暗两版。
 export const C = {
 	/** 连线、卡片描边 */
 	line: 'var(--dsw-alias-border-l3)',
