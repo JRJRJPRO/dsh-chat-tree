@@ -494,7 +494,56 @@ console.log('用例 10：整条 /outlines 管线（假 ctx）')
 		// 沿用上一次读到的：撤回只发生在两轮之间，所以这一轮里旧值必然还是对的。
 		// 退回空的话，每跑一轮撤回过的节点就诈尸一次。
 		check(busy.turns[1].rewound === true, '没读成就把撤回戳丢了 —— 该沿用上一次读到的')
+		// ③ 这条会话的正文托管给了外部引擎（有旁车）→ 前端据此判断"从这儿开分支要不要先继承上下文"
+		check(idle.claude === true, '有旁车却没报 claude，前端就不知道该不该拦 ＋')
+		check(pure.forkBlockedWhy({ entry: { turn: 1 }, children: [{}, {}], session: busy }) !== '', 'host 报了 running+claude，前端却没拦住 ＋ —— 两边字段名对不上')
 		console.log('  空闲 → 读到、不报 pending；在跑 → 不读、沿用旧值、报 pending，前端认得出')
+	} finally {
+		if (was === undefined) delete process.env.DSH_HOME
+		else process.env.DSH_HOME = was
+		fs.rmSync(home, { recursive: true, force: true })
+	}
+}
+
+console.log('用例 11：哪条分支该标成「无上下文」')
+{
+	const was = process.env.DSH_HOME
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-amnesia-'))
+	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
+	fs.mkdirSync(folder, { recursive: true })
+	/**
+	 * 给某条会话摆一份旁车（内容不重要，判据只看文件在不在）。
+	 * @param id - 会话 id
+	 */
+	const putSidecar = (id) => fs.writeFileSync(path.join(folder, `${Buffer.from(id).toString('base64url')}.json`), '{}')
+
+	// 父 claude 会话 → 三个孩子：接上了的 / 没接上的 / 普通 provider 那条
+	putSidecar('p-claude')
+	putSidecar('c-ok') // 接上了：自己有旁车
+	const headers = [
+		{ id: 'p-claude', cwd: '/x', createdAt: 1 },
+		{ id: 'c-ok', cwd: '/x', createdAt: 2, parentSession: 'p-claude', isSeeded: true },
+		{ id: 'c-amnesiac', cwd: '/x', createdAt: 3, parentSession: 'p-claude', isSeeded: true },
+		{ id: 'p-plain', cwd: '/x', createdAt: 4 },
+		{ id: 'c-plain', cwd: '/x', createdAt: 5, parentSession: 'p-plain', isSeeded: true },
+	]
+	const ctx = {
+		agents: { get: () => ({ status: 'idle' }) },
+		sessionPersistence: {
+			list: async () => headers.map((header) => ({ revision: 1, header })),
+			open: async () => ({ read: async () => ({ events: [] }), close: async () => {} }),
+		},
+	}
+
+	process.env.DSH_HOME = home
+	try {
+		const byId = new Map((await collect(ctx, '/x')).sessions.map((item) => [item.id, item]))
+		check(byId.get('c-amnesiac').contextMissing === true, '该继承却没继承到的分支必须被标出来 —— 不标就是让人以为它记得前情')
+		check(byId.get('c-ok').contextMissing === undefined, '已经接上了的分支不许误报')
+		check(byId.get('c-plain').contextMissing === undefined, '普通 provider 的分支本来就没有外部记忆可继承，不许误报')
+		check(byId.get('p-claude').contextMissing === undefined, '不是 fork 出来的会话根本谈不上"继承"')
+		check(byId.get('p-claude').claude === true && byId.get('p-plain').claude === undefined, 'claude 标记认错了会话')
+		console.log('  没接上 → 标；接上了 / 普通 provider / 非分支 → 不标')
 	} finally {
 		if (was === undefined) delete process.env.DSH_HOME
 		else process.env.DSH_HOME = was

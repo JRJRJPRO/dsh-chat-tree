@@ -8,6 +8,7 @@
  *    `ctx.sessions.fork`，一次都没生效；原生消息行上那个分支按钮也绕得过去。
  */
 import { graft } from './graft.js'
+import { statusProbe } from './rewind.js'
 import { lineage } from './lineage.js'
 
 /**
@@ -78,8 +79,13 @@ export function adoptBranch(ctx, agent) {
 
 	// ② 需要的话把外部引擎的记忆接上（普通 provider 什么都不会发生）
 	try {
-		const result = graft(session.id, header.parentSession, forkTurnOf(session))
+		// fail-closed：认不出状态就当成在跑。赌错了只是这条分支没上下文（会明说），
+		// 赌反了是打死父会话正在跑的那一轮。
+		const status = statusProbe(ctx)
+		const result = graft(session.id, header.parentSession, forkTurnOf(session), (id) => status(id) !== 'idle')
 		if (result.grafted) ctx.logger?.info?.(`dsh-tree: ${session.id} 已接上上下文 ${JSON.stringify(result)}`)
+		else if (result.reason === 'parent-busy')
+			ctx.logger?.warn?.(`dsh-tree: ${session.id} 父会话正在跑，读它的记录会打断那一轮，所以这条分支没有继承上下文`)
 		else if (result.reason !== 'native-context-is-enough') ctx.logger?.info?.(`dsh-tree: ${session.id} 未接上下文（${result.reason}）`)
 	} catch (error) {
 		ctx.logger?.warn?.(`dsh-tree: ${session.id} 接上下文失败：${String(error)}`)

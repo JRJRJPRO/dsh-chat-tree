@@ -286,6 +286,44 @@ export function branchAction(node) {
 }
 
 /**
+ * 这个 ＋ 现在为什么按不了。**按不了就说清楚，别开出一条看着正常其实失忆的分支。**
+ *
+ * 只有一种情况：从一条**托管给外部引擎**（claude 这类）的会话上真的开岔路，
+ * 而它正在跑。新分支要继承上下文就得读它的记录，而读那个文件会打断它正在跑的那一轮
+ * （见 src/host/rewind.js 顶上的说明）—— 所以我们不读，也就接不上。
+ *
+ * 为什么不是"照开，只是没上下文"：那条分支看起来和别的一模一样，你发现不了它失忆，
+ * 直到它答得驴唇不对马嘴。为什么不是"先开着、等跑完再补"：那几秒里你看到的仍然是
+ * 一条看着正常的分支，而且你会以为卡住了去瞎点。
+ *
+ * 另外三种动作都不需要读它的记录，所以一律不拦：
+ *   · `open` —— 就在本会话接着问，没有新会话；
+ *   · `fresh` —— 空节点上开一条全新对话，本来就没有上下文可继承；
+ *   · 普通 provider —— 对话原文就在 dsh 日志里，原生 fork 抄过去就够了。
+ * @param node - 被点的节点
+ * @returns 原因；能开就是空串
+ */
+export function forkBlockedWhy(node) {
+	if (branchAction(node) !== 'fork') return ''
+	if (node.session.claude !== true || node.session.running !== true) return ''
+	return '这条对话正在运行，现在读它的记录会打断那一轮，所以开不了分支 —— 跑完再开'
+}
+
+/**
+ * 这个节点是不是一条分支的头一个自有轮次。
+ *
+ * 「没继承到上下文」这件事是**整条分支**的属性，但挂在每个节点上会刷屏，
+ * 挂在岔路口那一个上最贴合"从这儿往后它就不记得前面了"。
+ * @param node - 节点
+ * @returns 是不是分支头
+ */
+export function isBranchHead(node) {
+	if (node.entry === undefined) return false
+	const first = (node.session.turns || []).find((entry) => !entry.inherited)
+	return first !== undefined && first.turn === node.entry.turn
+}
+
+/**
  * 点一个节点时该在哪个会话里跳过去。**尽量不换路径**：节点若在当前路径上，
  * 就留在当前会话里滚过去（fork 抄日志时 seq 没变，同一个 seq 就是同一轮）。
  *

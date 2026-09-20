@@ -1,9 +1,36 @@
 /**
  * 组装 `/outlines` 的响应体。
  */
+import { isClaudeSession } from './graft.js'
 import { lineage } from './lineage.js'
 import { cache, outlineOf } from './outline.js'
 import { markRewound, rewindStateOf, statusProbe } from './rewind.js'
+
+/**
+ * 这条分支在外部引擎那边有没有上下文。
+ *
+ * 判据全靠文件在不在，**不读任何内容**：自己没有旁车，而血缘上有人有 —— 那就是
+ * "本该继承却没继承到"。至于当初为什么没接上（父会话在跑 / 找不到锚点 / 那时候还没装
+ * 这个插件），事后分不出来，也不需要分：对用户来说结论都是同一句"这条分支没上下文"。
+ *
+ * ⚠️ 已知的不准：一旦你在这条分支里发过消息，dsh-claude 会给它建一份自己的旁车，
+ *    这个判据随即失效（不再报警），可那条分支的**前几轮**仍然是失忆的。
+ *    所以这个标记的作用是"用它之前提醒你"，不是"永久病历"。
+ * @param sessionId - 会话 id
+ * @param isSeeded - 是不是 fork 出来的
+ * @returns 是不是缺上下文
+ */
+function contextMissing(sessionId, isSeeded) {
+	if (!isSeeded || isClaudeSession(sessionId)) return false
+	const seen = new Set([sessionId])
+	let at = lineage.get(sessionId)
+	while (at !== undefined && !seen.has(at)) {
+		seen.add(at)
+		if (isClaudeSession(at)) return true // 祖先托管给了外部引擎，我们却是空的
+		at = lineage.get(at)
+	}
+	return false
+}
 
 /**
  * 组装整个响应体。
@@ -42,6 +69,11 @@ export async function collect(ctx, cwd) {
 			// 正在跑的对话不给合并 —— 合并本身只写 shape.json 不危险，但那棵树的形状
 			// 现在算不准（撤回记录读不了），刚合进来就画错更难解释。
 			...(status(header.id) === 'running' ? { running: true } : {}),
+			// 对话正文托管给了外部引擎（claude 这类）。前端据此判断"从这儿开分支要不要
+			// 先继承上下文"—— 普通 provider 不需要，日志里就是全文。
+			...(isClaudeSession(header.id) ? { claude: true } : {}),
+			// 该继承上下文却没继承到。前端在这条分支头上挂个牌子明说，别让人以为它记得前情。
+			...(contextMissing(header.id, header.isSeeded === true) ? { contextMissing: true } : {}),
 		})
 	}
 

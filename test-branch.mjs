@@ -34,7 +34,9 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 
 // 注意顺序：先记下真实 home，后面才把 DSH_HOME 改指到临时目录。
-const REAL_HOME = process.env.DSH_HOME_REAL || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+// 默认值和别的脚本保持一致。原来默认 `~/.dsh`，在这台机器上找不到 →
+// **整份脚本静默跳过**，而它恰好是唯一一个真跑 graft 的测试。
+const REAL_HOME = process.env.DSH_HOME_REAL || process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 const SESSIONS = path.join(REAL_HOME, 'sessions')
 const SIDECARS = path.join(REAL_HOME, 'plugins', 'dsh-claude', 'sessions')
 
@@ -104,7 +106,13 @@ fs.mkdirSync(sidecarDir, { recursive: true })
 
 const host = await import(new URL('./index.js', import.meta.url))
 const { adoptBranch, lineage } = host.__test
-const ctx = { logger: { info() {}, warn() {} } }
+// ⚠️ `agents` 不能省。graft 是 fail-closed 的：问不出会话状态就当它在跑、拒绝读旁车。
+//    少了这张表，接管会**静悄悄地什么都不干**（上面那句 statusProbe 会返回 unknown）。
+//    `status: 'idle'` 就是离线测试里的常态：没有任何一轮在跑。
+const ctx = {
+	logger: { info() {}, warn() {} },
+	agents: { get: () => ({ status: 'idle' }) },
+}
 
 // ===== 第 2 步：倒带 —— 把一个分支还原成"刚出生"的样子 =====
 
@@ -274,7 +282,53 @@ if (claudeCase === undefined) {
 	}
 }
 
-// ===== 第 5 步：断言 C —— 不该动的时候一个字节都不动 =====
+// ===== 第 5 步：断言 B3 —— 父会话正在跑的时候，一个字节都不读 =====
+//
+// 这是最要命的一条。读父会话的旁车会让 dsh-claude 的原子写 rename 撞上 EPERM，
+// 它把那当成"Claude Code 掉线"，**整轮判失败而且故意不重放**。
+// 所以宁可让新分支没有上下文（界面上会明说），也绝不在它跑着的时候去读。
+{
+	const busyCase = branches.find((agent) => {
+		const parentId = agent.session.header.parentSession
+		return parentId !== undefined && fs.existsSync(path.join(SIDECARS, sidecarName(parentId)))
+	})
+	if (busyCase === undefined) console.log('断言 B3：跳过（盘上没有 claude 分支）')
+	else {
+		const childFile = path.join(sidecarDir, sidecarName(busyCase.id))
+		fs.rmSync(childFile, { force: true })
+		const asked = []
+		const busyCtx = {
+			logger: { info() {}, warn() {} },
+			agents: { get: (id) => (asked.push(id), { status: 'running' }) },
+		}
+		adoptBranch(busyCtx, rewind(busyCase.id))
+		check(!fs.existsSync(childFile), '父会话在跑的时候，绝不能写出 sidecar —— 写了就说明读过它')
+		check(asked.length > 0, '压根没问过"它在不在跑"，那这道闸等于不存在')
+
+		// 反过来：同一个分支，父会话空闲时必须照常接上 —— 否则这道闸就是把功能关了
+		adoptBranch(ctx, rewind(busyCase.id))
+		check(fs.existsSync(childFile), '父会话空闲时必须照常接上上下文（闸不能把功能一起关掉）')
+
+		// 认不出状态时必须当成"在跑"（fail-closed）：赌错了的代价是打死用户一轮对话
+		fs.rmSync(childFile, { force: true })
+		adoptBranch({ logger: { info() {}, warn() {} } }, rewind(busyCase.id))
+		check(!fs.existsSync(childFile), '问不出会话状态时必须当成"在跑"，不许乐观放行')
+
+		// 直接调 graft 而漏给 isBusy：必须当场拒绝，不许"默认谁都不在跑"。
+		// 这是个**沉默的**错误路径 —— 漏给一个参数就等于把整道闸拆了，
+		// 而拆了之后一切看起来都正常，直到某天打死用户一轮对话。
+		const sloppy = host.graft(busyCase.id, busyCase.session.header.parentSession, 1)
+		check(sloppy.grafted === false && sloppy.reason === 'bad-request', `漏给 isBusy 时必须拒绝，实际 ${JSON.stringify(sloppy)}`)
+		check(!fs.existsSync(childFile), '漏给 isBusy 却还是写了文件 —— 那道闸形同虚设')
+
+		// 把世界恢复成断言 B 留下的样子：那份 sidecar 本来就该在，
+		// 下面第 6 步要数文件个数，少一份的话重启重放那一段会把它又建出来
+		adoptBranch(ctx, rewind(busyCase.id))
+		console.log('断言 B3：父会话在跑 / 状态认不出 → 不读不写；空闲 → 照常接上')
+	}
+}
+
+// ===== 第 6 步：断言 C —— 不该动的时候一个字节都不动 =====
 
 const before = new Set(fs.readdirSync(sidecarDir))
 

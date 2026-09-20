@@ -164,6 +164,40 @@ parse 一次 42ms，而 `/outlines` 每次都要过一遍全部会话。所以�
 只能开出一条没有上下文的失忆分支。详情卡上挂一个「撤回」小牌子，免得点开只看到
 一条"怎么滚不过去"的旧提问。
 
+#### 为什么不能换个渠道拿（三条路全试过了）
+
+被打断的根源是"我们开着读句柄的时候，对面正好 rename"。实测（`D:/tmp` 下那个小脚本）：
+
+| 我们做什么 | 对面的 rename |
+|---|---|
+| `statSync` / `existsSync` × 60 | **0 次失败** |
+| 读句柄开着的时候 rename × 40 | **40 次全失败** EPERM |
+
+所以判据很清楚：**元数据查询随便做，开读句柄要看人脸色。**
+
+于是想过三条绕开的路，都不通：
+
+1. **先复制一份再读**——复制本身就是一次读，句柄时长一样甚至更长。硬链接同理：
+   Windows 上替换一个名字要对**文件对象**拿 DELETE 权限，另一个名字上的读句柄照样挡着。
+
+2. **走 dsh-claude 自己的 `GET /plugins/dsh-claude/projection/<id>`**——它的 envelope 里
+   确实有 `rewind.ranges`，`sidecar.read()` 也排在它自己的写队列里、零竞态。
+   **但那条路由会掐断浏览器的实时转写流**：
+
+   ```js
+   // dsh-claude 的 StreamRegistry.admit
+   live.get(key)?.()   // 同 key 的老连接当场被关掉
+   ```
+
+   路由注册时 `streamKey: () => MULTI_SEGMENT` 是个**常量**，单会话快照和 `/multi` 共用
+   同一个 key；而浏览器唯一用的就是 `/multi`（那条就是 Claude 界面的实时转写流）。
+   我们每 poll 一次就把它掐一次 —— 拿"偶尔打死一轮"换"持续掐断转写"，更糟。
+
+3. **进程内直接问它要**——`const sidecar = new ClaudeSidecarRepository()` 是它 `apply`
+   里的一个局部变量，没挂到 `ctx` 上，外面拿不到。
+
+结论：**只能"在跑就不读"**。这不是懒，是穷尽之后的唯一解。
+
 ### 为什么需要 host 半
 
 浏览器那边拿不到**冷分支**（fork 出来但没打开过的）的轮次。宿主的会话列表是这么写的：
@@ -749,6 +783,9 @@ DSH_HOME_REAL='...' node test-branch.mjs   # 把真实分支倒带到"刚出生"
 ## 7. 还没做
 
 - 节点名字存在 localStorage，换浏览器就没了；应该挪到 host 的 `ctx.storage.domain`。
+- 父会话正在跑时开不了分支（见上）。真正的修法在上游：dsh-claude 的 `#writeNow`
+  对 rename 没有任何 EPERM 重试，异常直接被当成"Claude Code 掉线"。
+  Windows 上杀毒、Search 索引、网盘同步都可能踩到同一个坑，值得给它报个 issue。
 - 左侧会话列表仍是平的（宿主 SPA，没有可用的 slot，也没有 `data-session-*` 钩子），
   一个对话有几条分支就占几行。
 - 超过约 60 轮的对话在最小行高下会溢出。

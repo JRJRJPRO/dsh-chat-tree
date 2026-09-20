@@ -9,11 +9,15 @@
  * 三道闸：版本对不上不碰 / 已有 sidecar 不覆盖 / 内容只从它自己写的合法文档里摘。
  * 最差只是新分支失忆，不会弄坏已有会话。全同步 IO —— 接管必须在 fork 返回前跑完。
  *
- * ⚠️ **还没修的同类风险**：下面 `readSidecar` 读的是**父会话**的旁车，而它没有
- *    `rewind.js` 里那道"在跑就不许读"的闸。父会话正跑着的时候从它身上开分支，
- *    有几率打断父会话那一轮（同一个 EPERM，见 rewind.js 顶上的警告）。
- *    两条路还没定：跳过 graft（新分支失忆），还是等父会话空下来（`adoptBranch`
- *    目前要求全同步，等不了）。**别在没想清楚之前顺手加个 try 就算完。**
+ * ⚠️ 这里读的是**父会话**的旁车，所以 `rewind.js` 顶上那道"在跑就不许读"的闸
+ *    同样适用，而且更严：那一整条血缘上的每一份旁车，读之前都要先问一句它在不在跑。
+ *
+ * 【读不了的时候怎么办】**不等、不重试、不偷偷降级**，当场返回 `parent-busy`，
+ * 由界面明说"所以这条分支没有上下文"。三条路里选了这条：
+ *   · 等父会话空下来 —— `adoptBranch` 必须在 fork 返回前跑完，等不了；
+ *   · 先记下来、等它 `turn/end` 之后再补 —— 那几秒里用户看到的是一条"看起来正常、
+ *     其实失忆"的分支，比直接说更误导；而且他会以为卡住了去瞎点。
+ *   · 当场说清楚 —— 用户自己决定是跑完再开，还是就要一条不带上下文的。
  */
 import { existsSync } from 'node:fs'
 import { lineage } from './lineage.js'
@@ -36,19 +40,23 @@ export function readSidecar(sessionId) {
  * @param turn - 需要的轮次
  * @returns {document, sawSidecar}
  */
-export function anchorSource(fromId, turn) {
+export function anchorSource(fromId, turn, isBusy) {
 	const seen = new Set()
 	let sawSidecar = false
 	let id = fromId
 	while (id !== undefined && !seen.has(id)) {
 		seen.add(id)
+		// ⚠️ 每一份都要单独问：血缘上任意一条在跑，读它就可能打死它那一轮。
+		//    半路撞上一个在跑的祖先，也当整件事做不成 —— 跳过它继续往上找，
+		//    找到的锚点会缺中间那段，比没有上下文更糟。
+		if (isBusy(id)) return { document: undefined, sawSidecar, busy: true }
 		const document = readSidecar(id)
 		if (document !== undefined) sawSidecar = true
 		const anchors = (document && document.rewind && document.rewind.anchors) || []
 		if (document && document.binding !== undefined && anchors.some((item) => item.turn === turn)) return { document, sawSidecar }
 		id = lineage.get(id)
 	}
-	return { document: undefined, sawSidecar }
+	return { document: undefined, sawSidecar, busy: false }
 }
 
 /**
@@ -59,19 +67,38 @@ export function anchorSource(fromId, turn) {
  *     说明是普通 provider，对话原文在 dsh 日志里，原生 fork 已经够了。
  *   · `no-anchor` —— 有 sidecar 但缺这一轮的锚点。
  *   · `child-already-bound` —— 新分支已经跑过，绝不覆盖。
- *   · `bad-request` —— 参数不对。
+ *   · `parent-busy` —— 血缘上有会话正在跑，读它的旁车会打断那一轮，所以没读。
+ *     **这个要让用户看见**（界面上那条分支会标成"无上下文"）。
+ *   · `bad-request` —— 参数不对，包括没给 `isBusy`。
  * @param childId - 新分支 id
  * @param parentId - 父会话 id
  * @param turn - 岔路点所在的轮次（保留 1..turn）
+ * @param isBusy - `(sessionId) => boolean`，那条会话是不是有轮次在跑。
+ *                 **必须给**：漏给就等于默认"谁都不在跑"，而那正是会打死用户一轮对话的假设。
  * @returns 结果说明
  */
-export function graft(childId, parentId, turn) {
+/**
+ * 这条会话的对话正文是不是托管给了外部引擎（也就是有没有旁车）。
+ *
+ * **只 `existsSync`，不读内容** —— 实测 statSync / existsSync 各 60 次，
+ * 对面的原子 rename 一次都没失败；而开着读句柄时是 40/40 全失败。
+ * 差别只在"句柄有没有和 rename 重叠"，元数据查询压根不开那种句柄。
+ * @param sessionId - dsh 会话 id
+ * @returns 是不是 claude 这类桥接会话
+ */
+export function isClaudeSession(sessionId) {
+	return existsSync(sidecarPath(sessionId))
+}
+
+export function graft(childId, parentId, turn, isBusy) {
+	if (typeof isBusy !== 'function') return { grafted: false, reason: 'bad-request' }
 	if (!childId || !parentId || !Number.isSafeInteger(turn) || turn < 1) return { grafted: false, reason: 'bad-request' }
 
 	const target = sidecarPath(childId)
 	if (existsSync(target)) return { grafted: false, reason: 'child-already-bound' }
 
-	const { document: parent, sawSidecar } = anchorSource(parentId, turn)
+	const { document: parent, sawSidecar, busy } = anchorSource(parentId, turn, isBusy)
+	if (busy === true) return { grafted: false, reason: 'parent-busy' }
 	if (parent === undefined) return { grafted: false, reason: sawSidecar ? 'no-anchor' : 'native-context-is-enough' }
 
 	const rewind = parent.rewind

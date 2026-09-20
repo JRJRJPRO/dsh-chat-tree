@@ -316,6 +316,31 @@ console.log('\n用例 8：＋ 在空节点 / 叶子上该做什么')
 	check(pure.branchAction(forked) === 'fork', '有后续的节点才真的 fork')
 	console.log('  空节点(无子)=none / 空节点(有子)=fresh / 叶子=open / 有后续=fork')
 
+	// 父会话正在跑的时候不许开岔路：新分支要继承上下文就得读它的记录，
+	// 而读那个文件会打断它正在跑的那一轮。**不偷偷开一条失忆分支，也不延后，当场说原因。**
+	const idle = { claude: true }
+	const running = { claude: true, running: true }
+	const plain = { running: true } // 普通 provider：对话原文在 dsh 日志里，没什么要读的
+	const node = (session, children) => ({ entry: { turn: 3 }, children, session })
+
+	check(pure.forkBlockedWhy(node(running, [{}, {}])) !== '', 'claude 会话正在跑时，＋ 必须拦下来')
+	check(pure.forkBlockedWhy(node(running, [{}, {}])).includes('跑完'), '拦下来还得告诉用户什么时候能再试')
+	check(pure.forkBlockedWhy(node(idle, [{}, {}])) === '', '空闲时不许拦 —— 拦了就是把功能关了')
+	check(pure.forkBlockedWhy(node(plain, [{}, {}])) === '', '普通 provider 没有要读的记录，在跑也照开')
+	// 另外三种动作都不读父会话的记录，一律不拦
+	check(pure.forkBlockedWhy(node(running, [])) === '', '叶子上是"就地接着问"，不新建会话，不该拦')
+	check(pure.forkBlockedWhy({ entry: undefined, children: [{}], session: running }) === '', '空节点上是"开新对话"，没有上下文可继承，不该拦')
+	check(pure.forkBlockedWhy({ entry: { turn: 3 }, children: [{}, {}], session: running, rewound: true }) === '', '撤回掉的节点本来就是 none，不该再报别的原因')
+	console.log(`  claude 在跑 → 「${pure.forkBlockedWhy(node(running, [{}, {}]))}」；空闲 / 普通 provider / 非 fork → 照常`)
+
+	// 「无上下文」那块牌子只挂在岔路口那一个节点上，挂满整条分支会刷屏
+	const branch = { turns: [{ turn: 7, inherited: true }, { turn: 8 }, { turn: 9 }] }
+	check(pure.isBranchHead({ entry: { turn: 8 }, session: branch }) === true, '分支的第一个自有轮次就是分支头')
+	check(pure.isBranchHead({ entry: { turn: 9 }, session: branch }) === false, '后面的轮次不是分支头')
+	check(pure.isBranchHead({ entry: { turn: 7 }, session: branch }) === false, '继承来的轮次画的是父会话的节点，不算分支头')
+	check(pure.isBranchHead({ entry: undefined, session: branch }) === false, '空节点不属于任何分支')
+	console.log('  「无上下文」只挂在分支头上（继承段和后续轮次都不挂）')
+
 	// 工作区归属：侧栏按 workspace.sessionIds 分组，不是按 cwd。
 	// 只传 cwd 建出来的会话谁都不认领，就掉进"未分组"。
 	const state = { items: [{ workspaceId: 'w1', sessionIds: ['s1', 's2'] }, { workspaceId: 'w2', sessionIds: ['s3'] }] }

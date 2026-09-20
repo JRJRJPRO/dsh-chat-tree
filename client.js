@@ -496,6 +496,44 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 这个 ＋ 现在为什么按不了。**按不了就说清楚，别开出一条看着正常其实失忆的分支。**
+		 *
+		 * 只有一种情况：从一条**托管给外部引擎**（claude 这类）的会话上真的开岔路，
+		 * 而它正在跑。新分支要继承上下文就得读它的记录，而读那个文件会打断它正在跑的那一轮
+		 * （见 src/host/rewind.js 顶上的说明）—— 所以我们不读，也就接不上。
+		 *
+		 * 为什么不是"照开，只是没上下文"：那条分支看起来和别的一模一样，你发现不了它失忆，
+		 * 直到它答得驴唇不对马嘴。为什么不是"先开着、等跑完再补"：那几秒里你看到的仍然是
+		 * 一条看着正常的分支，而且你会以为卡住了去瞎点。
+		 *
+		 * 另外三种动作都不需要读它的记录，所以一律不拦：
+		 *   · `open` —— 就在本会话接着问，没有新会话；
+		 *   · `fresh` —— 空节点上开一条全新对话，本来就没有上下文可继承；
+		 *   · 普通 provider —— 对话原文就在 dsh 日志里，原生 fork 抄过去就够了。
+		 * @param node - 被点的节点
+		 * @returns 原因；能开就是空串
+		 */
+		function forkBlockedWhy(node) {
+			if (branchAction(node) !== 'fork') return ''
+			if (node.session.claude !== true || node.session.running !== true) return ''
+			return '这条对话正在运行，现在读它的记录会打断那一轮，所以开不了分支 —— 跑完再开'
+		}
+
+		/**
+		 * 这个节点是不是一条分支的头一个自有轮次。
+		 *
+		 * 「没继承到上下文」这件事是**整条分支**的属性，但挂在每个节点上会刷屏，
+		 * 挂在岔路口那一个上最贴合"从这儿往后它就不记得前面了"。
+		 * @param node - 节点
+		 * @returns 是不是分支头
+		 */
+		function isBranchHead(node) {
+			if (node.entry === undefined) return false
+			const first = (node.session.turns || []).find((entry) => !entry.inherited)
+			return first !== undefined && first.turn === node.entry.turn
+		}
+
+		/**
 		 * 点一个节点时该在哪个会话里跳过去。**尽量不换路径**：节点若在当前路径上，
 		 * 就留在当前会话里滚过去（fork 抄日志时 seq 没变，同一个 seq 就是同一轮）。
 		 *
@@ -1845,6 +1883,24 @@ window.__ModuleLoader__.load({
 					onClick: (event) => { event.stopPropagation(); action() },
 				}, glyph)
 
+			// 按不了的按钮**留在原地**灰掉，鼠标停上去说原因 —— 和合并单子里被拦下的那几行
+			// 同一套语言。直接藏起来的话，用户只会觉得"按钮怎么没了"，比看到理由更慌。
+			const blocked = (glyph, why) =>
+				h('span', {
+					key: glyph, title: why,
+					style: { flex: '0 0 auto', cursor: 'not-allowed', color: C.muted, opacity: 0.4, padding: '0 4px', fontSize: '13px' },
+				}, glyph)
+
+			// 「撤回」「无上下文」这类小牌子共用一套样子
+			const tag = (key, text, why) =>
+				h('span', {
+					key, title: why,
+					style: {
+						flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
+						border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
+					},
+				}, text)
+
 			return h(
 				'div',
 				{
@@ -1873,19 +1929,20 @@ window.__ModuleLoader__.load({
 							}, isEmpty ? '对话' : `#${node.no}`),
 							// 撤回过的那一轮还画在树上（答完了才留），但它已经不在对话里，
 							// 不挂个牌子的话点开只会看到一条"怎么滚不过去"的旧提问。
-							!shown || node.rewound !== true
+							!shown || node.rewound !== true ? null : tag('r', '撤回', '这一轮已被撤回，不在对话里了'),
+							// 这条分支开出来的时候没能继承 Claude 那边的上下文。不说一声的话，
+							// 它看起来和别的分支一模一样，直到答得驴唇不对马嘴才发现。
+							!shown || node.session.contextMissing !== true || !isBranchHead(node)
 								? null
-								: h('span', {
-										key: 'r', title: '这一轮已被撤回，不在对话里了',
-										style: {
-											flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
-											border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
-										},
-									}, '撤回'),
+								: tag('c', '无上下文', '开这条分支时没能继承 Claude 那边的记忆，所以它不记得岔路点之前的对话。\n（多半是开分支那一刻父对话正在运行 —— 读它的记录会打断那一轮。）'),
 							editing
 								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
-							branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
+							branchAction(node) === 'none'
+									? null
+									: forkBlockedWhy(node) !== ''
+										? blocked('＋', forkBlockedWhy(node))
+										: button('＋', '从这之后新开分支', () => props.onFork(node)),
 							// 剪缝上的「接回去」—— 分离一直是单向的，拆出去就回不来了
 							!shown || node.cut !== true ? null : button('⇤', '把这条支线接回原来那棵树', () => props.onJoin(node)),
 							props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
@@ -2454,6 +2511,8 @@ window.__ModuleLoader__.load({
 						onFork: (node) => {
 							const action = branchAction(node)
 							if (action === 'none') return undefined
+							// 按钮那边已经灰掉了，这里再挡一次：键盘、脚本、以后加的别的入口都走这条路
+							if (forkBlockedWhy(node) !== '') return undefined
 							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOfSession(picked, shape.groupOf, current))
 							if (action === 'open') return api.open(node.session.id)
 							return api.fork(node.session.id, node.entry.seq)
@@ -2483,7 +2542,7 @@ window.__ModuleLoader__.load({
 		const __pure = {
 			// 选树、归组、节点上能做什么
 			visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
-			cutPointOf, cutSet, branchAction, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+			cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 画

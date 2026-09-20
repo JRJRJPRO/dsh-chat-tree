@@ -18,6 +18,8 @@ import {
 	conversationOf,
 	cutPointOf,
 	cutSet,
+	forkBlockedWhy,
+	isBranchHead,
 	indexOf,
 	isFocusedNode,
 	jumpTarget,
@@ -58,7 +60,7 @@ import { FIELDS, ROWS, SCALES, STEPS, scaleText, settingsStore, stepText } from 
 export const __pure = {
 	// 选树、归组、节点上能做什么
 	visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
-	cutPointOf, cutSet, branchAction, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+	cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 画

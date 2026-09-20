@@ -5,7 +5,7 @@ import { h, portal, react } from './runtime.js'
 import { C, RADIUS, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readLabels, writeLabel } from './labels.js'
-import { branchAction, conversationOf, cutPointOf, cutSet, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
+import { branchAction, conversationOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
 import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
@@ -241,6 +241,8 @@ export function Rail(props) {
 				onFork: (node) => {
 					const action = branchAction(node)
 					if (action === 'none') return undefined
+					// 按钮那边已经灰掉了，这里再挡一次：键盘、脚本、以后加的别的入口都走这条路
+					if (forkBlockedWhy(node) !== '') return undefined
 					if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOfSession(picked, shape.groupOf, current))
 					if (action === 'open') return api.open(node.session.id)
 					return api.fork(node.session.id, node.entry.seq)

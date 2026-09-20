@@ -3,7 +3,7 @@
  */
 import { h, react } from './runtime.js'
 import { C, Z } from './const.js'
-import { branchAction } from './tree.js'
+import { branchAction, forkBlockedWhy, isBranchHead } from './tree.js'
 
 /** 就地重命名输入框。 */
 export function InlineEdit(props) {
@@ -49,6 +49,24 @@ export function Detail(props) {
 			onClick: (event) => { event.stopPropagation(); action() },
 		}, glyph)
 
+	// 按不了的按钮**留在原地**灰掉，鼠标停上去说原因 —— 和合并单子里被拦下的那几行
+	// 同一套语言。直接藏起来的话，用户只会觉得"按钮怎么没了"，比看到理由更慌。
+	const blocked = (glyph, why) =>
+		h('span', {
+			key: glyph, title: why,
+			style: { flex: '0 0 auto', cursor: 'not-allowed', color: C.muted, opacity: 0.4, padding: '0 4px', fontSize: '13px' },
+		}, glyph)
+
+	// 「撤回」「无上下文」这类小牌子共用一套样子
+	const tag = (key, text, why) =>
+		h('span', {
+			key, title: why,
+			style: {
+				flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
+				border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
+			},
+		}, text)
+
 	return h(
 		'div',
 		{
@@ -77,19 +95,20 @@ export function Detail(props) {
 					}, isEmpty ? '对话' : `#${node.no}`),
 					// 撤回过的那一轮还画在树上（答完了才留），但它已经不在对话里，
 					// 不挂个牌子的话点开只会看到一条"怎么滚不过去"的旧提问。
-					!shown || node.rewound !== true
+					!shown || node.rewound !== true ? null : tag('r', '撤回', '这一轮已被撤回，不在对话里了'),
+					// 这条分支开出来的时候没能继承 Claude 那边的上下文。不说一声的话，
+					// 它看起来和别的分支一模一样，直到答得驴唇不对马嘴才发现。
+					!shown || node.session.contextMissing !== true || !isBranchHead(node)
 						? null
-						: h('span', {
-								key: 'r', title: '这一轮已被撤回，不在对话里了',
-								style: {
-									flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
-									border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
-								},
-							}, '撤回'),
+						: tag('c', '无上下文', '开这条分支时没能继承 Claude 那边的记忆，所以它不记得岔路点之前的对话。\n（多半是开分支那一刻父对话正在运行 —— 读它的记录会打断那一轮。）'),
 					editing
 						? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 						: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
-					branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
+					branchAction(node) === 'none'
+							? null
+							: forkBlockedWhy(node) !== ''
+								? blocked('＋', forkBlockedWhy(node))
+								: button('＋', '从这之后新开分支', () => props.onFork(node)),
 					// 剪缝上的「接回去」—— 分离一直是单向的，拆出去就回不来了
 					!shown || node.cut !== true ? null : button('⇤', '把这条支线接回原来那棵树', () => props.onJoin(node)),
 					props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
