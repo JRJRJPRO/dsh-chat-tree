@@ -29,6 +29,7 @@
  * @module test-shape
  */
 
+import { check, loadClientPure, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -36,18 +37,6 @@ import zlib from 'node:zlib'
 
 const REAL_HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：读盘 =====
 
@@ -101,18 +90,7 @@ process.env.DSH_HOME = lab
 
 const { foldOutline, reshape, __test } = await import('./index.js')
 
-const fakeReact = new Proxy({}, { get: () => () => undefined })
-let pure
-globalThis.window = {
-	__ModuleLoader__: {
-		load: (definition) => {
-			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
-		},
-	},
-}
-globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-await import('./client.js')
+const pure = await loadClientPure()
 
 /** 读真实会话，拼成 /outlines 的响应体。**恒不读旁车**（见文件头）。 */
 const sessions = []
@@ -348,5 +326,4 @@ console.log('场景 3：连着合三条 + 在合进来的那棵里分离，两�
 }
 
 fs.rmSync(lab, { recursive: true, force: true })
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

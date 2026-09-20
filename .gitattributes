@@ -1,0 +1,4 @@
+# 仓库里统一 LF。
+# 混着 CRLF 的话，Edit 类工具（Claude Code / Cursor 之流）会匹配不上多行片段，
+# 多人或多 agent 同时改同一个文件时反复踩 —— 这个坑踩过，别再让它回来。
+* text=auto eol=lf

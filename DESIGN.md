@@ -8,7 +8,10 @@
 
 ## 1. 装 / 卸
 
-插件是两个文件：`index.js`（跑在 dsh 进程里）和 `client.js`（跑在浏览器里）。
+装出去是两个文件：`index.js`（跑在 dsh 进程里）和 `client.js`（跑在浏览器里）。
+源码分在 `src/host/` 和 `src/client/`；`client.js` 是 `npm run build` 从后者拼出来的
+**生成物**（dsh 规定"一个包 = 一个 bundle"，浏览器半只能是一个文件）。
+文件布局和施工规矩见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 **装**：往 `$DSH_HOME/profiles/web/cordis.patch.yml` 里加三行
 
@@ -20,7 +23,7 @@
 
 **卸**：把这三行删掉，重启 dsh。
 
-改了 `index.js` 要重启 dsh；只改 `client.js` 刷新浏览器就行（插件在 profile 目录之外，host 半没有热重载）。
+改了 host 半要重启 dsh；只改浏览器半 `npm run build` 再刷新页面就行（插件在 profile 目录之外，host 半没有热重载）。
 
 **它在仓库外留下的东西**，一共两处：
 
@@ -78,7 +81,7 @@ John 报的：「1-2-3-4，4 发到一半我撤回了，又发了 5，树上却�
 | 答完了（`completed`） | 节点留着，成一条**走过又被放弃的支线**；新发的那轮接回撤回**之前**那个节点 → 1-2-3-4 和 1-2-3-5 两条 |
 | 没答完（`aborted` / `interrupted` / `error` / 没有 `turn/end`） | 节点**不画**，只剩 1-2-3-5 |
 
-实现分在两半：host 半（第 3 步）负责盖 `rewound` 戳，浏览器半的 `buildGraph` 负责成形
+实现分在两半：host 半（`src/host/rewind.js`）负责盖 `rewound` 戳，浏览器半的 `buildGraph` 负责成形
 （`previous` 串废弃支线，`live` 指还在对话里的最后一个节点，新轮次接 `live`）。
 
 ⚠️ **`done` 不能退化成"有没有 `turn/end`"**。盘上 34 条 `aborted` **都老老实实带着 `turn/end`**，
@@ -721,7 +724,7 @@ settings 里。
 
 ## 6. 测试
 
-八个离线脚本，都不用开浏览器（`npm test` 一起跑）。
+九个离线脚本，都不用开浏览器（`npm test` 会先构建再一起跑）。
 **每个断言都验证过"能抓住对应的 bug"**（把修复退回去会当场炸）。
 
 ```bash
@@ -732,11 +735,12 @@ node test-icon.mjs            # 自定义节点图片：只收 PNG、内容哈�
 node test-rewind.mjs          # 撤回：done 的口径、区间比对、成图、旁车读写
 node test-merge.mjs           # 合并 / 接回去：分组可传递、挑单子列树不列节点、在跑就拦
 node test-shape.mjs           # 拿**真实会话**跑合并 / 分离：分离再接回逐节点复原
+node test-http.mjs             # 路由外壳：方法分发、出错码、图片不许被 JSON 编码
 DSH_HOME_REAL='...' node test-branch.mjs   # 把真实分支倒带到"刚出生"那一刻，重放接管逻辑
 ```
 
-六个脚本全都从 `client.js` 的 `__pure` 出口或 `index.js` 的 `__test` 出口取函数 ——
-**测的是真代码，不是复制品**。
+全都从 `client.js` 的 `__pure` 出口或 `index.js` 的 `__test` 出口取函数 ——
+**测的是真代码，不是复制品**。共用的断言/加载器在 `test-kit.mjs`。
 
 浏览器控制台里 `__dshTree()` 可以把当前树的真实状态倒出来（每个节点的蓝/白、血缘、岔路点、归档集）。
 

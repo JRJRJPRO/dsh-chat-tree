@@ -27,6 +27,7 @@
  * @module test-branch
  */
 
+import { check, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -37,18 +38,6 @@ const REAL_HOME = process.env.DSH_HOME_REAL || process.env.DSH_HOME || path.join
 const SESSIONS = path.join(REAL_HOME, 'sessions')
 const SIDECARS = path.join(REAL_HOME, 'plugins', 'dsh-claude', 'sessions')
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 /**
  * 解一个 session 文件。v3 是**多 frame 拼接**的 zstd，Node 的 zstdDecompressSync
@@ -351,5 +340,4 @@ check(
 console.log('断言 C：不该动的情况下，一个字节都没动')
 
 fs.rmSync(home, { recursive: true, force: true })
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

@@ -19,33 +19,12 @@
  * @module test-highlight
  */
 
-let failures = 0
+import { check, loadClientPure, report } from './test-kit.mjs'
 
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：取 client 的真函数 =====
 
-const fakeReact = new Proxy({}, { get: () => () => undefined })
-let pure
-globalThis.window = {
-	__ModuleLoader__: {
-		load: (definition) => {
-			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
-		},
-	},
-}
-globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-await import('./client.js')
+const pure = await loadClientPure()
 
 // ===== 第 2 步：造树的小工具 =====
 
@@ -821,5 +800,4 @@ console.log('\n用例 15：空节点也归自己管')
 	console.log(`  空节点独立配色配形、不随路径变、虚线边恒定；${pure.ROWS.length} 个角色全在设置里露面`)
 }
 
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

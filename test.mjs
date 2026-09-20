@@ -22,6 +22,7 @@
  *   第4步  断言
  */
 
+import { check, loadClientPure, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import zlib from 'node:zlib'
 import path from 'node:path'
@@ -75,7 +76,7 @@ function collect(cwdFilter) {
 	const root = path.join(HOME, 'sessions')
 	const sessions = []
 	// ⚠️ 读 dsh-claude 的旁车会打断正在跑的那一轮（Windows 上开着读句柄，对面的
-	//    原子写 rename 就是 EPERM，整轮判失败 —— index.js 第 3 步有完整说明）。
+	//    原子写 rename 就是 EPERM，整轮判失败 —— src/host/rewind.js 有完整说明）。
 	//    测试跑在 dsh 外面，拿不到 ctx.agents，所以用**日志刚写过**当"可能在跑"的判据：
 	//    近十分钟动过的会话一律不碰。历史上那几个撤回过的会话早就凉了，覆盖不受影响。
 	const LIVE_MS = 10 * 60 * 1000
@@ -110,31 +111,6 @@ function collect(cwdFilter) {
 
 // ===== 第 2 步：取 client 的纯函数 =====
 
-/**
- * 加载 client.js 并把它的纯函数取出来。
- *
- * client.js 是给浏览器的 `window.__ModuleLoader__.load({factory})` 格式，
- * 这里塞一个假的 loader 和假的 react/react-dom，让 factory 跑完，
- * 然后从 `exports.__pure` 拿纯函数 —— **测的是真代码，不是复制品**。
- * @returns client.js 的 __pure 出口
- */
-async function loadClientPure() {
-	const fakeReact = new Proxy({}, { get: () => () => undefined })
-	let pure
-	globalThis.window = {
-		__ModuleLoader__: {
-			load: (definition) => {
-				const exported = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null }))
-				pure = exported.__pure
-			},
-		},
-	}
-	globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-	globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-	await import('./client.js')
-	if (pure === undefined) throw new Error('client.js 没有导出 __pure，测试无法进行')
-	return pure
-}
 
 // ===== 第 3 步：组装场景并渲染 =====
 
@@ -174,14 +150,6 @@ function draw(result, currentId) {
 
 // ===== 第 4 步：断言 =====
 
-let failures = 0
-
-/** @param ok - 条件 @param message - 失败信息 */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log('  ✗', message)
-}
 
 async function main() {
 	let inheritedLit = 0
@@ -433,8 +401,7 @@ async function main() {
 		check(checked > 0, '数据里一条 fork 出来的分支都没有，这条断言等于没测')
 		console.log(`宿主发起的 fork：${checked} 条，岔路点与继承段全部自洽，父分支无损`)
 	}
-	console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-	process.exit(failures === 0 ? 0 : 1)
+	report()
 }
 
 main().catch((error) => {

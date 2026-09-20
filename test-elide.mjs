@@ -15,37 +15,15 @@
  * @module test-elide
  */
 
+import { check, loadClientPure, report } from './test-kit.mjs'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：取 client 的真函数 =====
 
-const fakeReact = new Proxy({}, { get: () => () => undefined })
-let pure
-globalThis.window = {
-	__ModuleLoader__: {
-		load: (definition) => {
-			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
-		},
-	},
-}
-globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-await import('./client.js')
+const pure = await loadClientPure()
 
 // ===== 第 2 步：造树的小工具 =====
 
@@ -394,9 +372,4 @@ console.log('用例 9：档位文案')
 	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}；默认 ${pure.stepText(pure.RADIUS.fallback)}`)
 }
 
-console.log('')
-if (failures === 0) console.log('✓ 全部断言通过')
-else {
-	console.log(`✗ ${failures} 条断言失败`)
-	process.exitCode = 1
-}
+report()

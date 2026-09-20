@@ -23,22 +23,11 @@
  * @module test-merge
  */
 
+import { check, loadClientPure, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：取两半的真函数 =====
 
@@ -48,18 +37,7 @@ process.env.DSH_HOME = home
 
 const { reshape } = await import('./index.js')
 
-const fakeReact = new Proxy({}, { get: () => () => undefined })
-let pure
-globalThis.window = {
-	__ModuleLoader__: {
-		load: (definition) => {
-			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
-		},
-	},
-}
-globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-await import('./client.js')
+const pure = await loadClientPure()
 
 let clock = 0
 
@@ -264,5 +242,4 @@ console.log('用例 4：有一头还在跑就不让合并，并说明原因')
 }
 
 fs.rmSync(home, { recursive: true, force: true })
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

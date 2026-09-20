@@ -20,23 +20,12 @@
  * @module test-icon
  */
 
+import { check, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：手搓一个最小合法 PNG =====
 
@@ -171,5 +160,4 @@ console.log('\n用例 3：清理不会清掉正在用的那张')
 }
 
 fs.rmSync(home, { recursive: true, force: true })
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

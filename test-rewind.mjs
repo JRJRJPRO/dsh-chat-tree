@@ -31,6 +31,7 @@
  * @module test-rewind
  */
 
+import { check, loadClientPure, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -39,33 +40,10 @@ import { foldOutline, __test } from './index.js'
 
 const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 
-let failures = 0
-
-/**
- * 一条断言。
- * @param ok - 条件
- * @param message - 失败时打印什么
- */
-function check(ok, message) {
-	if (ok) return
-	failures += 1
-	console.log(`  ✗ ${message}`)
-}
 
 // ===== 第 1 步：取两半的真函数 =====
 
-const fakeReact = new Proxy({}, { get: () => () => undefined })
-let pure
-globalThis.window = {
-	__ModuleLoader__: {
-		load: (definition) => {
-			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
-		},
-	},
-}
-globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
-globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-await import('./client.js')
+const pure = await loadClientPure()
 
 const { markRewound, turnHidden, rewindStateOf, statusProbe, SIDECAR_QUIET_MS, collect } = __test
 const Z = pure.Z
@@ -524,5 +502,4 @@ console.log('用例 10：整条 /outlines 管线（假 ctx）')
 	}
 }
 
-console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
-process.exit(failures === 0 ? 0 : 1)
+report()

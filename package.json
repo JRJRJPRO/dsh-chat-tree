@@ -4,7 +4,10 @@
   "description": "DeepSeek Harness 对话树：把一个对话的所有分支画成一棵可点击的树",
   "type": "module",
   "scripts": {
-    "test": "node test.mjs && node test-highlight.mjs && node test-elide.mjs && node test-branch.mjs && node test-icon.mjs && node test-rewind.mjs && node test-merge.mjs && node test-shape.mjs"
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "pretest": "node build.mjs",
+    "test": "node test.mjs && node test-highlight.mjs && node test-elide.mjs && node test-branch.mjs && node test-icon.mjs && node test-rewind.mjs && node test-merge.mjs && node test-shape.mjs && node test-http.mjs"
   },
   "main": "index.js",
   "exports": {
@@ -15,6 +18,8 @@
   "files": [
     "index.js",
     "client.js",
+    "src",
+    "build.mjs",
     "cordis.patch.yml",
     "README.md",
     "DESIGN.md",

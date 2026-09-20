@@ -32,7 +32,13 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 从源码跑：先 `npm install`（要一个 `schemastery`），再把
 `- insert: - id: dsh-tree, name: 'file:///绝对路径/index.js'` 写进 `cordis.patch.yml`，
 别和上面的装法同时用（同一个 id 插两次，dsh 起不来）。
-改 `index.js` 要重启，改 `client.js` 刷新浏览器即可。
+
+代码分成 host 半（`src/host/`，入口 `index.js`）和浏览器半（`src/client/`）。
+浏览器半必须是一个文件（dsh 的规矩），所以 `client.js` 是 `npm run build` 拼出来的
+**生成物，别手改**。改 host 半要重启 dsh；改浏览器半 `npm run build` 再刷新页面，
+或者开着 `npm run watch` 自动重拼。
+
+改哪个文件、加东西要动哪几处，见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 用
 
@@ -101,7 +107,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ## 测
 
 ```bash
-npm test                   # 八套一起跑
+npm test                   # 先构建，再九套一起跑
 
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮、hover intent、连线遮挡
@@ -111,11 +117,15 @@ node test-rewind.mjs       # 撤回：哪些轮该消失、哪些该成废弃支
 node test-merge.mjs        # 合并 / 接回去
 node test-shape.mjs        # 拿真实会话跑合并 / 分离的端到端
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
+node test-http.mjs         # 路由外壳：方法分发、出错码、图片走原样字节
 ```
+
+单独跑某一个之前记得 `npm run build` —— 测的是生成物 `client.js`。
 
 `test-branch.mjs` 要读真实会话日志，不在默认位置时设 `DSH_HOME_REAL` 指过去，否则它自己跳过。
 
-设计与踩坑记录：[DESIGN.md](DESIGN.md)。原生能力清单：[NATIVE-BASELINE.md](NATIVE-BASELINE.md)。
+代码布局与施工规矩：[ARCHITECTURE.md](ARCHITECTURE.md)。设计与踩坑记录：[DESIGN.md](DESIGN.md)。
+原生能力清单：[NATIVE-BASELINE.md](NATIVE-BASELINE.md)。
 
 ## 还没做
 
