@@ -744,5 +744,67 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	console.log(`  三角描边填充与圆同源、面积配齐（放大 ${grown} 倍）/ char:<字> 与 img:<哈希> 的合法性 / key 集合恒定`)
 }
 
+console.log('\n用例 15：空节点也归自己管')
+{
+	// John：“空结点长什么样应该也可以设置呀。”
+	// 空节点 = 树根那个“新对话”占位。它以前蹭普通/当前路径的颜色和形状，设置里够不着。
+	const skin = {
+		normalColor: '#111111', normalShape: 'square',
+		currentColor: '#222222', currentShape: 'rounded',
+		compactColor: '#333333', compactShape: 'triangle',
+		emptyColor: '#444444', emptyShape: 'diamond',
+	}
+
+	// ① 颜色和形状都走自己那一份
+	check(pure.shapeOf('empty', false, skin).value === 'diamond', '空节点没用 emptyShape')
+	check(pure.inkOf('empty', false, false, skin).ink === '#444444', '空节点没用 emptyColor')
+
+	// ② 而且**不跟着在不在当前路径上变**。空节点永远是树根、永远在当前路径上，
+	//    要是还按 active 切色，那 emptyColor 就只在某些时候生效，等于半个死设置。
+	for (const active of [true, false]) {
+		check(pure.inkOf('empty', active, false, skin).ink === '#444444', `active=${active} 时空节点的颜色跑了`)
+		check(pure.shapeOf('empty', active, skin).value === 'diamond', `active=${active} 时空节点的形状跑了`)
+	}
+	// 反过来：普通节点该跟着 active 切，别把这条一起改没了
+	check(pure.shapeOf('normal', true, skin).value === 'rounded' && pure.shapeOf('normal', false, skin).value === 'square', '普通节点不跟着当前路径切形状了')
+
+	// ③ 四个角色配成四样，就得画出四样来
+	const face = (kind, active) => {
+		const style = pure.dotStyle(kind, active, false, 11, false, skin)
+		return `${pure.shapeOf(kind, active, skin).value}|${pure.inkOf(kind, active, false, skin).ink}|${style.borderStyle}`
+	}
+	const faces = [face('normal', false), face('normal', true), face('compact', false), face('empty', false)]
+	check(new Set(faces).size === 4, `四个角色配成四样却画重了：${JSON.stringify(faces)}`)
+
+	// ④ 虚线边是空节点自己的记号，不跟着配置走 —— 那是“还没说话”的意思
+	for (const value of ['circle', 'square', 'char:★', 'img:' + 'a'.repeat(32)]) {
+		const style = pure.dotStyle('empty', true, false, 11, false, Object.assign({}, skin, { emptyShape: value }))
+		check(style.borderStyle === 'dashed', `空节点配成 ${value} 之后虚线边没了`)
+	}
+	for (const kind of ['normal', 'compact']) {
+		check(pure.dotStyle(kind, true, false, 11, false, skin).borderStyle === 'solid', `${kind} 不该是虚线`)
+	}
+	// 多边形的边画在 <svg> 上，虚线得自己描
+	const dashed = pure.polyProps(pure.shapeSpec('triangle'), 11, pure.inkOf('empty', true, false, skin), 1.5, true)
+	const solid = pure.polyProps(pure.shapeSpec('triangle'), 11, pure.inkOf('empty', true, false, skin), 1.5, false)
+	check(dashed.strokeDasharray !== 'none' && solid.strokeDasharray === 'none', `多边形的虚线没描上：${dashed.strokeDasharray} / ${solid.strokeDasharray}`)
+
+	// ⑤ 结构不变式：THEME 里每一个角色都得在设置里露面。
+	//    以后再加角色时，光改 THEME 不加设置项会直接炸在这里。
+	const inFields = new Set(pure.FIELDS.map((one) => one.field))
+	for (const key of Object.keys(pure.THEME)) check(inFields.has(key), `THEME 有 ${key}，设置里却没有这一项`)
+	const inRows = new Set(pure.ROWS.flatMap((one) => [one.color, one.shape]))
+	for (const key of Object.keys(pure.THEME)) check(inRows.has(key), `设置卡上没有 ${key} 这一行`)
+	check(pure.ROWS.length === Object.keys(pure.THEME).length / 2, `角色数对不上：${pure.ROWS.length} 行 vs ${Object.keys(pure.THEME).length / 2} 个角色`)
+
+	// key 集合照旧
+	const base = Object.keys(pure.dotStyle('normal', true, false, 11, false)).sort()
+	for (const kind of ['normal', 'compact', 'empty']) {
+		const keys = Object.keys(pure.dotStyle(kind, true, false, 11, false, skin)).sort()
+		check(JSON.stringify(keys) === JSON.stringify(base), `${kind} 的 key 集合变了`)
+	}
+	console.log(`  空节点独立配色配形、不随路径变、虚线边恒定；${pure.ROWS.length} 个角色全在设置里露面`)
+}
+
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 process.exit(failures === 0 ? 0 : 1)

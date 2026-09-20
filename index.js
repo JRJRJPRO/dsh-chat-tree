@@ -42,6 +42,8 @@ export const SETTINGS_SCHEMA = Schema.object({
 	currentShape: Schema.string().default('circle').description('当前路径的节点形状'),
 	compactColor: Schema.string().default('#ffa657').description('压缩节点颜色'),
 	compactShape: Schema.string().default('triangle').description('压缩节点形状；也可以填 char:<字> 用任意字符当节点'),
+	emptyColor: Schema.string().default('#58a6ff').description('树根那个"新对话"空节点的颜色'),
+	emptyShape: Schema.string().default('circle').description('空节点形状；边框恒为虚线'),
 })
 
 // ===== 第 1 步：fold —— 从事件折出一个分支的大纲 =====

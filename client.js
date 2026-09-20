@@ -650,11 +650,17 @@ window.__ModuleLoader__.load({
 			return `${ICON_URL}?id=${encodeURIComponent(id)}`
 		}
 
-		/** 三种角色各自的默认颜色与形状。设置里改的就是这张表。 */
+		/**
+		 * 四个角色各自的默认颜色与形状。设置里改的就是这张表。
+		 *
+		 * 空节点默认跟当前路径同色：它本来就永远在当前路径上，今天画出来就是这个蓝的，
+		 * 不该因为"多了个设置项"就悄悄换个样子。虚线边是它自己的记号，不跟着配置走。
+		 */
 		const THEME = {
 			normalColor: C.dim, normalShape: 'circle',
 			currentColor: C.blue, currentShape: 'circle',
 			compactColor: C.orange, compactShape: 'triangle',
+			emptyColor: C.blue, emptyShape: 'circle',
 		}
 
 		/**
@@ -698,9 +704,10 @@ window.__ModuleLoader__.load({
 		 * @param want - 形状值
 		 * @param color - 用什么颜色画
 		 * @param size - 边长
+		 * @param dashed - 画成虚线（空节点那一行用）
 		 * @returns 一个 <span>
 		 */
-		function preview(want, color, size) {
+		function preview(want, color, size, dashed) {
 			const spec = shapeSpec(want)
 			const skin = { ink: color, fill: fade(color, 0.3), accent: color }
 			const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
@@ -709,20 +716,21 @@ window.__ModuleLoader__.load({
 					position: 'relative', display: 'inline-block', boxSizing: 'border-box',
 					width: `${size}px`, height: `${size}px`,
 					borderRadius: spec.radius === 'px' ? '2px' : spec.radius,
-					borderWidth: drawn ? '0px' : '1.5px', borderStyle: 'solid', borderColor: color,
+					borderWidth: drawn ? '0px' : '1.5px', borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: color,
 					background: spec.image !== undefined ? `center center / contain no-repeat url("${iconUrl(spec.image)}")` : drawn ? 'none' : skin.fill,
 					color, fontSize: `${size}px`, lineHeight: `${size}px`, textAlign: 'center',
 					transform: spec.spin ? 'rotate(45deg) scale(.78)' : 'none',
 				},
-			}, dotInside(spec, size, skin, 1.5))
+			}, dotInside(spec, size, skin, 1.5, dashed))
 		}
 
 		/**
 		 * 某个节点该用什么形状。
 		 *
-		 * ⚠️ 三个角色**各有各的形状**：压缩看 compactShape，在当前路径上看 currentShape，
-		 *    其余看 normalShape。以前这里把 current 和 normal 合成一个，于是设置里
-		 *    "当前路径形状"怎么改都没反应 —— John 报的"改了好像没反应"就是这条。
+		 * ⚠️ 四个角色**各有各的形状**：压缩看 compactShape，树根空节点看 emptyShape，
+		 *    在当前路径上看 currentShape，其余看 normalShape。以前这里把 current 和 normal
+		 *    合成一个，于是设置里"当前路径形状"怎么改都没反应 —— John 报的"改了好像
+		 *    没反应"就是这条。
 		 * @param kind - 节点形态（normal / compact / empty）
 		 * @param active - 在当前路径上
 		 * @param theme - 主题
@@ -730,7 +738,9 @@ window.__ModuleLoader__.load({
 		 */
 		function shapeOf(kind, active, theme) {
 			const skin = theme || THEME
-			return shapeSpec(kind === 'compact' ? skin.compactShape : active ? skin.currentShape : skin.normalShape)
+			if (kind === 'compact') return shapeSpec(skin.compactShape)
+			if (kind === 'empty') return shapeSpec(skin.emptyShape)
+			return shapeSpec(active ? skin.currentShape : skin.normalShape)
 		}
 
 		/**
@@ -746,14 +756,21 @@ window.__ModuleLoader__.load({
 		 */
 		function inkOf(kind, active, focused, theme) {
 			const skin = theme || THEME
-			const compact = kind === 'compact'
-			const accent = compact ? skin.compactColor : skin.currentColor
+			// 压缩和空节点**自带颜色**，不跟着"在不在当前路径上"变 —— 它们靠颜色表明自己
+			// 是什么，不是表明自己在哪。普通节点才在 normalColor / currentColor 之间切。
+			const own = kind === 'compact' ? skin.compactColor : kind === 'empty' ? skin.emptyColor : undefined
+			const accent = own === undefined ? skin.currentColor : own
 			return {
 				accent,
 				// 描边色
-				ink: focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : compact ? skin.compactColor : skin.normalColor,
-				// 填充色。路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
-				fill: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
+				ink: focused ? accent : own !== undefined ? own : active ? fade(skin.currentColor, 0.9) : skin.normalColor,
+				// 填充色。路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的。
+				// 空节点是个占位，垫得比压缩节点更淡一点。
+				fill: focused
+					? accent
+					: own !== undefined
+						? fade(own, kind === 'compact' ? 0.3 : 0.15)
+						: active ? fade(skin.currentColor, 0.18) : C.bg,
 			}
 		}
 
@@ -816,7 +833,7 @@ window.__ModuleLoader__.load({
 		 * @param stroke - 描边宽度，和同尺寸下方框类形状的边框一样粗
 		 * @returns 子节点，或 null
 		 */
-		function dotInside(shape, size, skin, stroke) {
+		function dotInside(shape, size, skin, stroke, dashed) {
 			if (shape.glyph !== undefined) return shape.glyph
 			if (shape.poly === undefined) return null
 			const edge = shapeBox(shape, size)
@@ -827,7 +844,7 @@ window.__ModuleLoader__.load({
 					// 比 <span> 大一圈，所以绝对定位居中，别把自己挤进方框里
 					style: { position: 'absolute', left: '50%', top: '50%', marginLeft: `${-edge / 2}px`, marginTop: `${-edge / 2}px`, overflow: 'visible', pointerEvents: 'none' },
 				},
-				h('polygon', polyProps(shape, size, skin, stroke)),
+				h('polygon', polyProps(shape, size, skin, stroke, dashed)),
 			)
 		}
 
@@ -841,15 +858,18 @@ window.__ModuleLoader__.load({
 		 * @param size - 点的直径
 		 * @param skin - `inkOf` 的结果
 		 * @param stroke - 描边宽度
+		 * @param dashed - 画成虚线（空节点的记号）
 		 * @returns polygon 的属性
 		 */
-		function polyProps(shape, size, skin, stroke) {
+		function polyProps(shape, size, skin, stroke, dashed) {
 			return {
 				points: polyPoints(shape.poly, shapeBox(shape, size), stroke / 2),
 				fill: skin.fill,
 				stroke: skin.ink,
 				strokeWidth: stroke,
 				strokeLinejoin: 'round',
+				// 虚线是空节点的记号。方框类靠 borderStyle: dashed，多边形只能自己描
+				strokeDasharray: dashed === true ? `${(stroke * 2).toFixed(2)} ${(stroke * 1.5).toFixed(2)}` : 'none',
 			}
 		}
 
@@ -1211,6 +1231,8 @@ window.__ModuleLoader__.load({
 			{ field: 'currentShape', kind: 'shape', label: '当前路径形状', fallback: THEME.currentShape, accept: isShape, hint: '' },
 			{ field: 'compactColor', kind: 'color', label: '压缩节点颜色', fallback: THEME.compactColor, accept: isHex, hint: '' },
 			{ field: 'compactShape', kind: 'shape', label: '压缩节点形状', fallback: THEME.compactShape, accept: isShape, hint: '' },
+			{ field: 'emptyColor', kind: 'color', label: '空节点颜色', fallback: THEME.emptyColor, accept: isHex, hint: '' },
+			{ field: 'emptyShape', kind: 'shape', label: '空节点形状', fallback: THEME.emptyShape, accept: isShape, hint: '' },
 		]
 
 		/**
@@ -1223,7 +1245,9 @@ window.__ModuleLoader__.load({
 			{ key: 'current', label: '当前路径', color: 'currentColor', shape: 'currentShape',
 				hint: '当前这条路径的节点、连线，以及"正看着这一轮"的实心填充，都跟着这个颜色走。' },
 			{ key: 'compact', label: '压缩节点', color: 'compactColor', shape: 'compactShape',
-				hint: '被 /compact 压缩掉的那一轮。三个角色的形状各自独立，设成一样就分不出来了。' },
+				hint: '被 /compact 压缩掉的那一轮。四个角色的形状各自独立，设成一样就分不出来了。' },
+			{ key: 'empty', label: '空节点', color: 'emptyColor', shape: 'emptyShape', dashed: true,
+				hint: '树根那个"新对话"占位，在它上面按 ＋ 可以在同一棵树里再开一条。边框永远是虚线 —— 那是"还没说话"的记号，不跟着配置走。' },
 		]
 
 		/**
@@ -1402,14 +1426,14 @@ window.__ModuleLoader__.load({
 			 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
 			 * 预设后面跟两格自定义：传图片，或者填一个字符。
 			 */
-			const shapes = (field, now, color) =>
+			const shapes = (field, now, color, dashed) =>
 				h('div', { key: 'sp', style: S.picks }, [
 					...SHAPES.map((one) =>
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
 							style: S.chip(now === one.value, on),
 							onClick: () => put(field, one.value),
-						}, preview(one.value, color, 13)),
+						}, preview(one.value, color, 13, dashed)),
 					),
 					// 传图：选完立刻在浏览器里缩成 64×64 的 PNG 再上传，见 shrink()
 					h('label', {
@@ -1418,7 +1442,7 @@ window.__ModuleLoader__.load({
 						style: S.chip(String(now).startsWith(PICTURE), on),
 					}, [
 						String(now).startsWith(PICTURE)
-							? preview(now, color, 15)
+							? preview(now, color, 15, dashed)
 							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
 						h('input', {
 							key: 'f', type: 'file', accept: 'image/*', disabled: !on,
@@ -1455,7 +1479,7 @@ window.__ModuleLoader__.load({
 							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
 							onChange: (event) => put(spot.color, event.target.value),
 						}),
-						shapes(spot.shape, valueOf(spot.shape), color),
+						shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true),
 					]),
 					h('p', { key: 'p', style: S.hint }, spot.hint),
 				])
@@ -1723,7 +1747,7 @@ window.__ModuleLoader__.load({
 					key: `d${node.key}`,
 					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
 					onClick: go,
-				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot)))
+				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, node.kind === 'empty')))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
