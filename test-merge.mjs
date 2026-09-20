@@ -16,6 +16,7 @@
  *   第2步  用例 1：接回去 = 撤销分离，且剪点标记对得上按钮
  *   第3步  用例 2：合并可传递 —— A 合进 B、再把 B 合进 C，A 不许掉队
  *   第4步  用例 3：挑单子（列树不列节点、已合进来的能拆回去）
+ *   第5步  用例 4：在跑就不让合并，并把原因写在单子里
  *
  * 跑法：node test-merge.mjs
  *
@@ -214,6 +215,52 @@ console.log('用例 3：挑单子列的是树，不是节点')
 	// 合进来的对话，它的分支/轮次已经在树里了，不该再出现在"可以合并"里
 	check(!merged.some((one) => one.joined !== true && one.tree === 'R'), '乙同时出现在两边了')
 	console.log(`  可以合并：${list.map((one) => `${one.title}(${one.turns}轮)`).join(' / ')}；合进来之后变成 ⊖`)
+}
+
+// ===== 第 5 步：在跑就不让合并 =====
+
+console.log('用例 4：有一头还在跑就不让合并，并说明原因')
+{
+	const sessions = [
+		branch('P', undefined, undefined, [1, 2], '甲'),
+		branch('Q', 'P', 2, [3], '甲的分支'),
+		branch('R', undefined, undefined, [1], '乙'),
+		branch('S', undefined, undefined, [1], '丙'),
+	]
+	const visible = (list) => pure.visibleTree(list, new Set(list.map((item) => item.id)))
+	const find = (list, title) => list.find((one) => one.title === title)
+
+	// 谁都没跑 → 都能合
+	const calm = pure.mergeTargets(visible(sessions), 'P', {})
+	check(calm.every((one) => one.blocked === ''), `谁都没跑却拦着：${JSON.stringify(calm.map((one) => one.blocked))}`)
+
+	// 乙在跑 → 只拦乙，丙照常
+	const theirs = sessions.map((item) => (item.id === 'R' ? Object.assign({}, item, { running: true }) : item))
+	const one = pure.mergeTargets(visible(theirs), 'P', {})
+	check(find(one, '乙').blocked === '这条对话还在运行，跑完再合', `乙该被拦下，实际 ${JSON.stringify(find(one, '乙').blocked)}`)
+	check(find(one, '丙').blocked === '', '丙没在跑，不该被牵连')
+
+	// ⚠️ 在跑的是**对方那棵树里的分支**（不是树根）也要拦住：整棵树是一起并过来的，
+	//    只看树根的话，跑着的那条分支照样会被顺手带进来。
+	const kid = [
+		branch('T', undefined, undefined, [1], '丁'),
+		Object.assign(branch('U', 'T', 1, [2], '丁的分支'), { running: true }),
+	]
+	const deep = pure.mergeTargets(visible([...sessions, ...kid]), 'P', {})
+	check(find(deep, '丁').blocked !== '', '对方树里有分支在跑，却还让合')
+
+	// 自己这边在跑 → 整张单子都拦住，原因不一样
+	const mine = sessions.map((item) => (item.id === 'Q' ? Object.assign({}, item, { running: true }) : item))
+	const self = pure.mergeTargets(visible(mine), 'P', {})
+	check(self.every((one) => one.blocked === '当前对话还在运行，跑完再合'), `当前树在跑该整张拦下，实际 ${JSON.stringify(self.map((one) => one.blocked))}`)
+
+	// 两边都在跑
+	check(pure.blockedWhy(true, true) === '两边都还在运行，跑完再合', '两边都在跑时该说清楚是两边')
+	check(pure.blockedWhy(false, false) === '', '都空闲却给了原因')
+
+	// 拦下的那条**要留在单子里**：直接不显示的话，用户只会觉得"我那条对话怎么不见了"
+	check(one.length === calm.length, `拦下的条目被从单子里删掉了：${one.length} vs ${calm.length}`)
+	console.log(`  乙在跑 → "${find(one, '乙').blocked}"；自己在跑 → 整张单子拦下；被拦的仍留在单子里`)
 }
 
 fs.rmSync(home, { recursive: true, force: true })

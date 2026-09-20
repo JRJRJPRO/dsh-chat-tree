@@ -67,7 +67,7 @@ globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
 globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
 await import('./client.js')
 
-const { markRewound, turnHidden, rewindStateOf, busyProbe, SIDECAR_QUIET_MS, collect } = __test
+const { markRewound, turnHidden, rewindStateOf, statusProbe, SIDECAR_QUIET_MS, collect } = __test
 const Z = pure.Z
 
 // ===== 第 2 步：造数据的小工具 =====
@@ -432,13 +432,18 @@ console.log('用例 9：会话在跑就不碰旁车（读它会打死那一轮�
 		check(JSON.stringify(kept.ranges) === '[{"start":5,"end":9}]', `没读成时该沿用上一次，实际 ${JSON.stringify(kept.ranges)}`)
 		check(kept.pending === true, '用的是旧值，就该报 pending')
 
-		// ⑤ 判据认不出来一律当成"在跑"。宁可这一轮不显示撤回，也不能赌一把去读。
-		const probe = busyProbe({})
-		check(probe('whatever') === true, '没有 ctx.agents 时该当成"在跑"')
-		check(busyProbe({ agents: { get: () => { throw new Error('boom') } } })('x') === true, '判据抛异常时该当成"在跑"')
-		check(busyProbe({ agents: { get: () => undefined } })('x') === false, '冷会话没有 agent，没人写它，该允许读')
-		check(busyProbe({ agents: { get: () => ({ status: 'running' }) } })('x') === true, 'status=running 却说不忙')
-		check(busyProbe({ agents: { get: () => ({ status: 'idle' }) } })('x') === false, 'status=idle 却说在忙')
+		// ⑤ 判据是**三态**，别压成布尔：读旁车时 `unknown` 当成在跑（不读，赌错了打死整轮），
+		//    拦合并时 `unknown` 当成空闲（放行，赌错了只是多合了一条）。压成布尔必有一头是错的。
+		check(statusProbe({})('whatever') === 'unknown', '没有 ctx.agents 时该报 unknown')
+		check(statusProbe({ agents: { get: () => { throw new Error('boom') } } })('x') === 'unknown', '判据抛异常时该报 unknown')
+		check(statusProbe({ agents: { get: () => undefined } })('x') === 'idle', '冷会话没有 agent，该报 idle')
+		check(statusProbe({ agents: { get: () => ({ status: 'running' }) } })('x') === 'running', 'status=running 没报出来')
+		check(statusProbe({ agents: { get: () => ({ status: 'idle' }) } })('x') === 'idle', 'status=idle 没报出来')
+		// 读旁车那一侧的口径：unknown 必须当成"别读"。用一条**没读过**的会话，
+		// 否则会命中缓存，测不到"到底读没读"。
+		put('s-unknown', [{ start: 3, end: 4 }], quiet)
+		const guess = rewindStateOf((id) => statusProbe({})(id) !== 'idle', 's-unknown')
+		check(guess.pending === true && guess.ranges.length === 0, '认不出状态时还是去读了旁车')
 
 		// ⑥ 前端要据此回来拉第二次，并且在导轨上说明原因
 		check(pure.isRewindPending({ sessions: [{ rewindPending: true }] }) === true, '前端没认出"还欠着"')
@@ -493,6 +498,7 @@ console.log('用例 10：整条 /outlines 管线（假 ctx）')
 		// ① 会话空闲 → 读得到撤回区间，第 2 轮盖上戳，且不报 pending
 		const idle = (await collect(fakeCtx('idle'), '/x')).sessions[0]
 		check(idle.rewindPending === undefined, '空闲还报 pending，前端会白白多拉一次')
+		check(idle.running === undefined, '空闲还报 running，合并会被白白拦下')
 		check(idle.turns[0].rewound !== true, '第 1 轮不在区间里，不该盖戳')
 		check(idle.turns[1].rewound === true, `第 2 轮该盖上撤回戳，实际 ${JSON.stringify(idle.turns[1])}`)
 
@@ -503,6 +509,9 @@ console.log('用例 10：整条 /outlines 管线（假 ctx）')
 		fs.utimesSync(file, now, now)
 		const busy = (await collect(fakeCtx('running'), '/x')).sessions[0]
 		check(busy.rewindPending === true, '会话在跑、撤回记录没读到，却没把 rewindPending 报给前端')
+		// 合并那一侧要的就是这个字段：不报上去，前端拦不住"合并一条正在跑的对话"
+		check(busy.running === true, '会话在跑却没把 running 报给前端')
+		check(pure.mergeTargets([{ id: 'other', cwd: '/x', turns: [], running: true }, busy], busy.id, {}).length >= 0, 'mergeTargets 吃不下真实记录')
 		check(pure.isRewindPending({ sessions: [busy] }) === true, '前端认不出 host 报上来的 pending —— 两边字段名对不上')
 		// 沿用上一次读到的：撤回只发生在两轮之间，所以这一轮里旧值必然还是对的。
 		// 退回空的话，每跑一轮撤回过的节点就诈尸一次。

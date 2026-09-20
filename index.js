@@ -199,7 +199,9 @@ async function collect(ctx, cwd) {
 	const snapshots = await ctx.sessionPersistence.list()
 	const alive = new Set()
 	const sessions = []
-	const busy = busyProbe(ctx)
+	const status = statusProbe(ctx)
+	// 读旁车 fail-closed（认不出来就不读），拦合并 fail-open（认不出来就放行）
+	const busy = (id) => status(id) !== 'idle'
 
 	for (const snapshot of snapshots) {
 		const header = snapshot.header
@@ -221,6 +223,9 @@ async function collect(ctx, cwd) {
 			turns: markRewound(outline.turns, rewind.ranges),
 			// 这一轮没敢读旁车（它正在跑）。前端据此给个提示，并等它跑完再来拉一次。
 			...(rewind.pending ? { rewindPending: true } : {}),
+			// 正在跑的对话不给合并 —— 合并本身只写 shape.json 不危险，但那棵树的形状
+			// 现在算不准（撤回记录读不了），刚合进来就画错更难解释。
+			...(status(header.id) === 'running' ? { running: true } : {}),
 		})
 	}
 
@@ -292,22 +297,26 @@ const SIDECAR_QUIET_MS = 1500
 const hiddenCache = new Map()
 
 /**
- * 造一个「这条会话正在跑吗」的判据。
+ * 造一个「这条会话现在什么状态」的判据。
  *
- * ⚠️ 认不出来一律当成**在跑**。宁可这一轮不显示撤回，也不能赌一把去读。
+ * ⚠️ 三态，**别压成布尔**。两个调用方对"认不出来"的处理正好相反：
+ *   · 读旁车：`unknown` 当成在跑（不读）—— 赌错了是打死整轮对话。
+ *   · 拦合并：`unknown` 当成空闲（放行）—— 赌错了只是让人合并了一条正在跑的对话，
+ *     而合并只写 shape.json，不碰对话本身。压成布尔必然有一头是错的。
  * @param ctx - 插件 context
- * @returns `(sessionId) => boolean`
+ * @returns `(sessionId) => 'running' | 'idle' | 'unknown'`
  */
-function busyProbe(ctx) {
+function statusProbe(ctx) {
 	return (sessionId) => {
 		try {
 			const registry = ctx && ctx.agents
-			if (registry === undefined || typeof registry.get !== 'function') return true
+			if (registry === undefined || typeof registry.get !== 'function') return 'unknown'
 			const agent = registry.get(sessionId)
 			// 冷会话根本没有 agent —— 没人在写它的旁车
-			return agent !== undefined && agent.status === 'running'
+			if (agent === undefined) return 'idle'
+			return agent.status === 'running' ? 'running' : 'idle'
 		} catch {
-			return true
+			return 'unknown'
 		}
 	}
 }
@@ -811,7 +820,7 @@ export function graft(childId, parentId, turn) {
 // ===== 第 6 步：装配 =====
 
 /** 内部件出口，仅供离线测试（cordis 只读 name/inject/apply）。 */
-export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX, busyProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS, collect }
+export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX, statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS, collect }
 
 /**
  * 从回调实参里把 agent 捞出来。宿主用的是带作用域载体的 emit，实参形状可能随版本变，

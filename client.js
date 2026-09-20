@@ -119,20 +119,28 @@ window.__ModuleLoader__.load({
 		 * @param sessions - 本 cwd 下全部可见分支（已过 visibleTree）
 		 * @param currentId - 当前会话
 		 * @param groupOf - 登记表
-		 * @returns `[{tree, root, title, turns, joined}]`，按创建时间排；`joined` = 是合进来的
+		 * @returns `[{tree, root, title, turns, joined, blocked}]`，按创建时间排
 		 */
 		function mergeTargets(sessions, currentId, groupOf) {
 			const byId = new Map(sessions.map((item) => [item.id, item]))
 			const mine = treeOf(byId, groupOf, currentId)
+			const own = (item) => (item.turns || []).filter((entry) => !entry.inherited).length
 			const trees = new Map()
+			// 一棵树只要有**任何一条分支**在跑就不能合并。整棵树是一起并过来的，
+			// 只看被点中那条分支的话，"跑着的那条"照样会被顺手带进来。
+			const running = new Set()
+			for (const item of sessions) {
+				const tree = treeOf(byId, groupOf, item.id)
+				if (tree === undefined) continue
+				if (item.running === true) running.add(tree)
+			}
 			for (const item of sessions) {
 				const tree = treeOf(byId, groupOf, item.id)
 				if (tree === undefined || tree === mine) continue
 				const seat = trees.get(tree)
-				const turns = (item.turns || []).filter((entry) => !entry.inherited).length
-				if (seat === undefined) trees.set(tree, { tree, root: item.id, title: item.title, turns, at: item.createdAt || 0 })
+				if (seat === undefined) trees.set(tree, { tree, root: item.id, title: item.title, turns: own(item), at: item.createdAt || 0 })
 				else {
-					seat.turns += turns
+					seat.turns += own(item)
 					if ((item.createdAt || 0) < seat.at) Object.assign(seat, { root: item.id, title: item.title, at: item.createdAt || 0 })
 				}
 			}
@@ -141,9 +149,29 @@ window.__ModuleLoader__.load({
 			for (const [key, value] of Object.entries(groupOf || {})) {
 				if (value !== mine || !byId.has(key)) continue
 				const item = byId.get(key)
-				joined.push({ tree: key, root: key, title: item.title, turns: (item.turns || []).filter((entry) => !entry.inherited).length, at: item.createdAt || 0, joined: true })
+				joined.push({ tree: key, root: key, title: item.title, turns: own(item), at: item.createdAt || 0, joined: true })
 			}
-			return [...joined, ...trees.values()].sort((left, right) => left.at - right.at)
+			const mineBusy = running.has(mine)
+			return [...joined, ...trees.values()]
+				.map((one) => Object.assign(one, { blocked: blockedWhy(mineBusy, running.has(one.tree)) }))
+				.sort((left, right) => left.at - right.at)
+		}
+
+		/**
+		 * 不能合并的话，原因是什么人话。
+		 *
+		 * 现在只有一种：有一头还在跑。**合并本身不危险**（只写 shape.json，不碰对话），
+		 * 但正在跑的那棵树形状算不准 —— 它的撤回记录这会儿读不了（见 index.js 第 3 步），
+		 * 刚合进来就画错更难解释。等跑完再合，一切都是确定的。
+		 * @param mineBusy - 当前这棵树在跑
+		 * @param theirsBusy - 对方那棵树在跑
+		 * @returns 原因；能合并就是空串
+		 */
+		function blockedWhy(mineBusy, theirsBusy) {
+			if (theirsBusy && mineBusy) return '两边都还在运行，跑完再合'
+			if (theirsBusy) return '这条对话还在运行，跑完再合'
+			if (mineBusy) return '当前对话还在运行，跑完再合'
+			return ''
 		}
 
 		/**
@@ -1309,22 +1337,27 @@ window.__ModuleLoader__.load({
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 					},
 				},
-				targets.map((target) =>
-					h('div', {
+				targets.map((target) => {
+					// 不能合并的那几条**留在单子里**，灰掉并把原因写在右边。
+					// 直接不显示的话，用户只会觉得"我那条对话怎么不见了"，反而更慌。
+					const stop = target.blocked !== undefined && target.blocked !== ''
+					return h('div', {
 						key: target.tree,
-						title: target.joined ? '拆回独立的一棵树' : '合并进当前这棵树',
+						title: stop ? target.blocked : target.joined ? '拆回独立的一棵树' : '合并进当前这棵树',
 						style: {
 							display: 'flex', alignItems: 'center', gap: '6px',
-							padding: '4px 6px', borderRadius: '5px', cursor: 'pointer',
+							padding: '4px 6px', borderRadius: '5px',
+							cursor: stop ? 'not-allowed' : 'pointer',
+							opacity: stop ? 0.45 : 1,
 						},
-						onMouseEnter: (event) => { event.currentTarget.style.background = C.line },
+						onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.line },
 						onMouseLeave: (event) => { event.currentTarget.style.background = 'transparent' },
-						onClick: () => onPick(target),
+						onClick: () => { if (!stop) onPick(target) },
 					},
-					h('span', { key: 'g', style: { flex: '0 0 auto', color: C.muted, fontSize: '12px' } }, target.joined ? '⊖' : '⊕'),
+					h('span', { key: 'g', style: { flex: '0 0 auto', color: C.muted, fontSize: '12px' } }, stop ? '⏳' : target.joined ? '⊖' : '⊕'),
 					h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, target.title || '未命名对话'),
-					h('span', { key: 'n', style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' } }, `${target.turns} 轮`)),
-				),
+					h('span', { key: 'n', style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' } }, stop ? target.blocked : `${target.turns} 轮`))
+				}),
 			)
 		}
 
@@ -2140,7 +2173,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, mergeTargets, isRewindPending, rewindRetryDelay, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, mergeTargets, blockedWhy, isRewindPending, rewindRetryDelay, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

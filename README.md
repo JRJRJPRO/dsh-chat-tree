@@ -46,6 +46,8 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 | ⇤ | 把拆出去的支线接回原来那棵树（出现在剪缝上） |
 | ⊕ | 树根空节点上：把本目录下别的对话**整棵**合并进来，再点一次 ⊖ 拆回去 |
 
+有一头还在跑的时候不让合并 —— 那条会留在单子里灰掉，右边写着「这条对话还在运行，跑完再合」。
+
 边框蓝 = 这个节点在你当前的对话里；填充蓝 = 你正看着这一轮。橙色倒三角 = 这一轮做过压缩。
 
 **撤回过的轮次**（dsh-claude 的 rewind）不会再假装还在对话里：答完之后才撤回的，
@@ -99,7 +101,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ## 测
 
 ```bash
-npm test                   # 七套一起跑
+npm test                   # 八套一起跑
 
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮、hover intent、连线遮挡
@@ -107,6 +109,7 @@ node test-elide.mjs        # 省略的距离、行号压实、缩放
 node test-icon.mjs         # 自定义节点图片：只收 PNG、内容哈希、清理不误伤
 node test-rewind.mjs       # 撤回：哪些轮该消失、哪些该成废弃支线
 node test-merge.mjs        # 合并 / 接回去
+node test-shape.mjs        # 拿真实会话跑合并 / 分离的端到端
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
 ```
 
