@@ -150,16 +150,24 @@ console.log('\n用例 4：岔路点落在父分支"继承来的"那一段里')
 	scenario('当前 C', [A, B, C], 'C', ['A:1', 'C:2'])
 }
 
-console.log('\n用例 5：节点样式的 key 集合必须恒定，且边框不许用简写')
+console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand、形状与状态正交')
 {
-	// 为什么要守这条：React 更新内联样式时，会把**上一帧有、这一帧没有**的属性置空。
+	// 为什么要守 key 集合：React 更新内联样式时，会把**上一帧有、这一帧没有**的属性置空。
 	// 如果某个形态多写了 `borderColor` 而 base 用的是 `border` 简写，
 	// 那么从那个形态切回来时 borderColor 被清成 ''，border-color 退回 currentColor
 	// —— 屏幕上就是"滑过一个点白一个"。key 集合恒定就根本不会触发这个清空。
 	const variants = []
-	for (const kind of ['normal', 'current', 'compact', 'empty']) {
+	for (const kind of ['normal', 'compact', 'empty']) {
 		for (const active of [true, false]) {
-			for (const hover of [true, false]) variants.push({ label: `${kind}/${active ? '路径上' : '路径外'}/${hover ? '悬停' : '常态'}`, style: pure.dotStyle(kind, active, hover, 9) })
+			for (const hover of [true, false]) {
+				for (const focused of [true, false]) {
+					variants.push({
+						kind,
+						label: `${kind}/${active ? '路径上' : '路径外'}/${hover ? '悬停' : '常态'}/${focused ? '当前轮' : '非当前'}`,
+						style: pure.dotStyle(kind, active, hover, 9, focused),
+					})
+				}
+			}
 		}
 	}
 	const reference = Object.keys(variants[0].style).sort()
@@ -170,6 +178,23 @@ console.log('\n用例 5：节点样式的 key 集合必须恒定，且边框不�
 		check(typeof variant.style.borderColor === 'string' && variant.style.borderColor.length > 0, `${variant.label} 没有显式的 borderColor`)
 	}
 	console.log(`  ${variants.length} 种形态组合，key 集合一致（${reference.length} 个），边框全是 longhand`)
+
+	// 形状必须和状态正交：压缩节点**任何状态下**都得是菱形。
+	// 老做法 `kind = focused ? 'current' : node.kind` 会让它一滑到就变回蓝圆点 ——
+	// "一眼看出是压缩节点"恰好在最该看清的时候失效。
+	const spun = /rotate\(45deg\)/
+	for (const variant of variants) {
+		const want = variant.kind === 'compact'
+		check(spun.test(variant.style.transform) === want, `${variant.label}：${want ? '压缩节点没转成菱形' : '普通节点不该旋转'}`)
+		check((variant.style.borderRadius === '50%') === !want, `${variant.label}：${want ? '压缩节点还是个正圆' : '普通节点该是正圆'}`)
+	}
+
+	// "当前轮"只该换填充和外发光，不许动形状
+	const lit = pure.dotStyle('compact', true, false, 9, true)
+	const dim = pure.dotStyle('compact', true, false, 9, false)
+	check(lit.transform === dim.transform && lit.borderRadius === dim.borderRadius, '压缩节点滑到时形状变了')
+	check(lit.background !== dim.background && lit.boxShadow !== dim.boxShadow, '压缩节点滑到时看不出是当前轮')
+	console.log('  压缩节点四种状态全是菱形；当前轮只换填充和外发光')
 }
 
 console.log('\n用例 6：hover intent —— 赶路途中谁都不许抢走卡片')
@@ -286,6 +311,33 @@ console.log('\n用例 7：几个孩子的横线叠在一起时，蓝线必须压
 		console.log(`  当前 ${currentId} → 横段共 ${paint.size} 段，其中该蓝的 ${lit} 段`)
 	}
 	check(total > 0, '这组用例一条带折角的蓝线都没造出来，等于什么都没测')
+}
+
+console.log('\n用例 8：＋ 在空节点 / 叶子上该做什么')
+{
+	// John 报的：新建一个对话，图上只有一个空节点，点 ＋ 却又建了一条空对话。
+	// 空节点代表"对话开始之前"，它底下什么都没有时，当前这条会话本身就是那条空对话，
+	// 再 fresh 一条只是多出一条一模一样的（和叶子节点不该 fork 是同一条道理）。
+	const leafRoot = { entry: undefined, children: [] }
+	const rootWithKids = { entry: undefined, children: [{}] }
+	const leaf = { entry: { turn: 3 }, children: [] }
+	const forked = { entry: { turn: 3 }, children: [{}, {}] }
+
+	check(pure.branchAction(leafRoot) === 'none', '光秃秃的空节点点 ＋ 不该有任何反应')
+	check(pure.branchAction(rootWithKids) === 'fresh', '底下已有分支的空节点，＋ 才是"再开一条新对话"')
+	check(pure.branchAction(leaf) === 'open', '叶子节点该就地接着问，不 fork')
+	check(pure.branchAction(forked) === 'fork', '有后续的节点才真的 fork')
+	console.log('  空节点(无子)=none / 空节点(有子)=fresh / 叶子=open / 有后续=fork')
+
+	// 工作区归属：侧栏按 workspace.sessionIds 分组，不是按 cwd。
+	// 只传 cwd 建出来的会话谁都不认领，就掉进"未分组"。
+	const state = { items: [{ workspaceId: 'w1', sessionIds: ['s1', 's2'] }, { workspaceId: 'w2', sessionIds: ['s3'] }] }
+	check(pure.workspaceOf(state, 's2') === 'w1', 's2 明明在 w1 里却没查出来')
+	check(pure.workspaceOf(state, 's3') === 'w2', 's3 该归 w2')
+	check(pure.workspaceOf(state, 'nope') === undefined, '查不到就该是 undefined，好退回 cwd')
+	check(pure.workspaceOf(undefined, 's1') === undefined, '快照还没到时不该崩')
+	check(pure.workspaceOf({ items: [{ workspaceId: 'w' }] }, 's1') === undefined, 'sessionIds 缺失不该崩')
+	console.log('  工作区归属：命中 / 另一个 / 查不到 / 空快照 / 字段缺失，五种都对')
 }
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)

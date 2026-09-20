@@ -261,7 +261,10 @@ async function main() {
 		for (const node of nodes) {
 			const action = pure.branchAction(node)
 			if (node.entry === undefined) {
-				check(action === 'fresh', `[${tag}] 根部空节点的 ＋ 应当开新对话，得到 ${action}`)
+				// 空节点代表"对话开始之前"。底下已经有分支了，＋ 才是"再开一条新对话"；
+				// 光秃秃的空节点（刚建的对话）本身就是那条空对话，再开一条只是复制粘贴。
+				const want = node.children.length === 0 ? 'none' : 'fresh'
+				check(action === want, `[${tag}] 空节点(${node.children.length} 个子节点)的 ＋ 应当是 ${want}，得到 ${action}`)
 			} else if (node.children.length === 0) {
 				check(action === 'open', `[${tag}] 叶子节点 ${node.key} 的 ＋ 不该复制会话，应当就地接着问，得到 ${action}`)
 			} else {
@@ -354,6 +357,26 @@ async function main() {
 	check(inheritedLit > 0, `数据里没有"路径上属于祖先会话"的节点，这条断言等于没测（实际 ${inheritedLit} 个）`)
 	console.log(`路径上共 ${inheritedLit} 个继承来的节点，滑到时都会亮`)
 
+	// 断言 10：压缩标记只认**成功**的压缩。
+	//
+	// 盘上目前一条原生压缩都没有（用 dsh-claude 时 /compact 发生在 Claude Code 里，
+	// dsh 的日志和 sidecar 都不记），所以这条只能合成。宿主的校验器写明：成功的
+	// compaction/end 必须配一条 compaction/summary，失败的那条带 `error`。
+	{
+		const at = (seq, type, data) => ({ seq, type, time: seq, data })
+		const base = [
+			at(1, 'turn/start', { turn: 1 }), at(2, 'turn/end', { turn: 1 }),
+			at(3, 'turn/start', { turn: 2 }), at(4, 'turn/end', { turn: 2 }),
+			at(5, 'turn/start', { turn: 3 }), at(6, 'turn/end', { turn: 3 }),
+		]
+		const ok = foldOutline([...base, at(7, 'compaction/end', { turn: 2 })])
+		const bad = foldOutline([...base, at(7, 'compaction/end', { turn: 2, error: 'context window exceeded' })])
+		const marks = (outline) => outline.turns.filter((entry) => entry.compact).map((entry) => entry.turn)
+
+		check(JSON.stringify(marks(ok)) === '[2]', `成功的压缩该只标第 2 轮，实际 ${JSON.stringify(marks(ok))}`)
+		check(marks(bad).length === 0, `压缩失败了却还是标了 ${JSON.stringify(marks(bad))} —— 明明什么都没压掉`)
+		console.log('压缩标记：成功的标在 owner 轮上，失败的一个都不标')
+	}
 	console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 	process.exit(failures === 0 ? 0 : 1)
 }

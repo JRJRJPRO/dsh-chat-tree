@@ -287,13 +287,29 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 某个会话属于哪个工作区。
+		 *
+		 * 侧栏的分组按 `workspace.sessionIds` 这张显式成员表算，不是按 cwd。
+		 * @param state - `ctx.workspaces` 的快照 `{items, archivedSessionIds}`
+		 * @param sessionId - 会话 id
+		 * @returns workspaceId，查不到就 undefined
+		 */
+		function workspaceOf(state, sessionId) {
+			const hit = ((state && state.items) || []).find((item) => (item.sessionIds || []).includes(sessionId))
+			return hit === undefined ? undefined : hit.workspaceId
+		}
+
+		/**
 		 * 在某个节点上按 ＋ 该干什么。
 		 * **叶子节点不 fork**：后面什么都没有，复制一份只会多出一条内容重复的会话。
 		 * @param node - 被点的节点
-		 * @returns 'fresh' 开新对话 | 'open' 就在本会话接着问 | 'fork' 真的开岔路
+		 * @returns 'none' 什么都不该做 | 'fresh' 开新对话 | 'open' 就在本会话接着问 | 'fork' 真的开岔路
 		 */
 		function branchAction(node) {
-			if (node.entry === undefined) return 'fresh' // 根部那个空节点
+			// 根部那个空节点：底下已经有分支了才谈得上"再开一条"。
+			// ⚠️ 刚建的对话只有这一个空节点，它自己就是"一条空对话"，
+			//    再 fresh 一条只是多出一条一模一样的空会话（和叶子节点同一条道理）。
+			if (node.entry === undefined) return node.children.length === 0 ? 'none' : 'fresh'
 			return node.children.length === 0 ? 'open' : 'fork'
 		}
 
@@ -415,31 +431,33 @@ window.__ModuleLoader__.load({
 		 * @param hover - 鼠标是否停在它上面
 		 * @param size - 直径
 		 */
-		function dotStyle(kind, active, hover, size) {
+		function dotStyle(kind, active, hover, size, focused) {
 			// ⚠️ 所有分支必须返回**相同的 key 集合**，边框只用 longhand，不许写 `border` 简写。
 			//    React 会把"上一帧有、这一帧没有"的属性置空，简写和 longhand 混用时
 			//    切回普通态会掉成白边框 —— 滑过一个点白一个（DESIGN.md §5）。
+			//
+			// ⚠️ 形状归 `kind`，状态归 `active`/`focused`，两者**正交**。
+			//    以前是 `kind = focused ? 'current' : node.kind`，压缩节点一滑到就变回蓝圆点 ——
+			//    "一眼看出是压缩节点"恰好在最该看清的时候失效。别再把状态塞回 kind 里。
 			// 描边和外发光都按直径同比例走，否则点放大后边框细得看不见。
 			const k = size / Z.dot
-			const base = {
+			const diamond = kind === 'compact'
+			const accent = diamond ? C.orange : C.blue
+			return {
 				width: `${size}px`, height: `${size}px`,
-				borderRadius: '50%',
+				// 压缩节点画成菱形（转 45°、几乎不倒角），小尺寸下也和圆点一眼分得开
+				borderRadius: diamond ? `${1.5 * k}px` : '50%',
 				borderWidth: `${1.5 * k}px`,
-				borderStyle: 'solid',
-				borderColor: active ? C.dimActive : C.dim,
-				// 路径上的点垫一层淡蓝填充：只靠描边在小尺寸下看着像白的
-				background: active ? 'rgba(88,166,255,.18)' : C.bg,
-				boxShadow: 'none',
+				borderStyle: kind === 'empty' ? 'dashed' : 'solid',
+				borderColor: focused ? accent : diamond ? C.orange : kind === 'empty' && !active ? '#7d8590' : active ? C.dimActive : C.dim,
+				// 路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
+				background: focused ? accent : diamond ? 'rgba(255,166,87,.3)' : active ? 'rgba(88,166,255,.18)' : C.bg,
+				boxShadow: focused ? `0 0 0 ${3 * k}px ${diamond ? 'rgba(255,166,87,.22)' : 'rgba(88,166,255,.22)'}` : 'none',
 				boxSizing: 'border-box',
-				opacity: active ? 1 : 0.4,
+				opacity: focused || active ? 1 : 0.4,
 				transition: 'transform .12s ease, opacity .12s ease',
-				transform: hover ? 'scale(1.4)' : 'scale(1)',
+				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${diamond ? ' rotate(45deg)' : ''}`,
 			}
-			// 只换填充，边框仍由 active 决定
-			if (kind === 'current') return Object.assign(base, { background: C.blue, borderColor: active ? C.blue : C.dim, opacity: 1, boxShadow: `0 0 0 ${3 * k}px rgba(88,166,255,.22)` })
-			if (kind === 'compact') return Object.assign(base, { borderRadius: `${2 * k}px`, borderColor: C.orange, background: 'rgba(255,166,87,.3)', transform: `${hover ? 'scale(1.4) ' : ''}rotate(45deg)` })
-			if (kind === 'empty') return Object.assign(base, { borderStyle: 'dashed', borderColor: active ? C.dimActive : '#7d8590' })
-			return base
 		}
 
 		// ===== 第 5 步：副作用钩子 =====
@@ -676,7 +694,7 @@ window.__ModuleLoader__.load({
 							editing
 								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
-							button('＋', '从这之后新开分支', () => props.onFork(node)),
+							branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
 							isEmpty ? null : button('↺', '这一轮重来', () => props.onRedo(node)),
 						]
 					: null,
@@ -1036,7 +1054,6 @@ window.__ModuleLoader__.load({
 				const x = xOf(node.column)
 				const y = yOf(rowOfNode(node))
 				const isFocused = isFocusedNode(node, activeTurn)
-				const kind = isFocused ? 'current' : node.kind
 				const isHover = hover !== null && hover.node === node
 				const size = node.kind === 'empty' ? dotSize + 2 : dotSize
 				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
@@ -1044,7 +1061,7 @@ window.__ModuleLoader__.load({
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
 				parts.push(h('span', {
 					key: `d${node.key}`,
-					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(kind, node.active, isHover, size)),
+					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(node.kind, node.active, isHover, size, isFocused)),
 					onClick: go,
 				}))
 				// 透明加宽命中区：点很小，直接点很难中
@@ -1097,7 +1114,8 @@ window.__ModuleLoader__.load({
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFork: (node) => {
 							const action = branchAction(node)
-							if (action === 'fresh') return api.fresh(node.session.cwd)
+							if (action === 'none') return undefined
+							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd)
 							if (action === 'open') return api.open(node.session.id)
 							return api.fork(node.session.id, node.entry.seq)
 						},
@@ -1158,9 +1176,13 @@ window.__ModuleLoader__.load({
 						console.warn('[dsh-tree] fork failed', error)
 					}
 				},
-				fresh: (cwd) => {
+				// ⚠️ 新会话归到哪个工作区看的是 `workspaceId`，**不是 cwd**：侧栏按
+				//    workspace.sessionIds 这张显式成员表分组，只传 cwd 建出来的会话谁都不认领，
+				//    于是掉进"未分组"。宿主自己的新建按钮就是 create({ workspaceId })。
+				//    查不到归属时才退回 cwd（至少工作目录是对的）。
+				fresh: (workspaceId, cwd) => {
 					ctx.sessions
-						.create(cwd ? { cwd } : {})
+						.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
 						.then((id) => ctx.sessions.open(id))
 						.catch((error) => console.warn('[dsh-tree] create failed', error))
 				},
@@ -1197,7 +1219,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

@@ -95,6 +95,10 @@ export function foldOutline(events) {
 				break
 			case 'compaction/end':
 				{
+					// ⚠️ 压缩失败也会发 end，只是带上 `error`（宿主校验器原话：
+					//    成功的 compaction/end 必须配一条 compaction/summary）。
+					//    不看 error 的话，压缩失败的那一轮也会被画成菱形 —— 明明什么都没压掉。
+					if (data.error !== undefined) break
 					const at = typeof data.turn === 'number' ? turns.find((item) => item.turn === data.turn) : current
 					if (at !== undefined) at.compact = true
 				}
