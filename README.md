@@ -43,6 +43,8 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 | 双击名字 | 改名 |
 | ＋ | 从这之后接着问；在树根空节点上则是**在同一棵树里新开一条对话** |
 | ⇥ | 把这条支线拆成独立的一棵树（头顶有岔路的节点才有） |
+| ⇤ | 把拆出去的支线接回原来那棵树（出现在剪缝上） |
+| ⊕ | 树根空节点上：把本目录下别的对话**整棵**合并进来，再点一次 ⊖ 拆回去 |
 
 边框蓝 = 这个节点在你当前的对话里；填充蓝 = 你正看着这一轮。橙色倒三角 = 这一轮做过压缩。
 
@@ -97,13 +99,14 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ## 测
 
 ```bash
-npm test                   # 六套一起跑
+npm test                   # 七套一起跑
 
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮、hover intent、连线遮挡
 node test-elide.mjs        # 省略的距离、行号压实、缩放
 node test-icon.mjs         # 自定义节点图片：只收 PNG、内容哈希、清理不误伤
 node test-rewind.mjs       # 撤回：哪些轮该消失、哪些该成废弃支线
+node test-merge.mjs        # 合并 / 接回去
 node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
 ```
 

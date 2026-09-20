@@ -558,9 +558,28 @@ function writeShape(next) {
 }
 
 /**
+ * 一个分组目标最终落在哪棵树上。
+ *
+ * 存盘里的值恒为"终点"（不再是别人的 key），这个函数只是**写入时**把传进来的目标
+ * 再解析一次，顺带兜住手改过 shape.json 的情况。带 guard 防自环。
+ * @param groupOf - 登记表
+ * @param target - 想合并进去的树
+ * @returns 终点树编号
+ */
+function settleGroup(groupOf, target) {
+	const seen = new Set()
+	let at = target
+	while (typeof groupOf[at] === 'string' && !seen.has(at)) {
+		seen.add(at)
+		at = groupOf[at]
+	}
+	return at
+}
+
+/**
  * 打一条形状补丁。
  *
- * `group` ：把一条**对话**登记到 `group` 这棵树（group 为空则销掉登记）。
+ * `group` ：把一条**对话**合并进 `group` 这棵树（group 为空则拆回独立的一棵）。
  * `detach`：把一个**节点**（`<会话>:<轮次>`）从它父亲那里剪下来 / 接回去。
  *
  * 两个字段的 `session` 含义不同（会话 id vs 节点 key），但都只是个不透明的字符串，
@@ -577,8 +596,15 @@ export function reshape(patch) {
 	const detached = new Set(current.detached)
 
 	if (patch.group !== undefined) {
-		if (typeof patch.group === 'string' && patch.group.length > 0 && patch.group !== session) groupOf[session] = patch.group
-		else delete groupOf[session]
+		const want = typeof patch.group === 'string' && patch.group.length > 0 ? settleGroup(groupOf, patch.group) : ''
+		if (want.length > 0 && want !== session) {
+			groupOf[session] = want
+			// ⚠️ 把原本指着 session 的那些人一起改指到 want。
+			//    `treeOf` 只查**一跳**（`groupOf[root] || root`），不跟着链走 —— 不补这一步的话，
+			//    「A 合进 B，再把 B 合进 C」会让 A 单独掉出来（A→A、B→B+C），
+			//    先合进来的那条对话悄无声息地被踢走。test-merge 用例 2 钉着。
+			for (const key of Object.keys(groupOf)) if (groupOf[key] === session) groupOf[key] = want
+		} else delete groupOf[session]
 	}
 	if (patch.detach !== undefined) {
 		if (patch.detach === true) detached.add(session)

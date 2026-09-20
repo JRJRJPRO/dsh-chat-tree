@@ -111,6 +111,42 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 本 cwd 下**别的**对话，供「合并」挑。
+		 *
+		 * 合并是整棵树对整棵树的，所以这里按树归并，一棵树只出现一次。
+		 * 合并结果不需要指定"接到哪个节点"：两棵树的节点互不相同，合完就是
+		 * 各自的链并排挂在同一个空根下 —— 谁合进谁，结果都是确定的。
+		 * @param sessions - 本 cwd 下全部可见分支（已过 visibleTree）
+		 * @param currentId - 当前会话
+		 * @param groupOf - 登记表
+		 * @returns `[{tree, root, title, turns, joined}]`，按创建时间排；`joined` = 是合进来的
+		 */
+		function mergeTargets(sessions, currentId, groupOf) {
+			const byId = new Map(sessions.map((item) => [item.id, item]))
+			const mine = treeOf(byId, groupOf, currentId)
+			const trees = new Map()
+			for (const item of sessions) {
+				const tree = treeOf(byId, groupOf, item.id)
+				if (tree === undefined || tree === mine) continue
+				const seat = trees.get(tree)
+				const turns = (item.turns || []).filter((entry) => !entry.inherited).length
+				if (seat === undefined) trees.set(tree, { tree, root: item.id, title: item.title, turns, at: item.createdAt || 0 })
+				else {
+					seat.turns += turns
+					if ((item.createdAt || 0) < seat.at) Object.assign(seat, { root: item.id, title: item.title, at: item.createdAt || 0 })
+				}
+			}
+			// 已经合进来的那些：登记表里指着我这棵树的，拆得回去
+			const joined = []
+			for (const [key, value] of Object.entries(groupOf || {})) {
+				if (value !== mine || !byId.has(key)) continue
+				const item = byId.get(key)
+				joined.push({ tree: key, root: key, title: item.title, turns: (item.turns || []).filter((entry) => !entry.inherited).length, at: item.createdAt || 0, joined: true })
+			}
+			return [...joined, ...trees.values()].sort((left, right) => left.at - right.at)
+		}
+
+		/**
 		 * 当前该画出来的那棵树。
 		 *
 		 * 同一棵树 = 树根相同，**或者**树根被显式登记进了同一组。
@@ -214,7 +250,10 @@ window.__ModuleLoader__.load({
 			const ownerOf = new Map([[root, root]])
 			for (const node of nodes) {
 				if (node === root) continue
-				ownerOf.set(node, cutAt.has(node.key) ? node : ownerOf.get(node.parent))
+				// 标出剪缝本身：分离完新树里照抄了根到剪点父亲的前缀，所以剪缝**看得见**，
+				// 接回去接到哪一目了然 —— 这个标记就是给那个「接回去」按钮用的
+				node.cut = cutAt.has(node.key)
+				ownerOf.set(node, node.cut ? node : ownerOf.get(node.parent))
 			}
 
 			// 站在哪棵上：取当前会话最深的那个节点；这条会话一轮都还没有就待在 root 那棵
@@ -1164,7 +1203,11 @@ window.__ModuleLoader__.load({
 		function Detail(props) {
 			const { node, y, railWidth, labels, hold, release } = props
 			const [editing, setEditing] = react.useState(false)
-			react.useEffect(() => setEditing(false), [node])
+			const [merging, setMerging] = react.useState(false)
+			react.useEffect(() => {
+				setEditing(false)
+				setMerging(false)
+			}, [node])
 
 			const shown = node !== null
 			const isEmpty = shown && node.kind === 'empty'
@@ -1220,9 +1263,68 @@ window.__ModuleLoader__.load({
 								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
 							branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
+							// 剪缝上的「接回去」—— 分离一直是单向的，拆出去就回不来了
+							!shown || node.cut !== true ? null : button('⇤', '把这条支线接回原来那棵树', () => props.onJoin(node)),
 							props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
+							// 合并整棵对话。挂在树根那个空节点上：合并是**整棵树对整棵树**的，
+							// 不是某个节点对某个节点，挂在中间任何一个节点上都会让人以为"接到这儿"。
+							!isEmpty || (props.targets || []).length === 0
+								? null
+								: button(merging ? '×' : '⊕', merging ? '收起' : '把别的对话合并进这棵树', () => setMerging(!merging)),
 						]
 					: null,
+				!shown || !merging ? null : h(MergeList, {
+					key: 'merge',
+					targets: props.targets || [],
+					railWidth,
+					onPick: (target) => {
+						setMerging(false)
+						props.onMerge(target)
+					},
+				}),
+			)
+		}
+
+		/**
+		 * 「把哪棵树合进来」的清单。
+		 *
+		 * 为什么不需要问"合到树里的哪个位置"：两棵树的节点互不相同（同一个问题重问一遍，
+		 * 答案也不会一样），合完就是两条链并排挂在同一个空根下 —— 只要知道是**哪两棵树**，
+		 * 结果就唯一确定了。所以这里只列树，不列节点。
+		 *
+		 * 列表是我们自己渲染的：宿主的会话列表既没有 `data-session-*`，也没有留给单行的 slot
+		 * （只有 sidebar.brand / footer / settings / workspaces 那几个），拖不了它的行。
+		 * 好在本 cwd 的全部对话本来就在 `/outlines` 的答复里，自己列就是了。
+		 */
+		function MergeList(props) {
+			const { targets, railWidth, onPick } = props
+			return h(
+				'div',
+				{
+					style: {
+						position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
+						width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
+						background: C.bg, border: `1px solid ${C.line}`, borderRadius: '7px',
+						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '4px',
+						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
+					},
+				},
+				targets.map((target) =>
+					h('div', {
+						key: target.tree,
+						title: target.joined ? '拆回独立的一棵树' : '合并进当前这棵树',
+						style: {
+							display: 'flex', alignItems: 'center', gap: '6px',
+							padding: '4px 6px', borderRadius: '5px', cursor: 'pointer',
+						},
+						onMouseEnter: (event) => { event.currentTarget.style.background = C.line },
+						onMouseLeave: (event) => { event.currentTarget.style.background = 'transparent' },
+						onClick: () => onPick(target),
+					},
+					h('span', { key: 'g', style: { flex: '0 0 auto', color: C.muted, fontSize: '12px' } }, target.joined ? '⊖' : '⊕'),
+					h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, target.title || '未命名对话'),
+					h('span', { key: 'n', style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' } }, `${target.turns} 轮`)),
+				),
 			)
 		}
 
@@ -1852,6 +1954,11 @@ window.__ModuleLoader__.load({
 				}))
 			}
 
+			// 能合并进来的 / 已经合进来的别的对话。整棵树对整棵树，所以这里按树列。
+			const all = visibleTree((outlines && outlines.sessions) || [], visible)
+			const targets = mergeTargets(all, current, shape.groupOf)
+			const here = treeOf(new Map(all.map((item) => [item.id, item])), shape.groupOf, current)
+
 			// 鼠标能落在哪些点上 —— 交给容器的 mousemove 做命中测试（见下面 hover intent）。
 			const seats = graph.nodes
 				.filter((node) => view.shown.has(node))
@@ -1903,6 +2010,12 @@ window.__ModuleLoader__.load({
 						node: hover ? hover.node : null,
 						y: hover ? hover.y : 0,
 						detachable: hover !== null && hover.node.canDetach === true,
+						targets,
+						// 合并：只要知道是哪两棵树就够了，不用指定接到哪个节点。
+						// `group` 记在**被合并那棵树的树根会话**上，host 会顺带把指着它的人一起改指过来。
+						onMerge: (target) => reshape({ session: target.root, group: target.joined ? '' : here }),
+						// 接回去：撤销一次分离。剪点本身就是被剪的那个节点，原样发回去即可。
+						onJoin: (node) => reshape({ session: node.key, detach: false }),
 						onDetach: (node) => {
 							const at = cutPointOf(node)
 							if (at !== undefined) reshape({ session: at.key, detach: true })
@@ -2027,7 +2140,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, isRewindPending, rewindRetryDelay, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, mergeTargets, isRewindPending, rewindRetryDelay, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, fisheye, FADE, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })
