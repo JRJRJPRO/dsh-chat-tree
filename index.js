@@ -33,6 +33,15 @@ export const SETTINGS_NS = 'dsh-tree'
 export const SETTINGS_SCHEMA = Schema.object({
 	visibleRadius: Schema.natural().max(30).default(10).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
+	// 颜色存 `#rrggbb`，形状存 circle / rounded / square / diamond。
+	// 这里只声明成字符串，合法值由浏览器半的 FIELDS.accept 把关 ——
+	// 存进来一个认不得的值不该把树搞崩，而是退回默认。
+	normalColor: Schema.string().default('#6e7681').description('不在当前路径上的节点颜色'),
+	normalShape: Schema.string().default('circle').description('普通节点形状'),
+	currentColor: Schema.string().default('#58a6ff').description('当前路径的节点、连线与当前轮填充色'),
+	currentShape: Schema.string().default('circle').description('当前路径的节点形状'),
+	compactColor: Schema.string().default('#ffa657').description('压缩节点颜色'),
+	compactShape: Schema.string().default('diamond').description('压缩节点形状'),
 })
 
 // ===== 第 1 步：fold —— 从事件折出一个分支的大纲 =====

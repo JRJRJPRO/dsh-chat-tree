@@ -510,5 +510,116 @@ console.log('\n用例 11：分离后两棵树不能互相残留（John 报的"�
 }
 
 
+console.log('\n用例 12：自定义颜色与形状')
+{
+	// 设置里能改三个角色的颜色和形状。要守住的是：
+	//   · 换了主色，派生色（路径垫色 / 外发光 / 连线）必须跟着换，不能还硬编码蓝
+	//   · key 集合仍然恒定（否则又是"滑过一个点白一个"）
+	//   · 认不得的值退回默认，不能把树搞崩
+	const skin = {
+		normalColor: '#112233', normalShape: 'square',
+		currentColor: '#00ff00', currentShape: 'rounded',
+		compactColor: '#ff00ff', compactShape: 'circle',
+	}
+
+	// 主色换成绿色 → 当前轮的填充、外发光都该是绿的，不能残留蓝
+	const lit = pure.dotStyle('normal', true, false, 9, true, skin)
+	check(lit.background === '#00ff00', `当前轮填充该用主色，实际 ${lit.background}`)
+	check(/0,\s*255,\s*0/.test(lit.boxShadow), `外发光该跟着主色，实际 ${lit.boxShadow}`)
+	check(!/88,\s*166,\s*255/.test(JSON.stringify(lit)), `换了主色还残留默认蓝：${JSON.stringify(lit)}`)
+
+	// 在路径上但不是当前轮 → 边框和垫色都从主色派生
+	const onPath = pure.dotStyle('normal', true, false, 9, false, skin)
+	check(/0,\s*255,\s*0/.test(onPath.borderColor), `路径上的边框该跟着主色，实际 ${onPath.borderColor}`)
+	check(/0,\s*255,\s*0/.test(onPath.background), `路径上的垫色该跟着主色，实际 ${onPath.background}`)
+
+	// 不在路径上 → 用普通节点色
+	const off = pure.dotStyle('normal', false, false, 9, false, skin)
+	check(off.borderColor === '#112233', `路径外该用普通节点色，实际 ${off.borderColor}`)
+
+	// 压缩节点：颜色独立，形状也独立（这里特意设成圆形，就不该再转 45°）
+	const packed = pure.dotStyle('compact', true, false, 9, false, skin)
+	check(packed.borderColor === '#ff00ff', `压缩节点该用自己的颜色，实际 ${packed.borderColor}`)
+	check(!/rotate/.test(packed.transform), '压缩节点被设成圆形了，不该还转 45°')
+	check(packed.borderRadius === '50%', `压缩节点设成圆形后该是正圆，实际 ${packed.borderRadius}`)
+
+	// 普通节点设成方形 → 不转，但也不是正圆
+	check(!/rotate/.test(off.transform), '方形不该旋转')
+	check(off.borderRadius !== '50%', '设成方形了却还是正圆')
+
+	// 菱形仍然要转
+	const spun = pure.dotStyle('compact', true, false, 9, false, Object.assign({}, skin, { compactShape: 'diamond' }))
+	check(/rotate\(45deg\)/.test(spun.transform), '菱形没转 45°')
+
+	// key 集合：换了主题也必须和默认主题逐字段对齐
+	const base = Object.keys(pure.dotStyle('normal', true, false, 9, false)).sort()
+	for (const one of [lit, onPath, off, packed, spun]) {
+		check(JSON.stringify(Object.keys(one).sort()) === JSON.stringify(base), `自定义主题下 key 集合变了：${JSON.stringify(Object.keys(one).sort())}`)
+	}
+
+	// 认不得的值要退回默认，不能把样式弄成 undefined
+	const junk = pure.dotStyle('normal', true, false, 9, false, { normalShape: '八边形', currentColor: 'not-a-color' })
+	check(junk.borderRadius === '50%', '认不得的形状该退回圆形')
+	check(typeof junk.borderColor === 'string' && junk.borderColor.length > 0, '认不得的颜色不该产出空边框')
+
+	// fade() 本身
+	check(pure.fade('#58a6ff', 0.5) === 'rgba(88,166,255,0.5)', `fade 算错了：${pure.fade('#58a6ff', 0.5)}`)
+	check(pure.fade('nope', 0.5) === 'nope', 'fade 认不出来时该原样返回')
+	console.log('  主色联动派生色 / 三种角色各自独立 / key 集合恒定 / 脏值退回默认')
+}
+
+console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节点')
+{
+	// John 报的："很多个圆环中间有个竖线，橙色菱形中间有条蓝的，很奇怪。"
+	// 根因：线从父节点圆心画到子节点圆心，而节点填充是半透明的（路径上垫一层淡色），
+	// 于是线从节点正中间透出来。改法是两端各让开一个节点的半高。
+	const { Z } = pure
+	const dot = Z.dot
+
+	// 让开量：圆形是半径，菱形要多让（正方形转 45°，半高是半边长的 √2 倍），且恒大于 0
+	const circle = pure.reachFor('normal', dot, pure.THEME)
+	const diamond = pure.reachFor('compact', dot, pure.THEME) // 默认压缩节点就是菱形
+	const empty = pure.reachFor('empty', dot, pure.THEME)
+	check(circle > dot / 2, `圆形让开量该超过半径，实际 ${circle}`)
+	check(diamond > circle, `菱形该比圆形让得多，实际 ${diamond} vs ${circle}`)
+	check(empty > circle, `树根空节点画得大一圈，该让得更多，实际 ${empty}`)
+	// 把形状改成圆形，让开量就该降回圆形那档
+	check(pure.reachFor('compact', dot, Object.assign({}, pure.THEME, { compactShape: 'circle' })) === circle, '压缩节点改成圆形后，让开量该和普通节点一致')
+
+	/** 某个 y 落在哪一段线上（用来判断线有没有压到节点身上）。 */
+	const covers = (parts, x, y) =>
+		parts.some((part) => x >= part.left && x <= part.left + part.width && y >= part.top && y <= part.top + part.height)
+
+	// 直上直下：父在 (100,0)、子在 (100,40)，两端各让开 circle
+	{
+		const parts = pure.segments(100, 100, 0, 40, circle, circle)
+		check(!covers(parts, 100, 0), '竖线压在父节点圆心上了')
+		check(!covers(parts, 100, 40), '竖线压在子节点圆心上了')
+		check(covers(parts, 100, 20), '两个节点中间反而没线了')
+		check(parts.every((part) => part.tag === 'v'), '同一列不该冒出横段')
+	}
+
+	// 拐弯：父在 (100,0)、子在 (72,40) —— 先横后竖
+	{
+		const parts = pure.segments(100, 72, 0, 40, circle, circle)
+		check(!covers(parts, 100, 0), '横段压在父节点圆心上了')
+		check(!covers(parts, 72, 40), '竖段压在子节点圆心上了')
+		check(covers(parts, 86, 0), '横段该走在父节点那一行')
+		check(covers(parts, 72, 20), '竖段该走在子节点那一列')
+		// 先横后竖：折角必须在父节点那一行，不能在子节点那一行
+		check(!covers(parts, 100, 39), '画成先竖后横了 —— 竖线会一路压过中间的节点再拐弯')
+	}
+
+	// 行距被压得很扁时，让开量超过间距 → 干脆不画，不能画出负长度或反向的段
+	{
+		const parts = pure.segments(100, 100, 0, 6, circle, circle)
+		check(
+			parts.every((part) => part.width > 0 && part.height > 0),
+			`行距被压扁时冒出了非正尺寸的段：${JSON.stringify(parts)}`,
+		)
+	}
+	console.log(`  让开量 圆${circle} / 菱${diamond.toFixed(1)} / 空${empty}；直线与折线两端都不压节点`)
+}
+
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 process.exit(failures === 0 ? 0 : 1)

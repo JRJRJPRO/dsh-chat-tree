@@ -428,6 +428,54 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 一个节点在竖直方向要让开多少。
+		 *
+		 * ⚠️ 线必须在节点**边缘**停住，不能画到圆心：节点填充是半透明的（路径上垫一层淡色），
+		 *    画到圆心的话线会从圆环 / 菱形正中间透出来，很难看。
+		 *    菱形是正方形转 45°，半高是半边长的 √2 倍，得多让一点。
+		 * @param kind - 节点形态
+		 * @param dotSize - 当前点的直径
+		 * @param theme - 主题（形状会影响让开量）
+		 * @returns 像素，恒大于 0
+		 */
+		function reachFor(kind, dotSize, theme) {
+			const size = kind === 'empty' ? dotSize + 2 : dotSize
+			return (shapeOf(kind, theme).spin ? size * 0.71 : size / 2) + 1
+		}
+
+		/**
+		 * 一条折线拆成几段矩形（导轨内坐标系）。
+		 *
+		 * 走法是**先横后竖**：先在父节点那一行横向挪到自己那一列，再往下走。
+		 * ⚠️ 反过来（先竖后横）的话，从节点 2 岔到节点 4 的竖线会一路压过节点 3 再拐弯，
+		 *    看着像"经过 3 之后转个弯到 4"。
+		 *
+		 * 两端各让开 gapFrom / gapTo；折角处不让（那里没有节点）。
+		 * @param xFrom - 父节点圆心 x
+		 * @param xTo - 子节点圆心 x
+		 * @param yFrom - 父节点圆心 y
+		 * @param yTo - 子节点圆心 y
+		 * @param gapFrom - 父这端让开多少
+		 * @param gapTo - 子这端让开多少
+		 * @returns 若干段 `{tag, left, top, width, height}`，长度为 0 的段不返回
+		 */
+		function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo) {
+			const out = []
+			const bent = xTo !== xFrom
+			if (bent) {
+				const near = xFrom + (xTo > xFrom ? gapFrom : -gapFrom)
+				const width = Math.abs(near - xTo)
+				if (width > 0) out.push({ tag: 'hz', left: Math.min(xTo, near), top: yFrom, width, height: 1 })
+			}
+			const down = yTo > yFrom
+			const top = yFrom + (bent ? 0 : down ? gapFrom : -gapFrom)
+			const bottom = yTo + (down ? -gapTo : gapTo)
+			const height = Math.abs(bottom - top)
+			if (height > 0) out.push({ tag: 'v', left: xTo, top: Math.min(top, bottom), width: 1, height })
+			return out
+		}
+
+		/**
 		 * 连线的绘制顺序。
 		 *
 		 * ⚠️ 蓝线必须最后画。同一个父节点的几个孩子，横段都贴在父节点那一行，越远的
@@ -510,40 +558,85 @@ window.__ModuleLoader__.load({
 			blue: '#58a6ff', orange: '#ffa657', bg: '#161b22',
 		}
 
+		/** 可选的节点形状。`spin` = 要不要转 45° 变成菱形。 */
+		const SHAPES = [
+			{ value: 'circle', label: '圆形', radius: '50%', spin: false },
+			{ value: 'rounded', label: '圆角方', radius: '30%', spin: false },
+			{ value: 'square', label: '方形', radius: 'px', spin: false },
+			{ value: 'diamond', label: '菱形', radius: 'px', spin: true },
+		]
+
+		/** 三种角色各自的默认颜色与形状。设置里改的就是这张表。 */
+		const THEME = {
+			normalColor: C.dim, normalShape: 'circle',
+			currentColor: C.blue, currentShape: 'circle',
+			compactColor: C.orange, compactShape: 'diamond',
+		}
+
 		/**
-		 * 节点样式。四种形态：普通 / 当前 / 压缩 / 空。
-		 * 边框 ← 在不在当前路径上（滚动不影响）；填充 ← 现在看着哪一轮（只影响这个）。
-		 * @param kind - 形态
-		 * @param active - 是否在当前路径上
-		 * @param hover - 鼠标是否停在它上面
-		 * @param size - 直径
+		 * 给颜色加透明度。主题色是 `#rrggbb`，但路径垫色 / 外发光 / 连线都要半透明，
+		 * 所以统一在这里转成 rgba —— 用户换了主色，这些派生色自动跟着换。
+		 * @param hex - `#rrggbb`
+		 * @param alpha - 0..1
+		 * @returns rgba() 字符串；认不出来就原样返回
 		 */
-		function dotStyle(kind, active, hover, size, focused) {
-			// ⚠️ 所有分支必须返回**相同的 key 集合**，边框只用 longhand，不许写 `border` 简写。
-			//    React 会把"上一帧有、这一帧没有"的属性置空，简写和 longhand 混用时
-			//    切回普通态会掉成白边框 —— 滑过一个点白一个（DESIGN.md §5）。
-			//
-			// ⚠️ 形状归 `kind`，状态归 `active`/`focused`，两者**正交**。
-			//    以前是 `kind = focused ? 'current' : node.kind`，压缩节点一滑到就变回蓝圆点 ——
-			//    "一眼看出是压缩节点"恰好在最该看清的时候失效。别再把状态塞回 kind 里。
-			// 描边和外发光都按直径同比例走，否则点放大后边框细得看不见。
+		function fade(hex, alpha) {
+			const matched = /^#([0-9a-fA-F]{6})$/.exec(String(hex || ''))
+			if (matched === null) return hex
+			const value = Number.parseInt(matched[1], 16)
+			return `rgba(${(value >> 16) & 255},${(value >> 8) & 255},${value & 255},${alpha})`
+		}
+
+		/**
+		 * 某个角色该用什么形状。
+		 * @param kind - 节点形态
+		 * @param theme - 主题
+		 * @returns SHAPES 里的一项
+		 */
+		function shapeOf(kind, theme) {
+			const want = kind === 'compact' ? (theme || THEME).compactShape : (theme || THEME).normalShape
+			return SHAPES.find((one) => one.value === want) || SHAPES[0]
+		}
+
+		/**
+		 * 一个节点长什么样。
+		 *
+		 * ⚠️ 所有分支必须返回**相同的 key 集合**，边框只用 longhand，不许写 `border` 简写。
+		 *    React 会把"上一帧有、这一帧没有"的属性置空，简写和 longhand 混用时
+		 *    切回普通态会掉成白边框 —— 滑过一个点白一个（DESIGN.md §5）。
+		 *
+		 * ⚠️ 形状归 `kind`，状态归 `active`/`focused`，两者**正交**。
+		 *    以前是 `kind = focused ? 'current' : node.kind`，压缩节点一滑到就变回蓝圆点 ——
+		 *    "一眼看出是压缩节点"恰好在最该看清的时候失效。别再把状态塞回 kind 里。
+		 * 描边和外发光都按直径同比例走，否则点放大后边框细得看不见。
+		 * @param kind - normal / compact / empty
+		 * @param active - 在当前路径上
+		 * @param hover - 鼠标停在它上面
+		 * @param size - 直径
+		 * @param focused - 正看着这一轮
+		 * @param theme - 颜色与形状，缺省用 THEME
+		 * @returns 内联样式
+		 */
+		function dotStyle(kind, active, hover, size, focused, theme) {
+			const skin = theme || THEME
 			const k = size / Z.dot
-			const diamond = kind === 'compact'
-			const accent = diamond ? C.orange : C.blue
+			const compact = kind === 'compact'
+			const shape = compact ? shapeOf('compact', skin) : shapeOf(kind, skin)
+			const accent = compact ? skin.compactColor : skin.currentColor
+			const idle = compact ? skin.compactColor : skin.normalColor
 			return {
 				width: `${size}px`, height: `${size}px`,
-				// 压缩节点画成菱形（转 45°、几乎不倒角），小尺寸下也和圆点一眼分得开
-				borderRadius: diamond ? `${1.5 * k}px` : '50%',
+				borderRadius: shape.radius === 'px' ? `${1.5 * k}px` : shape.radius,
 				borderWidth: `${1.5 * k}px`,
 				borderStyle: kind === 'empty' ? 'dashed' : 'solid',
-				borderColor: focused ? accent : diamond ? C.orange : kind === 'empty' && !active ? '#7d8590' : active ? C.dimActive : C.dim,
+				borderColor: focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : idle,
 				// 路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
-				background: focused ? accent : diamond ? 'rgba(255,166,87,.3)' : active ? 'rgba(88,166,255,.18)' : C.bg,
-				boxShadow: focused ? `0 0 0 ${3 * k}px ${diamond ? 'rgba(255,166,87,.22)' : 'rgba(88,166,255,.22)'}` : 'none',
+				background: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
+				boxShadow: focused ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
 				boxSizing: 'border-box',
 				opacity: focused || active ? 1 : 0.4,
 				transition: 'transform .12s ease, opacity .12s ease',
-				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${diamond ? ' rotate(45deg)' : ''}`,
+				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${shape.spin ? ' rotate(45deg)' : ''}`,
 			}
 		}
 
@@ -824,11 +917,28 @@ window.__ModuleLoader__.load({
 		 * 卡片上的两行设置。加新设置项就往这儿加一条，卡片和 store 都不用改。
 		 * `field` 必须和 host 半 SETTINGS_SCHEMA 里的字段名一致。
 		 */
+		const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+		const isShape = (value) => SHAPES.some((one) => one.value === value)
+
+		/**
+		 * 设置项总表。卡片按表渲染、store 按表取值 —— 加一项只改这张表和 host 的 schema。
+		 * `kind` 决定用哪种控件；`accept` 决定什么样的值算数（host 那边存的是任意 JSON）。
+		 */
 		const FIELDS = [
-			{ field: 'visibleRadius', label: '显示范围', steps: STEPS, text: stepText, fallback: RADIUS.fallback,
+			{ field: 'visibleRadius', kind: 'range', label: '显示范围', steps: STEPS, text: stepText, fallback: RADIUS.fallback, accept: Number.isFinite,
 				hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
-			{ field: 'nodeScale', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback,
+			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
+			{ field: 'normalColor', kind: 'color', label: '普通节点颜色', fallback: THEME.normalColor, accept: isHex,
+				hint: '不在当前路径上的节点用这个颜色。' },
+			{ field: 'normalShape', kind: 'shape', label: '普通节点形状', fallback: THEME.normalShape, accept: isShape, hint: '' },
+			{ field: 'currentColor', kind: 'color', label: '当前路径颜色', fallback: THEME.currentColor, accept: isHex,
+				hint: '当前这条路径的节点、连线，以及"正看着这一轮"的实心填充，都跟着这个颜色走。' },
+			{ field: 'currentShape', kind: 'shape', label: '当前路径形状', fallback: THEME.currentShape, accept: isShape,
+				hint: '和普通节点共用一种形状 —— 形状用来区分"是不是压缩节点"，颜色才用来区分状态。' },
+			{ field: 'compactColor', kind: 'color', label: '压缩节点颜色', fallback: THEME.compactColor, accept: isHex, hint: '' },
+			{ field: 'compactShape', kind: 'shape', label: '压缩节点形状', fallback: THEME.compactShape, accept: isShape,
+				hint: '和上面两种设成一样的话就分不出压缩节点了。' },
 		]
 
 		/**
@@ -897,26 +1007,52 @@ window.__ModuleLoader__.load({
 					.catch((error) => setFailed(String((error && error.message) || error)))
 			}
 
-			const row = (spec) => {
-				const now = Number.isFinite(values[spec.field]) ? values[spec.field] : spec.fallback
+			// 一行一个设置项。控件按 spec.kind 分派，标题那一行三种都一样。
+			const control = (spec, now) => {
+				if (spec.kind === 'color') {
+					return h('input', {
+						key: 'i', type: 'color', value: now, disabled: !on,
+						style: { width: '100%', height: '30px', padding: 0, border: 'none', background: 'none', cursor: on ? 'pointer' : 'default' },
+						onChange: (event) => write(() => store.set(spec.field, event.target.value)),
+					})
+				}
+				if (spec.kind === 'shape') {
+					return h(
+						'select',
+						{
+							key: 'i', value: now, disabled: !on,
+							style: { width: '100%', height: '30px', font: 'inherit', color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-bg-layer-3)', border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', cursor: on ? 'pointer' : 'default' },
+							onChange: (event) => write(() => store.set(spec.field, event.target.value)),
+						},
+						SHAPES.map((one) => h('option', { key: one.value, value: one.value }, one.label)),
+					)
+				}
 				const at = Math.max(0, spec.steps.indexOf(now))
+				return h('input', {
+					key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
+					disabled: !on, style: S.range(on),
+					onChange: (event) => write(() => store.set(spec.field, spec.steps[Number(event.target.value)])),
+				})
+			}
+
+			const readout = (spec, now) => {
+				if (spec.kind === 'color') return String(now).toUpperCase()
+				if (spec.kind === 'shape') return (SHAPES.find((one) => one.value === now) || SHAPES[0]).label
+				return spec.text(spec.steps[Math.max(0, spec.steps.indexOf(now))])
+			}
+
+			const row = (spec) => {
+				const now = spec.accept(values[spec.field]) ? values[spec.field] : spec.fallback
 				const changed = user[spec.field] === true
 				return h('div', { key: spec.field, style: S.field }, [
 					h('div', { key: 'hd', style: S.fieldHead }, [
 						h('label', { key: 'l', style: S.label }, spec.label),
-						h('span', { key: 'v', style: S.value }, spec.text(spec.steps[at])),
+						h('span', { key: 'v', style: S.value }, readout(spec, now)),
 						changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
 						changed ? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => write(() => store.reset(spec.field)) }, '重置') : null,
 					]),
-					h('input', {
-						key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
-						disabled: !on, style: S.range(on),
-						onChange: (event) => {
-							const picked = spec.steps[Number(event.target.value)]
-							write(() => store.set(spec.field, picked))
-						},
-					}),
-					h('p', { key: 'p', style: S.hint }, spec.hint),
+					control(spec, now),
+					spec.hint === '' ? null : h('p', { key: 'p', style: S.hint }, spec.hint),
 				])
 			}
 
@@ -989,7 +1125,7 @@ window.__ModuleLoader__.load({
 						next.status = snapshot.status
 						next.mode = snapshot.mode
 						for (const spec of FIELDS) {
-							if (Number.isFinite(from[spec.field])) next.values[spec.field] = from[spec.field]
+							if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
 							next.user[spec.field] = spec.field in raw
 						}
 						if (same(next, state)) return
@@ -1016,6 +1152,9 @@ window.__ModuleLoader__.load({
 			const settings = useObservable(api.settings) || {}
 			const tuned = settings.values || {}
 			const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
+			// 主题：每个字段各自回退，缺一项不影响其他项
+			const theme = {}
+			for (const spec of FIELDS) if (spec.kind === 'color' || spec.kind === 'shape') theme[spec.field] = spec.accept(tuned[spec.field]) ? tuned[spec.field] : spec.fallback
 			const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 			const current = listState && listState.current
@@ -1123,27 +1262,27 @@ window.__ModuleLoader__.load({
 
 			// 先铺线。跨列的折角**必须先横后竖**：反过来的话从节点 2 岔到 4 的竖线
 			// 会一路压过节点 3 再拐弯，看着像"经过 3 转个弯到 4"。
-			const line = (key, xFrom, xTo, yFrom, yTo, color) => {
-				if (xTo !== xFrom) {
+			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo) => {
+				const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo)
+				for (const part of cut) {
 					parts.push(h('span', {
-						key: `hz${key}`,
-						style: { position: 'absolute', left: `${Math.min(xTo, xFrom)}px`, top: `${yFrom}px`, width: `${Math.abs(xFrom - xTo)}px`, height: '1px', background: color },
+						key: `${part.tag}${key}`,
+						style: { position: 'absolute', left: `${part.left}px`, top: `${part.top}px`, width: `${part.width}px`, height: `${part.height}px`, background: color },
 					}))
 				}
-				parts.push(h('span', {
-					key: `v${key}`,
-					style: { position: 'absolute', left: `${xTo}px`, top: `${Math.min(yFrom, yTo)}px`, width: '1px', height: `${Math.abs(yTo - yFrom)}px`, background: color },
-				}))
 			}
 
+			const reachOf = (node) => reachFor(node.kind, dotSize, theme)
+
 			const edge = (node) => {
-				const color = node.active ? C.lineActive : C.line
+				const color = node.active ? fade(theme.currentColor, 0.6) : C.line
 				const mine = view.shown.has(node)
 				const theirs = view.shown.has(node.parent)
+				const ell = z.ell / 2 + 1 // 省略号那一端让开的量
 				// 两头都在 → 正常连；只剩一头 → 接到省略号那一行，别让树看着断开
-				if (mine && theirs) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color)
-				else if (mine && padTop > 0) line(node.key, xOf(node.column), xOf(node.column), yOf(0), yOf(rowOfNode(node)), color)
-				else if (theirs && padBottom > 0) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rows - 1), color)
+				if (mine && theirs) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node))
+				else if (mine && padTop > 0) line(node.key, xOf(node.column), xOf(node.column), yOf(0), yOf(rowOfNode(node)), color, ell, reachOf(node))
+				else if (theirs && padBottom > 0) line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rows - 1), color, reachOf(node.parent), ell)
 			}
 			for (const node of edgeOrder(graph.nodes)) edge(node)
 
@@ -1173,7 +1312,7 @@ window.__ModuleLoader__.load({
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
 				parts.push(h('span', {
 					key: `d${node.key}`,
-					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(node.kind, node.active, isHover, size, isFocused)),
+					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
 					onClick: go,
 				}))
 				// 透明加宽命中区：点很小，直接点很难中
@@ -1347,7 +1486,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, fade, shapeOf, reachFor, segments, SHAPES, THEME, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })
