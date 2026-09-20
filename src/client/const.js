@@ -43,9 +43,36 @@ export function scaleZ(percent) {
 	return out
 }
 
+// ===== 中性色：一律用宿主的主题变量，别写死 =====
+//
+// ⚠️ 这里曾经全是写死的深色（`bg: '#161b22'` 之类）。暗色模式下正好和页面同色，
+//    普通节点看着就是个"空心圈"；**换到亮色模式就露馅了** —— 同一个深色填充糊在
+//    白底上，成了一个深色实心点，而那圈灰描边反倒看不见了（John 报的就是这条）。
+//
+// 宿主用 `body[data-ds-dark-theme]` 切换一整套 `--dsw-alias-*` 变量（见
+// dsh-client-ui-theme）。直接引用这些变量，**明暗切换不需要我们写一行 JS**，
+// 用户改宿主主题的那一刻就跟着变了。
+//
+// 只有"角色色"（普通/当前/压缩/空节点）还是真实色值 —— 它们要参与 `rgba()` 运算
+// （垫色、外发光），而 CSS 变量算不了。那几个在 shapes.js 的 PALETTES 里，分明暗两套。
 export const C = {
-	line: '#30363d', lineActive: 'rgba(88,166,255,.6)',
-	dim: '#6e7681', dimActive: 'rgba(88,166,255,.9)',
-	muted: '#8b949e', text: '#c9d1d9',
-	blue: '#58a6ff', orange: '#ffa657', bg: '#161b22',
+	/** 连线、卡片描边 */
+	line: 'var(--dsw-alias-border-l3)',
+	/** 次要文字：轮次号、⏳、清单里的「N 轮」 */
+	muted: 'var(--dsw-alias-label-tertiary)',
+	/** 正文 */
+	text: 'var(--dsw-alias-label-primary)',
+	/** 卡片底色 */
+	card: 'var(--dsw-alias-bg-layer-2)',
+	/** 输入框底色 */
+	input: 'var(--dsw-alias-bg-base)',
+	/** 清单里一行被鼠标压住时的底色 */
+	hover: 'var(--dsw-alias-interactive-bg-hover)',
+	/** 强调色（改名输入框的边框） */
+	accent: 'var(--dsw-alias-link)',
+	/**
+	 * 节点"不垫色"时的填充 —— 就是页面底色。
+	 * 不能用 `transparent`：那样连线会从半透明的点中间穿过去。
+	 */
+	bg: 'var(--dsw-alias-bg-layer-1)',
 }

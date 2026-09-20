@@ -71,11 +71,38 @@ window.__ModuleLoader__.load({
 			return out
 		}
 
+		// ===== 中性色：一律用宿主的主题变量，别写死 =====
+		//
+		// ⚠️ 这里曾经全是写死的深色（`bg: '#161b22'` 之类）。暗色模式下正好和页面同色，
+		//    普通节点看着就是个"空心圈"；**换到亮色模式就露馅了** —— 同一个深色填充糊在
+		//    白底上，成了一个深色实心点，而那圈灰描边反倒看不见了（John 报的就是这条）。
+		//
+		// 宿主用 `body[data-ds-dark-theme]` 切换一整套 `--dsw-alias-*` 变量（见
+		// dsh-client-ui-theme）。直接引用这些变量，**明暗切换不需要我们写一行 JS**，
+		// 用户改宿主主题的那一刻就跟着变了。
+		//
+		// 只有"角色色"（普通/当前/压缩/空节点）还是真实色值 —— 它们要参与 `rgba()` 运算
+		// （垫色、外发光），而 CSS 变量算不了。那几个在 shapes.js 的 PALETTES 里，分明暗两套。
 		const C = {
-			line: '#30363d', lineActive: 'rgba(88,166,255,.6)',
-			dim: '#6e7681', dimActive: 'rgba(88,166,255,.9)',
-			muted: '#8b949e', text: '#c9d1d9',
-			blue: '#58a6ff', orange: '#ffa657', bg: '#161b22',
+			/** 连线、卡片描边 */
+			line: 'var(--dsw-alias-border-l3)',
+			/** 次要文字：轮次号、⏳、清单里的「N 轮」 */
+			muted: 'var(--dsw-alias-label-tertiary)',
+			/** 正文 */
+			text: 'var(--dsw-alias-label-primary)',
+			/** 卡片底色 */
+			card: 'var(--dsw-alias-bg-layer-2)',
+			/** 输入框底色 */
+			input: 'var(--dsw-alias-bg-base)',
+			/** 清单里一行被鼠标压住时的底色 */
+			hover: 'var(--dsw-alias-interactive-bg-hover)',
+			/** 强调色（改名输入框的边框） */
+			accent: 'var(--dsw-alias-link)',
+			/**
+			 * 节点"不垫色"时的填充 —— 就是页面底色。
+			 * 不能用 `transparent`：那样连线会从半透明的点中间穿过去。
+			 */
+			bg: 'var(--dsw-alias-bg-layer-1)',
 		}
 
 		// ===== runtime.js ==============================================
@@ -168,6 +195,51 @@ window.__ModuleLoader__.load({
 					body: JSON.stringify(body),
 				}),
 			)
+		}
+
+		// ===== theme.js ================================================
+
+		/**
+		 * 现在是亮色还是暗色。
+		 *
+		 * 宿主（dsh-client-ui-theme）把暗色标在 **`body[data-ds-dark-theme]`** 上，
+		 * 一整套 `--dsw-alias-*` 变量跟着换。中性色我们直接引用那些变量，所以**不需要**
+		 * 知道明暗；但**角色色**（普通/当前/压缩/空节点）要参与 `rgba()` 运算，
+		 * CSS 变量算不了，只能自己按明暗挑一套真实色值 —— 这个文件就为这件事存在。
+		 *
+		 * ⚠️ 别改成 `matchMedia('(prefers-color-scheme: dark)')`：宿主的主题是**可以手动
+		 *    指定**的（设置里选浅色/深色/跟随系统），跟系统偏好不一定一致。以 body 上那个
+		 *    属性为准才是宿主说了算。
+		 */
+
+		/** 宿主标记暗色的那个属性。 */
+		const DARK_ATTRIBUTE = 'data-ds-dark-theme'
+
+		/**
+		 * 此刻是不是暗色。
+		 * @returns 是否暗色；在 node 里（离线测试）恒为 true，走默认那套
+		 */
+		function isDark() {
+			if (typeof document === 'undefined' || document.body === null || document.body === undefined) return true
+			if (typeof document.body.hasAttribute !== 'function') return true
+			return document.body.hasAttribute(DARK_ATTRIBUTE)
+		}
+
+		/**
+		 * 跟着宿主主题走。用户在设置里切明暗时**立刻**重画，不用刷新页面。
+		 * @returns 是否暗色
+		 */
+		function useColorScheme() {
+			const [dark, setDark] = react.useState(isDark)
+			react.useEffect(() => {
+				if (typeof MutationObserver === 'undefined' || typeof document === 'undefined' || !document.body) return undefined
+				const check = () => setDark((was) => (was === isDark() ? was : isDark()))
+				const observer = new MutationObserver(check)
+				observer.observe(document.body, { attributes: true, attributeFilter: [DARK_ATTRIBUTE] })
+				check()
+				return () => observer.disconnect()
+			}, [])
+			return dark
 		}
 
 		// ===== labels.js ===============================================
@@ -914,12 +986,64 @@ window.__ModuleLoader__.load({
 		 * 空节点默认跟当前路径同色：它本来就永远在当前路径上，今天画出来就是这个蓝的，
 		 * 不该因为"多了个设置项"就悄悄换个样子。虚线边是它自己的记号，不跟着配置走。
 		 */
-		const THEME = {
-			normalColor: C.dim, normalShape: 'circle',
-			currentColor: C.blue, currentShape: 'circle',
-			compactColor: C.orange, compactShape: 'triangle',
-			emptyColor: C.blue, emptyShape: 'circle',
+		// ===== 配色方案：两套，每套都有亮色和暗色两个版本 =====
+		//
+		// 为什么要分明暗两版：同一个色号在白底和深底上**观感完全不同**。亮蓝 `#58a6ff`
+		// 在深底上清亮，糊到白底上就发飘、和灰的区分度掉一半。所以每套方案的亮色版
+		// 都往下压了明度、提了饱和度（深一点才压得住白底），暗色版则相反。
+		//
+		// 只有这四个"角色色"是真实色值，因为它们要参与 `rgba()` 运算（路径垫色、外发光）；
+		// 其余中性色全走宿主的 `--dsw-alias-*` 变量（见 const.js 的 C）。
+		//
+		// ⚠️ 加第三套方案：往这张表里加一项，**亮暗两版都要给**，别只填一半。
+
+		/** 两套配色。`value` 存进设置，`label` 给卡片上的按钮用。 */
+		const PALETTES = [
+			{
+				value: 'graphite',
+				label: '石墨',
+				hint: '灰底蓝路径，橙色标压缩 —— 默认那套。',
+				dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff' },
+				light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#bc4c00', emptyColor: '#1f6feb' },
+			},
+			{
+				value: 'teal',
+				label: '青竹',
+				hint: '青绿路径配琥珀，和蓝色的宿主界面不撞色。',
+				dark: { normalColor: '#6e7681', currentColor: '#2dd4bf', compactColor: '#fbbf24', emptyColor: '#2dd4bf' },
+				light: { normalColor: '#8c959f', currentColor: '#0f766e', compactColor: '#b45309', emptyColor: '#0f766e' },
+			},
+		]
+
+		/** 默认配色方案。 */
+		const PALETTE_FALLBACK = PALETTES[0].value
+
+		/** 四个角色各自的形状默认值。颜色跟着 `PALETTES` 走，不写在这儿。 */
+		const SHAPE_DEFAULTS = {
+			normalShape: 'circle',
+			currentShape: 'circle',
+			compactShape: 'triangle',
+			emptyShape: 'circle',
 		}
+
+		/**
+		 * 一套方案在某个明暗下长什么样。
+		 * @param value - 方案 id；认不得就退回默认那套
+		 * @param dark - 是不是暗色
+		 * @returns 四个角色的颜色 + 形状
+		 */
+		function paletteOf(value, dark) {
+			const palette = PALETTES.find((one) => one.value === value) || PALETTES[0]
+			return Object.assign({}, SHAPE_DEFAULTS, dark === false ? palette.light : palette.dark)
+		}
+
+		/**
+		 * 默认主题 = 默认方案的暗色版。
+		 *
+		 * 留着它是因为一堆地方要一个"没有设置时也能画"的兜底（`shapeOf(kind, active)`
+		 * 不传 theme 时用的就是它）。真正画树时 Rail 会按**当前方案 + 当前明暗**现算一份。
+		 */
+		const THEME = paletteOf(PALETTE_FALLBACK, true)
 
 		// ===== 角色表：一个节点长什么样，全从这里查 =====
 		//
@@ -1728,6 +1852,8 @@ window.__ModuleLoader__.load({
 
 		const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
+		const isPalette = (value) => PALETTES.some((one) => one.value === value)
+
 		/**
 		 * 卡片上的外观分组：一个角色一行，**左边颜色右边形状**，不再一项占一行。
 		 * 颜色和形状是同一个角色的两面，拆成两行既浪费竖直空间又要来回对照。
@@ -1760,6 +1886,8 @@ window.__ModuleLoader__.load({
 				hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
 			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
+			{ field: 'palette', kind: 'palette', label: '配色方案', fallback: PALETTE_FALLBACK, accept: isPalette,
+				hint: '每套都有亮色和暗色两个版本，跟着宿主主题自动切换。下面单独改过的颜色不受影响。' },
 			// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
 			// 以前这八行是手写的，于是同一个字段名在 ROLES / FIELDS / ROWS 里各写一遍，
 			// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。
@@ -1768,6 +1896,29 @@ window.__ModuleLoader__.load({
 				{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: isShape, hint: '' },
 			]),
 		]
+
+		/**
+		 * 这一帧该用哪套颜色和形状。
+		 *
+		 * 规矩只有一条：**没被用户亲手改过的，跟着配色方案 + 当前明暗走；改过的就钉死。**
+		 * 所以切明暗、换方案都立刻生效，而用户自己挑的那个色不会被悄悄改掉。
+		 * （卡片上按「重置」清掉 user 标记，那一项就重新跟着方案走。）
+		 *
+		 * @param values - 设置里存的值
+		 * @param user - 哪些字段是用户亲手改过的（宿主快照里的 `user`）
+		 * @param dark - 当前是不是暗色
+		 * @returns 四个角色的颜色与形状
+		 */
+		function themeFrom(values, user, dark) {
+			const base = paletteOf((values || {}).palette, dark)
+			const theme = Object.assign({}, base)
+			for (const spec of FIELDS) {
+				if (spec.kind !== 'color' && spec.kind !== 'shape') continue
+				const touched = (user || {})[spec.field] === true
+				if (touched && spec.accept((values || {})[spec.field])) theme[spec.field] = values[spec.field]
+			}
+			return theme
+		}
 
 		/**
 		 * 半径的唯一来源。host 注册了 namespace 就跟着设置走，没有就用默认值。
@@ -1843,7 +1994,7 @@ window.__ModuleLoader__.load({
 		function InlineEdit(props) {
 			const [draft, setDraft] = react.useState(props.initial)
 			return h('input', {
-				style: { flex: '1 1 auto', minWidth: 0, background: '#0d1117', color: '#fff', border: `1px solid ${C.blue}`, borderRadius: '4px', padding: '1px 5px', font: 'inherit', outline: 'none' },
+				style: { flex: '1 1 auto', minWidth: 0, background: C.input, color: C.text, border: `1px solid ${C.accent}`, borderRadius: '4px', padding: '1px 5px', font: 'inherit', outline: 'none' },
 				value: draft, autoFocus: true,
 				onClick: (event) => event.stopPropagation(),
 				onChange: (event) => setDraft(event.target.value),
@@ -1912,7 +2063,7 @@ window.__ModuleLoader__.load({
 						pointerEvents: shown ? 'auto' : 'none',
 						width: `${Z.card}px`, maxWidth: '60vw',
 						display: 'flex', alignItems: 'center', gap: '6px',
-						background: C.bg, border: `1px solid ${C.line}`, borderRadius: '7px',
+						background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
 						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 					},
@@ -1984,7 +2135,7 @@ window.__ModuleLoader__.load({
 					style: {
 						position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
 						width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
-						background: C.bg, border: `1px solid ${C.line}`, borderRadius: '7px',
+						background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
 						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '4px',
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 					},
@@ -2002,7 +2153,7 @@ window.__ModuleLoader__.load({
 							cursor: stop ? 'not-allowed' : 'pointer',
 							opacity: stop ? 0.45 : 1,
 						},
-						onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.line },
+						onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.hover },
 						onMouseLeave: (event) => { event.currentTarget.style.background = 'transparent' },
 						onClick: () => { if (!stop) onPick(target) },
 					},
@@ -2061,6 +2212,16 @@ window.__ModuleLoader__.load({
 				background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
 				borderRadius: '6px',
 			}),
+			// 配色方案按钮：比形状按钮宽，因为里面要放四个色点 + 方案名
+			scheme: (picked, on) => ({
+				appearance: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
+				height: '28px', padding: '0 10px', cursor: on ? 'pointer' : 'default',
+				color: 'var(--dsw-alias-label-primary)',
+				borderWidth: '.5px', borderStyle: 'solid',
+				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
+				background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
+				borderRadius: '6px',
+			}),
 			own: (picked, on) => ({
 				width: '58px', height: '26px', boxSizing: 'border-box', font: 'inherit', fontSize: '12px',
 				textAlign: 'center', color: 'var(--dsw-alias-label-primary)', background: 'none',
@@ -2095,6 +2256,7 @@ window.__ModuleLoader__.load({
 			const [open, setOpen] = react.useState(false)
 			const [hover, setHover] = react.useState(false)
 			const [failed, setFailed] = react.useState('')
+			const dark = useColorScheme()
 
 			const on = state.writable === true
 			const values = state.values || {}
@@ -2126,6 +2288,9 @@ window.__ModuleLoader__.load({
 			const valueOf = (field) => {
 				if (draft[field] !== undefined) return draft[field]
 				const spec = FIELDS.find((one) => one.field === field)
+				// 颜色和形状没被亲手改过时，实际画上去的是**方案色**（themeFrom 的规矩），
+				// 这里也得显示方案色 —— 否则色板上写着 A、树上画的是 B，还以为坏了
+				if (spec.kind === 'color' || spec.kind === 'shape') return themeFrom(values, user, dark)[field]
 				return spec.accept(values[field]) ? values[field] : spec.fallback
 			}
 
@@ -2240,6 +2405,42 @@ window.__ModuleLoader__.load({
 					}),
 				])
 
+			/**
+			 * 配色方案：两个按钮，每个按钮上直接把那套方案的四个角色色点出来。
+			 * 和形状选择器同一个思路 —— 按钮上看到的就是树上将来的样子，不写"石墨蓝"这种字。
+			 */
+			const scheme = (spec) => {
+				const now = valueOf(spec.field)
+				return h('div', { key: spec.field, style: S.field }, [
+					head(spec.label, (PALETTES.find((one) => one.value === now) || PALETTES[0]).label, [spec.field]),
+					h('div', { key: 'bd', style: S.picks },
+						PALETTES.map((one) => {
+							const colors = paletteOf(one.value, dark)
+							return h('button', {
+								key: one.value, type: 'button', disabled: !on, title: one.hint,
+								style: S.scheme(now === one.value, on),
+								onClick: () => put(spec.field, one.value),
+							}, [
+								h('span', { key: 'd', style: { display: 'inline-flex', gap: '3px', alignItems: 'center' } },
+									ROWS.map((row) =>
+										h('span', {
+											key: row.key,
+											style: {
+												width: '9px', height: '9px', borderRadius: '50%', boxSizing: 'border-box',
+												border: `1.5px solid ${colors[row.color]}`,
+												background: fade(colors[row.color], 0.3),
+											},
+										}),
+									),
+								),
+								h('span', { key: 'l', style: { fontSize: '12px' } }, one.label),
+							])
+						}),
+					),
+					h('p', { key: 'p', style: S.hint }, spec.hint),
+				])
+			}
+
 			/** 一个角色一行：左边颜色，右边形状。 */
 			const pair = (spot) => {
 				const color = valueOf(spot.color)
@@ -2271,6 +2472,7 @@ window.__ModuleLoader__.load({
 				open
 					? h('div', { key: 'b', style: S.body }, [
 							...FIELDS.filter((spec) => spec.kind === 'range').map(row),
+							...FIELDS.filter((spec) => spec.kind === 'palette').map(scheme),
 							...ROWS.map(pair),
 							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),
@@ -2293,11 +2495,12 @@ window.__ModuleLoader__.load({
 			const box = useChatBox()
 			const activeTurn = useActiveTurn()
 			const settings = useObservable(api.settings) || {}
+			const dark = useColorScheme()
 			const tuned = settings.values || {}
 			const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
 			// 主题：每个字段各自回退，缺一项不影响其他项
-			const theme = {}
-			for (const spec of FIELDS) if (spec.kind === 'color' || spec.kind === 'shape') theme[spec.field] = spec.accept(tuned[spec.field]) ? tuned[spec.field] : spec.fallback
+			// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
+			const theme = themeFrom(tuned, settings.user, dark)
 			const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 			const current = listState && listState.current
@@ -2548,6 +2751,8 @@ window.__ModuleLoader__.load({
 			// 画
 			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
+			// 配色方案与明暗
+			PALETTES, paletteOf, themeFrom, isDark, isHex, isPalette,
 			// 几何
 			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout,
 			// 撤回的重拉节奏

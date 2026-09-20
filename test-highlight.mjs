@@ -825,4 +825,69 @@ console.log('\n用例 15：空节点也归自己管')
 	console.log(`  空节点独立配色配形、不随路径变、虚线边恒定；${pure.ROWS.length} 个角色全在设置里露面`)
 }
 
+
+console.log('用例 16：亮色 / 暗色两套配色')
+{
+	// 亮度（相对亮度的简化版，够用来分辨"深色/浅色"）
+	const lum = (hex) => {
+		const value = Number.parseInt(hex.slice(1), 16)
+		return (0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255)) / 255
+	}
+	const roles = ['normalColor', 'currentColor', 'compactColor', 'emptyColor']
+
+	check(pure.PALETTES.length >= 2, `只有 ${pure.PALETTES.length} 套配色，说好的两套`)
+	for (const palette of pure.PALETTES) {
+		for (const mode of ['light', 'dark']) {
+			for (const role of roles) {
+				const hex = palette[mode][role]
+				check(pure.isHex(hex), `${palette.value} 的 ${mode}.${role} 不是合法色值：${hex}`)
+			}
+		}
+		// ⚠️ 两版必须真的不一样。直接把暗色版抄一份当亮色版，是这类"支持亮色模式"
+		//    最常见的假动作 —— 编译过、跑得动、看着依然难看。
+		const same = roles.filter((role) => palette.light[role] === palette.dark[role])
+		check(same.length < roles.length, `${palette.value} 的亮色版和暗色版一模一样：${same.join(' ')}`)
+		// 亮色版要压得住白底，暗色版要在深底上亮得起来
+		for (const role of ['currentColor', 'compactColor']) {
+			check(lum(palette.light[role]) < 0.62, `${palette.value} 亮色版的 ${role} 太浅，白底上会发飘`)
+			check(lum(palette.dark[role]) > 0.38, `${palette.value} 暗色版的 ${role} 太暗，深底上看不清`)
+		}
+	}
+	console.log(`  ${pure.PALETTES.map((one) => one.label).join(' / ')}，各自亮暗两版都合法且确实不同`)
+}
+
+console.log('用例 17：改过的颜色钉死，没改过的跟着方案和明暗走')
+{
+	const dark = pure.themeFrom({ palette: 'teal' }, {}, true)
+	const light = pure.themeFrom({ palette: 'teal' }, {}, false)
+	check(dark.currentColor !== light.currentColor, '换明暗时当前路径色没变 —— 方案没起作用')
+	check(dark.currentColor === pure.paletteOf('teal', true).currentColor, '暗色下没取到青竹的色')
+
+	// 用户亲手改过的那一项，换方案换明暗都不许动
+	const pinned = pure.themeFrom({ palette: 'teal', currentColor: '#ff00ff' }, { currentColor: true }, false)
+	check(pinned.currentColor === '#ff00ff', `改过的颜色被方案覆盖了：${pinned.currentColor}`)
+	check(pinned.compactColor === pure.paletteOf('teal', false).compactColor, '没改过的那项反而没跟着方案走')
+
+	// 存了值但没标记成"用户改的"（比如老版本留下的默认值）→ 仍然跟着方案走
+	const stale = pure.themeFrom({ palette: 'graphite', currentColor: '#ff00ff' }, {}, true)
+	check(stale.currentColor !== '#ff00ff', '没标 user 的存量值把方案盖住了')
+
+	// 方案名认不得 → 退回第一套，别把树画空
+	const junk = pure.themeFrom({ palette: '不存在的方案' }, {}, true)
+	check(pure.isHex(junk.currentColor), '认不得的方案名把颜色弄没了')
+	console.log('  换方案/换明暗立刻生效；亲手改过的那一项钉死；脏值和野方案都兜住')
+}
+
+console.log('用例 18：普通节点在亮色下必须还是"灰圈 + 淡填充"')
+{
+	// 这就是 John 报的那条：填充写死成深色，暗色下正好隐形（看着像空心圈），
+	// 亮色下就成了白底上一个深色实心点，描边反而看不见了。
+	// 修法是让填充跟着宿主的主题变量走，所以这里钉的是"它必须是个变量"。
+	const skin = pure.inkOf('normal', false, false, pure.themeFrom({}, {}, false))
+	check(String(skin.fill).startsWith('var(--'), `普通节点的填充是写死的 ${skin.fill} —— 换到亮色模式就成深色实心点了`)
+	check(pure.isHex(skin.ink), `描边色应该是真实色值，实际 ${skin.ink}`)
+	check(skin.ink !== skin.fill, '描边和填充同色 —— 那就不是"圈"了')
+	console.log(`  填充 = ${skin.fill}（跟宿主主题走），描边 = ${skin.ink}`)
+}
+
 report()

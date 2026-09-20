@@ -12,7 +12,8 @@ import { anchorNode, elide, fisheye } from './elide.js'
 import { dashedOf, dotInside, dotSizeOf, dotStyle, fade, inkOf, shapeOf } from './shapes.js'
 import { edgeOrder, hoverNext, nodeAt, railLayout, reachFor, segments } from './geometry.js'
 import { hideNativeRail, isRewindPending, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
-import { FIELDS } from './settings-model.js'
+import { useColorScheme } from './theme.js'
+import { themeFrom } from './settings-model.js'
 import { Detail } from './ui-detail.js'
 
 /** 树本体。 */
@@ -23,11 +24,12 @@ export function Rail(props) {
 	const box = useChatBox()
 	const activeTurn = useActiveTurn()
 	const settings = useObservable(api.settings) || {}
+	const dark = useColorScheme()
 	const tuned = settings.values || {}
 	const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
 	// 主题：每个字段各自回退，缺一项不影响其他项
-	const theme = {}
-	for (const spec of FIELDS) if (spec.kind === 'color' || spec.kind === 'shape') theme[spec.field] = spec.accept(tuned[spec.field]) ? tuned[spec.field] : spec.fallback
+	// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
+	const theme = themeFrom(tuned, settings.user, dark)
 	const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 	const current = listState && listState.current

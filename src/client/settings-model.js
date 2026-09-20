@@ -6,7 +6,7 @@
  */
 import { RADIUS, SCALE, SETTINGS_NS } from './const.js'
 import { warn } from './net.js'
-import { ROLES, THEME, shapeSpec } from './shapes.js'
+import { PALETTES, PALETTE_FALLBACK, ROLES, THEME, paletteOf, shapeSpec } from './shapes.js'
 
 /** 省略半径的档位：5..30，最后一格是"不省略"。 */
 export const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
@@ -33,6 +33,8 @@ export function scaleText(step) {
 export const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 
 export const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
+
+export const isPalette = (value) => PALETTES.some((one) => one.value === value)
 
 /**
  * 卡片上的外观分组：一个角色一行，**左边颜色右边形状**，不再一项占一行。
@@ -66,6 +68,8 @@ export const FIELDS = [
 		hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
 	{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 		hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
+	{ field: 'palette', kind: 'palette', label: '配色方案', fallback: PALETTE_FALLBACK, accept: isPalette,
+		hint: '每套都有亮色和暗色两个版本，跟着宿主主题自动切换。下面单独改过的颜色不受影响。' },
 	// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
 	// 以前这八行是手写的，于是同一个字段名在 ROLES / FIELDS / ROWS 里各写一遍，
 	// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。
@@ -74,6 +78,29 @@ export const FIELDS = [
 		{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: isShape, hint: '' },
 	]),
 ]
+
+/**
+ * 这一帧该用哪套颜色和形状。
+ *
+ * 规矩只有一条：**没被用户亲手改过的，跟着配色方案 + 当前明暗走；改过的就钉死。**
+ * 所以切明暗、换方案都立刻生效，而用户自己挑的那个色不会被悄悄改掉。
+ * （卡片上按「重置」清掉 user 标记，那一项就重新跟着方案走。）
+ *
+ * @param values - 设置里存的值
+ * @param user - 哪些字段是用户亲手改过的（宿主快照里的 `user`）
+ * @param dark - 当前是不是暗色
+ * @returns 四个角色的颜色与形状
+ */
+export function themeFrom(values, user, dark) {
+	const base = paletteOf((values || {}).palette, dark)
+	const theme = Object.assign({}, base)
+	for (const spec of FIELDS) {
+		if (spec.kind !== 'color' && spec.kind !== 'shape') continue
+		const touched = (user || {})[spec.field] === true
+		if (touched && spec.accept((values || {})[spec.field])) theme[spec.field] = values[spec.field]
+	}
+	return theme
+}
 
 /**
  * 半径的唯一来源。host 注册了 namespace 就跟着设置走，没有就用默认值。

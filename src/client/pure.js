@@ -38,7 +38,9 @@ import {
 	CUSTOM,
 	ICON_EDGE,
 	PICTURE,
+	PALETTES,
 	ROLES,
+	paletteOf,
 	SHAPES,
 	THEME,
 	dashedOf,
@@ -55,7 +57,8 @@ import {
 } from './shapes.js'
 import { edgeOrder, hoverNext, nodeAt, railLayout, reachFor, segments } from './geometry.js'
 import { isRewindPending, rewindRetryDelay } from './hooks.js'
-import { FIELDS, ROWS, SCALES, STEPS, scaleText, settingsStore, stepText } from './settings-model.js'
+import { FIELDS, ROWS, SCALES, STEPS, isHex, isPalette, scaleText, settingsStore, stepText, themeFrom } from './settings-model.js'
+import { isDark } from './theme.js'
 
 export const __pure = {
 	// 选树、归组、节点上能做什么
@@ -66,6 +69,8 @@ export const __pure = {
 	// 画
 	dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
 	SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
+	// 配色方案与明暗
+	PALETTES, paletteOf, themeFrom, isDark, isHex, isPalette,
 	// 几何
 	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout,
 	// 撤回的重拉节奏

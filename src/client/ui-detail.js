@@ -9,7 +9,7 @@ import { branchAction, forkBlockedWhy, isBranchHead } from './tree.js'
 export function InlineEdit(props) {
 	const [draft, setDraft] = react.useState(props.initial)
 	return h('input', {
-		style: { flex: '1 1 auto', minWidth: 0, background: '#0d1117', color: '#fff', border: `1px solid ${C.blue}`, borderRadius: '4px', padding: '1px 5px', font: 'inherit', outline: 'none' },
+		style: { flex: '1 1 auto', minWidth: 0, background: C.input, color: C.text, border: `1px solid ${C.accent}`, borderRadius: '4px', padding: '1px 5px', font: 'inherit', outline: 'none' },
 		value: draft, autoFocus: true,
 		onClick: (event) => event.stopPropagation(),
 		onChange: (event) => setDraft(event.target.value),
@@ -78,7 +78,7 @@ export function Detail(props) {
 				pointerEvents: shown ? 'auto' : 'none',
 				width: `${Z.card}px`, maxWidth: '60vw',
 				display: 'flex', alignItems: 'center', gap: '6px',
-				background: C.bg, border: `1px solid ${C.line}`, borderRadius: '7px',
+				background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
 				boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
 				font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 			},
@@ -150,7 +150,7 @@ export function MergeList(props) {
 			style: {
 				position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
 				width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
-				background: C.bg, border: `1px solid ${C.line}`, borderRadius: '7px',
+				background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
 				boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '4px',
 				font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 			},
@@ -168,7 +168,7 @@ export function MergeList(props) {
 					cursor: stop ? 'not-allowed' : 'pointer',
 					opacity: stop ? 0.45 : 1,
 				},
-				onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.line },
+				onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.hover },
 				onMouseLeave: (event) => { event.currentTarget.style.background = 'transparent' },
 				onClick: () => { if (!stop) onPick(target) },
 			},
