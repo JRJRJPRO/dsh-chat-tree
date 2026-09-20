@@ -441,7 +441,9 @@ window.__ModuleLoader__.load({
 		 */
 		function reachFor(kind, active, dotSize, theme) {
 			const size = kind === 'empty' ? dotSize + 2 : dotSize
-			return (shapeOf(kind, active, theme).spin ? size * 0.71 : size / 2) + 1
+			const shape = shapeOf(kind, active, theme)
+			// 多边形按它实际画多大让（三角放大了 1.34 倍），不然尖角会戳到线上
+			return (shape.spin ? size * 0.71 : shapeBox(shape, size) / 2) + 1
 		}
 
 		/**
@@ -565,23 +567,79 @@ window.__ModuleLoader__.load({
 			blue: '#58a6ff', orange: '#ffa657', bg: '#161b22',
 		}
 
-		/** 自定义形状的前缀：`char:★` = 直接把那个字画上去。 */
+		/** 自定义形状的两个前缀：`char:★` = 画那个字；`img:<id>` = 画上传的那张图。 */
 		const CUSTOM = 'char:'
+		const PICTURE = 'img:'
+
+		/** 上传的图落在 host 半，这是取它的地址。 */
+		const ICON_URL = '/plugins/dsh-tree/icon'
+
+		/**
+		 * 上传的图统一缩成 64×64 再存。
+		 *
+		 * 为什么正好是 64：点最大 `Z.dot(9) × 缩放 250% = 22.5px`，悬停再放大 1.4 倍 ≈ 31.5px，
+		 * 二倍屏上 63 个物理像素 —— 64 刚好够用，再大纯属白存。
+		 */
+		const ICON_EDGE = 64
+
+		/** 上传前的原图最大多少字节。太大的图光解码就能卡一下。 */
+		const ICON_SOURCE_MAX = 4 * 1024 * 1024
 
 		/**
 		 * 预设形状。三种画法：
 		 *   · `radius` + `spin` —— border-radius 画方/圆，`spin` 再转 45° 成菱形
-		 *   · `clip` —— clip-path 剪出多边形，画 border-radius 画不出来的（三角）
-		 *   · 表外的 `char:<字>` —— 见 shapeSpec，直接画那个字
+		 *   · `poly` —— 单位框里的顶点，交给一个 `<svg><polygon>` 画。描边和填充和别的形状
+		 *     **同一套**（同样的 ink / fill / 线宽），所以质感一致
+		 *   · 表外的 `char:<字>` / `img:<id>` —— 见 shapeSpec
 		 * 表里**不写中文名**：选择器上直接画出形状本身，不需要"圆形""菱形"这种字。
+		 *
+		 * ⚠️ 三角别用 `clip-path` 剪。剪出来的东西**斜边上没有描边**（border 被一起剪掉），
+		 *    box-shadow 也整圈剪没 —— 只能整块填实，摆在一排空心圆里一眼就看得出格格不入。
+		 *
+		 * `grow` = 画多大。三角按**面积**配齐：底 1 高 0.87 的三角占单位框 0.435，
+		 * 而正圆占 π/4 ≈ 0.785，所以要放大 √(0.785/0.435) ≈ 1.34 倍看着才一样大。
 		 */
 		const SHAPES = [
 			{ value: 'circle', radius: '50%', spin: false },
 			{ value: 'rounded', radius: '30%', spin: false },
 			{ value: 'square', radius: 'px', spin: false },
 			{ value: 'diamond', radius: 'px', spin: true },
-			{ value: 'triangle', radius: 'px', spin: false, clip: 'polygon(50% 100%, 0% 0%, 100% 0%)' },
+			{ value: 'triangle', radius: 'px', spin: false, grow: 1.34, poly: [[0, 0.1], [1, 0.1], [0.5, 0.97]] },
 		]
+
+		/**
+		 * 多边形顶点换算成 SVG 的 `points`。
+		 *
+		 * ⚠️ 要往里缩 `inset`（= 半条描边）。SVG 的描边是**骑在**路径上的，顶点落在画布
+		 *    边缘的话外侧那半条会被切掉，三个角看着厚薄不均。
+		 * @param points - 单位框（0..1）里的顶点
+		 * @param edge - 画布边长（像素）
+		 * @param inset - 四周留多少
+		 * @returns `"x,y x,y …"`
+		 */
+		function polyPoints(points, edge, inset) {
+			const span = Math.max(0, edge - inset * 2)
+			return points.map(([x, y]) => `${(inset + x * span).toFixed(2)},${(inset + y * span).toFixed(2)}`).join(' ')
+		}
+
+		/**
+		 * 一个形状画出来占多大。`grow` 是为了让不同形状的**面积**看齐，不是边长。
+		 * @param shape - shapeSpec 的结果
+		 * @param size - 点的直径
+		 * @returns 边长（像素）
+		 */
+		function shapeBox(shape, size) {
+			return size * (shape.grow === undefined ? 1 : shape.grow)
+		}
+
+		/**
+		 * 上传的图的地址。
+		 * @param id - 图片 id（内容哈希）
+		 * @returns URL
+		 */
+		function iconUrl(id) {
+			return `${ICON_URL}?id=${encodeURIComponent(id)}`
+		}
 
 		/** 三种角色各自的默认颜色与形状。设置里改的就是这张表。 */
 		const THEME = {
@@ -616,6 +674,12 @@ window.__ModuleLoader__.load({
 				const glyph = text.slice(CUSTOM.length).trim()
 				if (glyph !== '' && [...glyph].length <= 2) return { value: text, radius: 'px', spin: false, glyph }
 			}
+			if (text.startsWith(PICTURE)) {
+				// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于
+				// 把一个用户可控的字符串塞进 src，越界读文件就是这么来的
+				const id = text.slice(PICTURE.length)
+				if (/^[0-9a-f]{32}$/.test(id)) return { value: text, radius: 'px', spin: false, image: id }
+			}
 			return SHAPES.find((one) => one.value === text) || SHAPES[0]
 		}
 
@@ -629,16 +693,19 @@ window.__ModuleLoader__.load({
 		 */
 		function preview(want, color, size) {
 			const spec = shapeSpec(want)
+			const skin = { ink: color, fill: fade(color, 0.3), accent: color }
+			const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
 			return h('span', {
 				style: {
-					display: 'inline-block', boxSizing: 'border-box', width: `${size}px`, height: `${size}px`,
+					position: 'relative', display: 'inline-block', boxSizing: 'border-box',
+					width: `${size}px`, height: `${size}px`,
 					borderRadius: spec.radius === 'px' ? '2px' : spec.radius,
-					background: spec.glyph === undefined ? color : 'none',
-					clipPath: spec.clip === undefined ? 'none' : spec.clip,
+					borderWidth: drawn ? '0px' : '1.5px', borderStyle: 'solid', borderColor: color,
+					background: spec.image !== undefined ? `center center / contain no-repeat url("${iconUrl(spec.image)}")` : drawn ? 'none' : skin.fill,
 					color, fontSize: `${size}px`, lineHeight: `${size}px`, textAlign: 'center',
 					transform: spec.spin ? 'rotate(45deg) scale(.78)' : 'none',
 				},
-			}, spec.glyph === undefined ? null : spec.glyph)
+			}, dotInside(spec, size, skin, 1.5))
 		}
 
 		/**
@@ -658,13 +725,37 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 一个节点此刻用什么描边色、什么填充色。
+		 *
+		 * 单独抽出来是因为**有两拨人要用同一套颜色**：方框类的 `dotStyle`，和多边形
+		 * 那个 `<svg><polygon>`。各算各的必然对不齐，最后就是三角和圆看着不是一套东西。
+		 * @param kind - normal / compact / empty
+		 * @param active - 在当前路径上
+		 * @param focused - 正看着这一轮
+		 * @param theme - 颜色与形状，缺省用 THEME
+		 * @returns `{accent, ink, fill}`
+		 */
+		function inkOf(kind, active, focused, theme) {
+			const skin = theme || THEME
+			const compact = kind === 'compact'
+			const accent = compact ? skin.compactColor : skin.currentColor
+			return {
+				accent,
+				// 描边色
+				ink: focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : compact ? skin.compactColor : skin.normalColor,
+				// 填充色。路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
+				fill: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
+			}
+		}
+
+		/**
 		 * 一个节点长什么样。
 		 *
 		 * ⚠️ 所有分支必须返回**相同的 key 集合**，边框只用 longhand，不许写 `border` 简写。
 		 *    React 会把"上一帧有、这一帧没有"的属性置空，简写和 longhand 混用时
 		 *    切回普通态会掉成白边框 —— 滑过一个点白一个（DESIGN.md §5）。
 		 *
-		 * ⚠️ 形状归 `kind`，状态归 `active`/`focused`，两者**正交**。
+		 * ⚠️ 形状归 `kind`/`active`，状态归 `active`/`focused`，两者**正交**。
 		 *    以前是 `kind = focused ? 'current' : node.kind`，压缩节点一滑到就变回蓝圆点 ——
 		 *    "一眼看出是压缩节点"恰好在最该看清的时候失效。别再把状态塞回 kind 里。
 		 * 描边和外发光都按直径同比例走，否则点放大后边框细得看不见。
@@ -677,41 +768,79 @@ window.__ModuleLoader__.load({
 		 * @returns 内联样式
 		 */
 		function dotStyle(kind, active, hover, size, focused, theme) {
-			const skin = theme || THEME
 			const k = size / Z.dot
-			const compact = kind === 'compact'
-			const shape = shapeOf(kind, active, skin)
-			const accent = compact ? skin.compactColor : skin.currentColor
-			const idle = compact ? skin.compactColor : skin.normalColor
-			const ink = focused ? accent : compact ? skin.compactColor : active ? fade(skin.currentColor, 0.9) : idle
-			// 这个角色此刻的"正色"（必是主题里的 #rrggbb），派生色都从它 fade 出来
-			const base = focused ? accent : compact ? skin.compactColor : active ? skin.currentColor : idle
-			// 剪出来的形状描不了边（斜边会被 clip-path 切掉），字形更没有边可描 ——
-			// 这两类一律整块填色，靠颜色深浅表状态，外发光也换成跟着轮廓走的 drop-shadow
-			const carved = shape.clip !== undefined || shape.glyph !== undefined
+			const shape = shapeOf(kind, active, theme)
+			const { accent, ink, fill } = inkOf(kind, active, focused, theme)
+			// 多边形 / 字 / 图片都不靠这个 <span> 的 border+background 成形：
+			// 方框会在图形外面套一圈，所以这三类一律把方框关掉，由里面的内容自己画。
+			// 外发光也得换 —— box-shadow 画的是**方框**的光晕，套在三角外面就是个方的光。
+			const drawn = shape.poly !== undefined || shape.glyph !== undefined || shape.image !== undefined
 			return {
 				width: `${size}px`, height: `${size}px`,
 				borderRadius: shape.radius === 'px' ? `${1.5 * k}px` : shape.radius,
-				borderWidth: carved ? '0px' : `${1.5 * k}px`,
+				borderWidth: drawn ? '0px' : `${1.5 * k}px`,
 				borderStyle: kind === 'empty' ? 'dashed' : 'solid',
 				borderColor: ink,
-				// 路径上的点垫一层淡填充：只靠描边在小尺寸下看着像白的
-				background: shape.glyph !== undefined
-					? 'none'
-					: shape.clip !== undefined
-						? (focused ? accent : fade(base, 0.55))
-						: focused ? accent : compact ? fade(skin.compactColor, 0.3) : active ? fade(skin.currentColor, 0.18) : C.bg,
-				clipPath: shape.clip === undefined ? 'none' : shape.clip,
+				background: shape.image !== undefined ? `center center / contain no-repeat url("${iconUrl(shape.image)}")` : drawn ? 'none' : fill,
 				color: ink,
 				fontSize: `${size}px`,
 				lineHeight: `${size}px`,
 				textAlign: 'center',
-				boxShadow: focused && !carved ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
-				filter: focused && carved ? `drop-shadow(0 0 ${2 * k}px ${fade(accent, 0.75)})` : 'none',
+				boxShadow: focused && !drawn ? `0 0 0 ${3 * k}px ${fade(accent, 0.22)}` : 'none',
+				filter: focused && drawn ? `drop-shadow(0 0 ${2 * k}px ${fade(accent, 0.75)})` : 'none',
 				boxSizing: 'border-box',
 				opacity: focused || active ? 1 : 0.4,
 				transition: 'transform .12s ease, opacity .12s ease',
 				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${shape.spin ? ' rotate(45deg)' : ''}`,
+			}
+		}
+
+		/**
+		 * 方框画不出来的那部分内容：多边形交给 `<svg><polygon>`，自定义字就是那个字。
+		 * 圆/方/菱/图片靠 `dotStyle` 的 border+background 就够了，这里返回 null。
+		 *
+		 * ⚠️ polygon 的描边宽度、描边色、填充色和别的形状**用同一套**（`inkOf` + `1.5k`），
+		 *    不然一排空心圆里混一个实心三角，一眼就看得出是两拨人画的。
+		 * @param shape - shapeSpec 的结果
+		 * @param size - 点的直径
+		 * @param skin - `inkOf` 的结果
+		 * @param stroke - 描边宽度，和同尺寸下方框类形状的边框一样粗
+		 * @returns 子节点，或 null
+		 */
+		function dotInside(shape, size, skin, stroke) {
+			if (shape.glyph !== undefined) return shape.glyph
+			if (shape.poly === undefined) return null
+			const edge = shapeBox(shape, size)
+			return h(
+				'svg',
+				{
+					width: edge, height: edge, 'aria-hidden': true,
+					// 比 <span> 大一圈，所以绝对定位居中，别把自己挤进方框里
+					style: { position: 'absolute', left: '50%', top: '50%', marginLeft: `${-edge / 2}px`, marginTop: `${-edge / 2}px`, overflow: 'visible', pointerEvents: 'none' },
+				},
+				h('polygon', polyProps(shape, size, skin, stroke)),
+			)
+		}
+
+		/**
+		 * `<polygon>` 上挂的那堆属性。
+		 *
+		 * 单独抽出来是为了**能测**：描边色、填充色、线宽必须和方框类形状同源，
+		 * 藏在渲染函数里的话，哪天有人把 `fill` 改成 `skin.ink`（= 整块填实）
+		 * 一条断言都不会响 —— 而那正是 John 说的"质感明显和其他图案不一样"。
+		 * @param shape - shapeSpec 的结果，要有 `poly`
+		 * @param size - 点的直径
+		 * @param skin - `inkOf` 的结果
+		 * @param stroke - 描边宽度
+		 * @returns polygon 的属性
+		 */
+		function polyProps(shape, size, skin, stroke) {
+			return {
+				points: polyPoints(shape.poly, shapeBox(shape, size), stroke / 2),
+				fill: skin.fill,
+				stroke: skin.ink,
+				strokeWidth: stroke,
+				strokeLinejoin: 'round',
 			}
 		}
 
@@ -992,6 +1121,69 @@ window.__ModuleLoader__.load({
 		 * 卡片上的两行设置。加新设置项就往这儿加一条，卡片和 store 都不用改。
 		 * `field` 必须和 host 半 SETTINGS_SCHEMA 里的字段名一致。
 		 */
+		/**
+		 * 把任意图片文件**光栅化**成 `ICON_EDGE` 见方的 PNG。
+		 *
+		 * 为什么不原样存用户的文件：
+		 *   · SVG 里可以写脚本。把它原样挂到同源地址上再当图片引，等于给自己开了个后门 ——
+		 *     过一遍 canvas 就只剩像素了。
+		 *   · 节点最大也就 32px 左右，存张 4000×3000 的原图纯属拿内存换零收益。
+		 * 尺寸**不限制，自动换算**：等比缩放塞进方框（contain），空出来的地方透明补齐，
+		 * 所以竖图横图都不会被拉变形。
+		 * @param file - 用户选的文件
+		 * @param edge - 目标边长
+		 * @returns PNG 的 base64（不带 `data:` 前缀）
+		 */
+		function shrink(file, edge) {
+			return new Promise((resolve, reject) => {
+				if (file.size > ICON_SOURCE_MAX) {
+					reject(new Error(`图太大了（${Math.round(file.size / 1024 / 1024)}MB），换张 ${ICON_SOURCE_MAX / 1024 / 1024}MB 以内的`))
+					return
+				}
+				const source = URL.createObjectURL(file)
+				const image = new Image()
+				image.onload = () => {
+					URL.revokeObjectURL(source)
+					try {
+						const canvas = document.createElement('canvas')
+						canvas.width = edge
+						canvas.height = edge
+						const pen = canvas.getContext('2d')
+						const zoom = Math.min(edge / image.width, edge / image.height)
+						const w = Math.max(1, Math.round(image.width * zoom))
+						const hgt = Math.max(1, Math.round(image.height * zoom))
+						pen.drawImage(image, Math.round((edge - w) / 2), Math.round((edge - hgt) / 2), w, hgt)
+						resolve(canvas.toDataURL('image/png').slice('data:image/png;base64,'.length))
+					} catch (error) {
+						reject(error)
+					}
+				}
+				image.onerror = () => {
+					URL.revokeObjectURL(source)
+					reject(new Error('这个文件浏览器读不出来，换个 png / jpg / svg 试试'))
+				}
+				image.src = source
+			})
+		}
+
+		/**
+		 * 把一张图传给 host 半存起来。
+		 * @param file - 用户选的文件
+		 * @returns 形状值 `img:<id>`
+		 */
+		async function upload(file) {
+			const data = await shrink(file, ICON_EDGE)
+			const response = await fetch(ICON_URL, {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ data }),
+			})
+			const body = await response.json().catch(() => ({}))
+			if (!response.ok || typeof body.id !== 'string') throw new Error(body.error || `上传失败（${response.status}）`)
+			return PICTURE + body.id
+		}
+
 		const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 		const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
@@ -1059,7 +1251,7 @@ window.__ModuleLoader__.load({
 			// 形状按钮：里面画的就是那个形状本身，所以按钮上不写任何字
 			chip: (picked, on) => ({
 				appearance: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-				width: '26px', height: '26px', padding: 0, cursor: on ? 'pointer' : 'default',
+				width: '28px', height: '28px', padding: 0, cursor: on ? 'pointer' : 'default', overflow: 'hidden',
 				borderWidth: '.5px', borderStyle: 'solid',
 				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
 				background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
@@ -1110,10 +1302,59 @@ window.__ModuleLoader__.load({
 					.catch((error) => setFailed(String((error && error.message) || error)))
 			}
 
-			/** 取一项的当前值：设置里存的认不得就用默认。 */
+			// 本地回显。写设置要绕 host 转一圈，拖色板时那一圈跟不上手 ——
+			// 读数和预览会一直停在旧值上，看着就是"调完下面没跟着变"。
+			// 所以先本地记一份立刻画上，等设置真的回到这个值再撤掉。
+			const [draft, setDraft] = react.useState({})
+			react.useEffect(() => {
+				setDraft((now) => {
+					const next = {}
+					let dirty = false
+					for (const field of Object.keys(now)) {
+						if (values[field] === now[field]) dirty = true
+						else next[field] = now[field]
+					}
+					return dirty ? next : now
+				})
+			}, [values])
+
+			/** 取一项的当前值：优先本地回显，其次设置，存的认不得就用默认。 */
 			const valueOf = (field) => {
+				if (draft[field] !== undefined) return draft[field]
 				const spec = FIELDS.find((one) => one.field === field)
 				return spec.accept(values[field]) ? values[field] : spec.fallback
+			}
+
+			/**
+			 * 改一项：立刻回显，再写进设置。写失败就把回显撤掉，别让界面撒谎。
+			 * @param field - 字段名
+			 * @param next - 新值
+			 */
+			const put = (field, next) => {
+				setDraft((now) => Object.assign({}, now, { [field]: next }))
+				write(() =>
+					Promise.resolve(store.set(field, next)).catch((error) => {
+						setDraft((now) => {
+							const back = Object.assign({}, now)
+							delete back[field]
+							return back
+						})
+						throw error
+					}),
+				)
+			}
+
+			/**
+			 * 还原一项：回显也一起清掉。
+			 * @param fields - 字段名
+			 */
+			const clear = (fields) => {
+				setDraft((now) => {
+					const back = Object.assign({}, now)
+					for (const field of fields) delete back[field]
+					return back
+				})
+				write(() => Promise.all(fields.map((field) => store.reset(field))))
 			}
 
 			/** 标题那一行：名字 + 读数 + 已修改 / 重置。`fields` 里任意一项被改过就算改过。 */
@@ -1126,7 +1367,7 @@ window.__ModuleLoader__.load({
 					changed
 						? h('button', {
 								key: 'r', type: 'button', style: S.reset, disabled: !on,
-								onClick: () => write(() => Promise.all(fields.map((field) => store.reset(field)))),
+								onClick: () => clear(fields),
 							}, '重置')
 						: null,
 				])
@@ -1141,15 +1382,16 @@ window.__ModuleLoader__.load({
 					h('input', {
 						key: 'i', type: 'range', min: 0, max: spec.steps.length - 1, step: 1, value: at,
 						disabled: !on, style: S.range(on),
-						onChange: (event) => write(() => store.set(spec.field, spec.steps[Number(event.target.value)])),
+						onChange: (event) => put(spec.field, spec.steps[Number(event.target.value)]),
 					}),
 					spec.hint === '' ? null : h('p', { key: 'p', style: S.hint }, spec.hint),
 				])
 			}
 
 			/**
-			 * 形状选择器：按钮里**画出形状本身**，不写"圆形""菱形"这种字。
-			 * 最后一格是自定义 —— 填一个字符（emoji 也行），节点就画成那个字。
+			 * 形状选择器：按钮里**画出形状本身**，不写"圆形""菱形"这种字，
+			 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
+			 * 预设后面跟两格自定义：传图片，或者填一个字符。
 			 */
 			const shapes = (field, now, color) =>
 				h('div', { key: 'sp', style: S.picks }, [
@@ -1157,17 +1399,39 @@ window.__ModuleLoader__.load({
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
 							style: S.chip(now === one.value, on),
-							onClick: () => write(() => store.set(field, one.value)),
+							onClick: () => put(field, one.value),
 						}, preview(one.value, color, 13)),
 					),
+					// 传图：选完立刻在浏览器里缩成 64×64 的 PNG 再上传，见 shrink()
+					h('label', {
+						key: 'img',
+						title: `传一张图当节点。png / jpg / webp / svg 都行，尺寸不限 —— 会自动等比缩进 ${ICON_EDGE}×${ICON_EDGE}`,
+						style: S.chip(String(now).startsWith(PICTURE), on),
+					}, [
+						String(now).startsWith(PICTURE)
+							? preview(now, color, 15)
+							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
+						h('input', {
+							key: 'f', type: 'file', accept: 'image/*', disabled: !on,
+							style: { display: 'none' },
+							onChange: (event) => {
+								const file = event.target.files && event.target.files[0]
+								event.target.value = '' // 同一个文件再传一次也要触发
+								if (file === undefined || file === null) return
+								write(() => upload(file).then((value) => put(field, value)))
+							},
+						}),
+					]),
+					// 填字：emoji 也行
 					h('input', {
 						key: 'own', type: 'text', maxLength: 4, disabled: !on,
 						value: String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '',
-						placeholder: '自定义', title: '填一个字符（emoji 也行），节点就画成它',
+						placeholder: '填字', title: '填一个字符当节点，emoji 也行',
 						style: S.own(String(now).startsWith(CUSTOM), on),
 						onChange: (event) => {
 							const text = event.target.value.trim()
-							write(() => (text === '' ? store.reset(field) : store.set(field, CUSTOM + text)))
+							if (text === '') clear([field])
+							else put(field, CUSTOM + text)
 						},
 					}),
 				])
@@ -1180,7 +1444,7 @@ window.__ModuleLoader__.load({
 					h('div', { key: 'bd', style: S.pair }, [
 						h('input', {
 							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
-							onChange: (event) => write(() => store.set(spot.color, event.target.value)),
+							onChange: (event) => put(spot.color, event.target.value),
 						}),
 						shapes(spot.shape, valueOf(spot.shape), color),
 					]),
@@ -1443,13 +1707,14 @@ window.__ModuleLoader__.load({
 				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
 				//    否则赶路途中压过的每个点都会抢走卡片 —— ＋ 就永远够不着（DESIGN.md §6）。
 				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
-				// 自定义形状是个字，直接当子节点画进去；预设形状没有子节点
-				const glyph = shapeOf(node.kind, node.active, theme).glyph
+				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
+				const shape = shapeOf(node.kind, node.active, theme)
+				const skin = inkOf(node.kind, node.active, isFocused, theme)
 				parts.push(h('span', {
 					key: `d${node.key}`,
 					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme)),
 					onClick: go,
-				}, glyph === undefined ? null : glyph))
+				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot)))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
@@ -1621,7 +1886,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, fade, shapeSpec, shapeOf, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, reachFor, segments, SHAPES, THEME, ROWS, CUSTOM, PICTURE, ICON_EDGE, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

@@ -188,7 +188,7 @@ console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand
 	// 老做法 `kind = focused ? 'current' : node.kind` 会让它一滑到就变回蓝圆点 ——
 	// "一眼看出是压缩节点"恰好在最该看清的时候失效。
 	// 这里不写死"菱形"，只比形状指纹 —— 默认形状是可以改的（现在压缩节点默认是倒三角）。
-	const fingerprint = (style) => `${style.borderRadius}|${style.clipPath}|${/rotate\(45deg\)/.test(style.transform)}`
+	const fingerprint = (style) => `${style.borderRadius}|${style.borderWidth}|${style.background === 'none'}|${/rotate\(45deg\)/.test(style.transform)}`
 	const packed = variants.filter((one) => one.kind === 'compact')
 	const plain = variants.filter((one) => one.kind === 'normal')
 	for (const variant of packed) check(fingerprint(variant.style) === fingerprint(packed[0].style), `${variant.label}：压缩节点换了个状态就换了形状`)
@@ -198,7 +198,8 @@ console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand
 	const lit = pure.dotStyle('compact', true, false, 9, true)
 	const dim = pure.dotStyle('compact', true, false, 9, false)
 	check(fingerprint(lit) === fingerprint(dim), '压缩节点滑到时形状变了')
-	check(lit.background !== dim.background, '压缩节点滑到时填充没变，看不出是当前轮')
+	// 三角的填充画在里面那个 <svg> 上，所以查 inkOf 而不是查方框的 background
+	check(pure.inkOf('compact', true, true).fill !== pure.inkOf('compact', true, false).fill, '压缩节点滑到时填充没变，看不出是当前轮')
 	// 外发光：能描边的用 box-shadow，剪出来的形状用 drop-shadow（box-shadow 会被一起剪掉）
 	check(lit.boxShadow !== dim.boxShadow || lit.filter !== dim.filter, '压缩节点滑到时没有外发光')
 	console.log('  压缩节点四种状态形状一致且区别于普通节点；当前轮只换填充和外发光')
@@ -650,26 +651,61 @@ console.log('\n用例 13：连线必须在节点边缘停住，不许穿过节�
 	console.log(`  让开量 圆${circle} / 菱${diamond.toFixed(1)} / 空${empty}；直线与折线两端都不压节点；笔画与节点对中`)
 }
 
-console.log('\n用例 14：三角与自定义字符形状')
+console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 {
-	// 压缩节点默认改成倒三角；另外形状允许填 `char:<字>`，节点就画成那个字。
+	// 压缩节点默认改成倒三角。John 报的：三角"质感和其他图案不一样，其他都是一个边框
+	// 没填充的，就倒三角是有填充的，还明显暗一点"，而且"感觉小了点"。
 	const shapeField = pure.FIELDS.find((one) => one.field === 'compactShape')
-
 	check(pure.THEME.compactShape === 'triangle', `压缩节点默认该是三角，实际 ${pure.THEME.compactShape}`)
-	const tri = pure.shapeSpec('triangle')
-	check(typeof tri.clip === 'string' && /50% 100%/.test(tri.clip), `倒三角该是尖朝下，实际 ${tri.clip}`)
 
-	// 三角是剪出来的，斜边描不了边 —— 必须整块填色，不能留个 border 在那儿画半条边
+	const tri = pure.shapeSpec('triangle')
+	check(Array.isArray(tri.poly) && tri.poly.length === 3, '三角该是个多边形')
+	// 尖朝下：最低的那个顶点只有一个，且在水平居中处
+	const lowest = tri.poly.slice().sort((a, b) => b[1] - a[1])[0]
+	check(lowest[0] === 0.5, `倒三角的尖该在正中间，实际 x=${lowest[0]}`)
+	check(tri.poly.filter(([, y]) => y === lowest[1]).length === 1, '倒三角该只有一个最低点（尖朝下）')
+
+	// ① 质感：描边和填充必须**和别的形状同一套**，不能自己另算一份
+	const skin = pure.inkOf('compact', true, false)
+	check(skin.ink === pure.THEME.compactColor, `三角的描边色该就是压缩节点色，实际 ${skin.ink}`)
+	check(skin.fill !== skin.ink, '三角被整块填实了 —— 别的形状都是描边 + 淡填充')
+	const circleSkin = pure.inkOf('normal', true, false)
+	const circleStyle = pure.dotStyle('normal', true, false, 9, false)
+	check(circleStyle.background === circleSkin.fill && circleStyle.borderColor === circleSkin.ink, '方框类形状没走 inkOf，和多边形必然对不齐')
+	// polygon 上挂的属性也得用同一套：描边 = ink、填充 = fill、线宽 = 同尺寸下的边框宽
+	const drawn = pure.polyProps(tri, 9, skin, 1.5)
+	check(drawn.stroke === skin.ink, `三角的描边该是 ${skin.ink}，实际 ${drawn.stroke}`)
+	check(drawn.fill === skin.fill, `三角的填充该是 ${skin.fill}，实际 ${drawn.fill}`)
+	check(drawn.fill !== drawn.stroke, '三角被填成和描边一样的实色了 —— 摆在一排空心圆里就是另一拨人画的')
+	check(drawn.strokeWidth === 1.5, `三角的线宽该和方框边一样，实际 ${drawn.strokeWidth}`)
+
+	// 方框要让位：三角靠里面那个 <svg> 成形，外面再套个框就是"框里画了个三角"
 	const packed = pure.dotStyle('compact', true, false, 9, false)
-	check(packed.borderWidth === '0px', `剪出来的形状不该还描边，实际 ${packed.borderWidth}`)
-	check(packed.clipPath === tri.clip, `三角没套上 clip-path，实际 ${packed.clipPath}`)
-	check(packed.background !== '#161b22', '三角是空的 —— 剪掉边框后必须靠填充才看得见')
-	// 外发光换成 drop-shadow：box-shadow 会被 clip-path 一起剪掉，等于没有
+	check(packed.borderWidth === '0px', `多边形不该再套方框边，实际 ${packed.borderWidth}`)
+	check(packed.background === 'none', `多边形不该再有方框底色，实际 ${packed.background}`)
+	// 外发光也得换：box-shadow 画的是方框的光晕，套在三角外面是个方的光
 	const litTri = pure.dotStyle('compact', true, false, 9, true)
 	check(litTri.boxShadow === 'none' && /drop-shadow/.test(litTri.filter), `三角的外发光该走 filter，实际 ${litTri.filter} / ${litTri.boxShadow}`)
-	check(litTri.background !== packed.background, '三角被选中时和没选中长得一模一样，分不出当前是哪一轮')
 
-	// 自定义字符
+	// ② 大小：按**面积**配齐，不是按边长。底 1 高 0.87 的三角只占单位框的 0.435，
+	//    而正圆占 π/4 ≈ 0.785 —— 不放大的话摆在一排圆里就是明显小一号。
+	const width = Math.max(...tri.poly.map(([x]) => x)) - Math.min(...tri.poly.map(([x]) => x))
+	const high = Math.max(...tri.poly.map(([, y]) => y)) - Math.min(...tri.poly.map(([, y]) => y))
+	const grown = pure.shapeBox(tri, 9) / 9
+	const area = ((width * high) / 2) * grown * grown
+	check(Math.abs(area - Math.PI / 4) < 0.05, `三角和正圆的面积该看齐，实际 ${area.toFixed(3)} vs ${(Math.PI / 4).toFixed(3)}`)
+	check(grown > 1, '三角没放大，会比同尺寸的圆小一圈')
+	// 让开量得跟着实际画多大走，不然放大后的尖角会戳到线上
+	check(
+		pure.reachFor('compact', true, 9, pure.THEME) > pure.reachFor('compact', true, 9, Object.assign({}, pure.THEME, { compactShape: 'circle' })),
+		'三角放大了，连线却按圆的尺寸让位 —— 尖角会压到线上',
+	)
+
+	// 顶点换算：要往里缩半条描边，否则外侧半条会被画布边缘切掉
+	const points = pure.polyPoints(tri.poly, 20, 1).split(' ').map((one) => one.split(',').map(Number))
+	check(points.every(([x, y]) => x >= 1 && x <= 19 && y >= 1 && y <= 19), `顶点顶到画布边上了：${JSON.stringify(points)}`)
+
+	// ③ 自定义字符
 	check(shapeField.accept('char:★'), 'char:★ 该是合法形状')
 	check(shapeField.accept('char:🌟'), 'emoji 也该收（代理对算一个字）')
 	check(!shapeField.accept('char:'), '空的自定义值不该算数')
@@ -681,14 +717,28 @@ console.log('\n用例 14：三角与自定义字符形状')
 	const starred = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: 'char:★' }))
 	check(starred.background === 'none', '画成字的节点不该再有底色')
 	check(starred.borderWidth === '0px', '画成字的节点不该再描边')
-	check(starred.color === pure.dotStyle('normal', true, false, 9, false).borderColor, '字的颜色该和原本描边的颜色一致')
+	check(starred.color === pure.inkOf('normal', true, false).ink, '字的颜色该和描边色一致')
 
-	// key 集合仍然恒定 —— 三角 / 字 / 圆都得逐字段对齐
+	// ④ 自定义图片。id 是内容哈希，要直接拼进 URL 和文件名 —— 认宽了就是路径穿越
+	const id = 'a'.repeat(32)
+	check(shapeField.accept(`img:${id}`), 'img:<32位哈希> 该是合法形状')
+	check(!shapeField.accept('img:../../etc/passwd'), '路径穿越的 id 必须拒掉')
+	check(!shapeField.accept('img:ABCDEF'), '长度对不上的 id 不该算数')
+	check(!shapeField.accept(`img:${'g'.repeat(32)}`), '非十六进制的 id 不该算数')
+	check(pure.shapeSpec(`img:${id}`).image === id, '图片形状没把 id 取出来')
+	check(pure.shapeSpec('img:../x').value === 'circle', '认不得的图片 id 该退回圆形')
+
+	const pictured = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: `img:${id}` }))
+	check(pictured.background.includes(id) && /contain/.test(pictured.background), `图片节点该用 contain 铺底，实际 ${pictured.background}`)
+	check(pictured.borderWidth === '0px', '图片节点不该再套方框边')
+	check(pure.ICON_EDGE >= 32 && pure.ICON_EDGE <= 128, `存下来的边长 ${pure.ICON_EDGE} 不合理`)
+
+	// key 集合仍然恒定 —— 三角 / 字 / 图 / 圆都得逐字段对齐
 	const base = Object.keys(pure.dotStyle('normal', true, false, 9, false)).sort()
-	for (const one of [packed, litTri, starred]) {
+	for (const one of [packed, litTri, starred, pictured]) {
 		check(JSON.stringify(Object.keys(one).sort()) === JSON.stringify(base), `key 集合变了：${JSON.stringify(Object.keys(one).sort())}`)
 	}
-	console.log('  倒三角整块填色 + drop-shadow 发光 / char:<字> 合法性与取字 / key 集合恒定')
+	console.log(`  三角描边填充与圆同源、面积配齐（放大 ${grown} 倍）/ char:<字> 与 img:<哈希> 的合法性 / key 集合恒定`)
 }
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
