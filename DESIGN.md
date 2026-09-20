@@ -55,10 +55,55 @@
 | 分支之间的父子边 | session header 的 `parentSession` |
 | 分支里有哪些轮 | 自己折日志（`turn/start` / `user/message` / `turn/end`） |
 | 岔路点 | `session/end-seed {inherited:true}` 之前的最后一个 `turn/end` |
+| 哪几轮被撤回了 | dsh-claude 旁车里的 `rewind.ranges`（见下） |
+| 那一轮答完了没 | `turn/end` 的 `reason.kind === 'completed'` |
 | 现在滑到哪一轮 | DOM 上的 `[data-chat-turn]` |
 | 节点自定义名字 | localStorage（唯一自研存储） |
 
 好处：树永远和真实状态一致（它就是真实状态的一个视图），插件删了什么都不坏，不需要迁移。
+
+### 撤回（rewind）：日志里还在，对话里已经没了
+
+John 报的：「1-2-3-4，4 发到一半我撤回了，又发了 5，树上却画成 1-2-3-4-5 —— 可 4 已经不存在了。」
+
+原因是 dsh-claude 的撤回**不删日志、也不开新会话**（NATIVE-BASELINE.md §4）：
+它只在自己的旁车里记一组 hidden `ranges`（**界面行**的 seq 区间），前端拿 CSS
+把那些行藏起来，claude 那边用 `resumeSessionAt` 从更早的锚点重开。
+于是我们折日志时，撤回过的那几轮一个不少地还在，而且后来发的轮次顺理成章地接在它后面。
+
+**两种情形要分开**（`turn/end` 的 `reason` 说了算）：
+
+| 撤回时的状态 | 树上怎么画 |
+|---|---|
+| 答完了（`completed`） | 节点留着，成一条**走过又被放弃的支线**；新发的那轮接回撤回**之前**那个节点 → 1-2-3-4 和 1-2-3-5 两条 |
+| 没答完（`aborted` / `interrupted` / `error` / 没有 `turn/end`） | 节点**不画**，只剩 1-2-3-5 |
+
+实现分在两半：host 半（第 3 步）负责盖 `rewound` 戳，浏览器半的 `buildGraph` 负责成形
+（`previous` 串废弃支线，`live` 指还在对话里的最后一个节点，新轮次接 `live`）。
+
+⚠️ **`done` 不能退化成"有没有 `turn/end`"**。盘上 34 条 `aborted` **都老老实实带着 `turn/end`**，
+只是 `reason.kind` 不是 `completed`。按有无判的话，中止掉的半截轮次会被当成答完了留在树上。
+
+⚠️ **判"这一轮撤回没"要拿真人那条消息的 seq 去比**，不是 `turn/start` 的。
+撤回点就是用户点的那一行，区间从它开始 —— `turn/start` 恒落在区间起点之前，永远判不中。
+折不出提示词的轮次退而用 `turn/end` 的 seq。
+
+⚠️ **撤回状态的缓存不能挂在会话 `revision` 上**。撤回**一个 dsh 事件都不写**，
+`snapshot.revision` 纹丝不动，挂上去就永远刷不出来。所以另开一个 `hiddenCache`，
+跟着旁车文件的 `mtime + size` 走。
+
+⚠️ **别把旁车无脑 `JSON.parse`**：它的 `activities` 是整份对话原文，本机实测最大 6.7MB，
+parse 一次 42ms，而 `/outlines` 每次都要过一遍全部会话。所以先在原文里找 `"ranges":[{`
+这个串——非空的 `ranges` 必然长这样，**这一步只会少干活、不会漏判**（正文里凑巧有这串
+就多解析一次，结论一样）。反过来"解析 `"ranges":` 后面那段"是不行的，那是在 6MB
+对话正文里赌字符串位置。
+
+⚠️ **盖戳必须盖在副本上**。传进去的 turns 是大纲缓存里那一份，就地改的话撤回状态
+会被腌进缓存，之后 ranges 清空（新分支 graft 就会清）也刷不掉。
+
+撤回掉的节点**不给 ＋ 按钮**：`planRewind` 把那几轮的锚点一起删了，从那儿开分支
+只能开出一条没有上下文的失忆分支。详情卡上挂一个「撤回」小牌子，免得点开只看到
+一条"怎么滚不过去"的旧提问。
 
 ### 为什么需要 host 半
 
@@ -578,15 +623,19 @@ settings 里。
 
 ## 6. 测试
 
-三个离线脚本，都不用开浏览器。**每个断言都验证过"能抓住对应的 bug"**（把修复退回去会当场炸）。
+六个离线脚本，都不用开浏览器（`npm test` 一起跑）。
+**每个断言都验证过"能抓住对应的 bug"**（把修复退回去会当场炸）。
 
 ```bash
 node test.mjs                 # 拿真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs       # 手捏的小树，钉死高亮的边界情形 + 样式 key 集合
+node test-elide.mjs           # 省略的距离、行号压实、缩放档位
+node test-icon.mjs            # 自定义节点图片：只收 PNG、内容哈希、清理不误伤
+node test-rewind.mjs          # 撤回：done 的口径、区间比对、成图、旁车读写
 DSH_HOME_REAL='...' node test-branch.mjs   # 把真实分支倒带到"刚出生"那一刻，重放接管逻辑
 ```
 
-`test.mjs` 和 `test-highlight.mjs` 取的是 `client.js` 的 `__pure` 出口 ——
+除 `test-icon.mjs` 外都取 `client.js` 的 `__pure` 出口或 `index.js` 的真函数 ——
 **测的是真代码，不是复制品**。
 
 浏览器控制台里 `__dshTree()` 可以把当前树的真实状态倒出来（每个节点的蓝/白、血缘、岔路点、归档集）。

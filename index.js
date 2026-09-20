@@ -88,11 +88,18 @@ export function foldOutline(events) {
 		const data = event.data || {}
 		switch (event.type) {
 			case 'turn/start':
-				current = { turn: data.turn, seq: event.seq, time: event.time, prompt: '', compact: false }
+				current = { turn: data.turn, seq: event.seq, time: event.time, prompt: '', compact: false, done: false }
 				turns.push(current)
 				break
 			case 'turn/end':
-				if (current !== undefined) current.endSeq = event.seq
+				if (current !== undefined) {
+					current.endSeq = event.seq
+					// ⚠️ 只有 `completed` 才算"这一轮答完了"。中止（aborted）/ 出错（error）/
+					//    被打断（interrupted）都是半截。**别退化成"有 turn/end 就算答完"**——
+					//    盘上 34 条 aborted 也都老老实实带着 turn/end。
+					//    半截和答完的差别只在撤回时才看得出来，见第 3 步。
+					current.done = (data.reason || {}).kind === 'completed'
+				}
 				break
 			case 'session/end-seed':
 				// resume 留下的是 `{}`，**只有 fork 留下的带 `inherited: true`**
@@ -101,6 +108,9 @@ export function foldOutline(events) {
 			case 'user/message':
 				// 只认每轮第一条真人消息
 				if (current !== undefined && current.prompt === '' && isHumanPrompt(data)) {
+					// 撤回区间记的是**界面行**的 seq，而行就是这条真人消息。判"这一轮撤回没"
+					// 要的正是它，不是 turn/start 的 seq —— turn/start 落在区间起点之前。
+					current.promptSeq = event.seq
 					current.prompt = textOf(data).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_MAX)
 					// 桥接类 provider 的压缩兼容：走 dsh-claude 时 `/compact` 不会被 dsh 的
 					// 命令分发拦下，而是当普通提示词发给外部引擎，压缩全程在引擎内部
@@ -192,7 +202,7 @@ async function collect(ctx, cwd) {
 
 	for (const snapshot of snapshots) {
 		const header = snapshot.header
-		lineage.set(header.id, header.parentSession) // 血缘表顺手刷新，见第 4 步
+		lineage.set(header.id, header.parentSession) // 血缘表顺手刷新，见第 5 步
 		if (cwd && header.cwd !== cwd) continue
 		alive.add(header.id)
 		const outline = await outlineOf(ctx, snapshot)
@@ -205,7 +215,8 @@ async function collect(ctx, cwd) {
 			title: outline.title,
 			forkTurn: outline.forkTurn,
 			model: outline.model,
-			turns: outline.turns,
+			// 撤回过的轮次在日志里原样留着，得靠旁车才认得出来（第 3 步）
+			turns: markRewound(outline.turns, hiddenRangesOf(header.id)),
 		})
 	}
 
@@ -216,7 +227,115 @@ async function collect(ctx, cwd) {
 	return { sessions }
 }
 
-// ===== 第 3 步：接管新分支 =====
+// ===== 第 3 步：撤回（rewind）——把已经不在对话里的那几轮从树上摘掉 =====
+//
+// dsh-claude 的「撤回」**不删日志、也不开新会话**：它只在自己的旁车里记一组
+// hidden `ranges`（界面行的 seq 区间），前端拿 CSS 把那些行藏起来，claude 那边
+// 用 `resumeSessionAt` 从更早的锚点重开。详见 NATIVE-BASELINE.md §4。
+//
+// 于是日志里那几轮**原封不动地还在**。我们只折日志的话，撤回过的 4 会继续画在
+// 树上，而且后来发的 5 会接在 4 底下，画成 1-2-3-4-5 —— 可 4 已经不在对话里了。
+//
+// 两种情形要分开（John 报的原话）：
+//   · 4 答完了才撤回 → 4 是一条**真的走过又被放弃的支线**，留着，但 5 接到 3 上，
+//     画成 1-2-3-4 和 1-2-3-5 两条。
+//   · 4 答到一半被中止再撤回 → 这一轮压根没留下什么，节点直接不画，只剩 1-2-3-5。
+// 「留着还是不画」由 `entry.done` 定（见第 1 步），成形放在浏览器半的 buildGraph。
+
+/** 没有撤回时共用这一个空数组，省得每个会话都新建一个。 */
+const NO_RANGES = []
+
+/**
+ * 撤回区间的缓存：sessionId → `{stamp, ranges}`，stamp 是旁车文件的 mtime+size。
+ *
+ * 不跟着 `cache`（大纲缓存）走：大纲按会话 revision 失效，而**撤回不写 dsh 日志**，
+ * revision 一点不动，挂在那上面就永远刷不出来。
+ */
+const hiddenCache = new Map()
+
+/**
+ * 这个会话被撤回掉的行区间。
+ * @param sessionId - dsh 会话 id
+ * @returns `[{start, end}]`（界面行 seq，闭区间）；没有旁车 / 没撤回过就是空数组
+ */
+function hiddenRangesOf(sessionId) {
+	const file = sidecarPath(sessionId)
+	let stamp
+	try {
+		const stat = statSync(file)
+		stamp = `${stat.mtimeMs}:${stat.size}`
+	} catch {
+		return NO_RANGES
+	}
+	const hit = hiddenCache.get(sessionId)
+	if (hit !== undefined && hit.stamp === stamp) return hit.ranges
+	const ranges = readHiddenRanges(file)
+	hiddenCache.set(sessionId, { stamp, ranges })
+	return ranges
+}
+
+/**
+ * 从旁车里摘出撤回区间。
+ *
+ * ⚠️ 旁车里的 `activities` 是整份对话原文，本机实测最大 6.7MB，JSON.parse 一次 42ms。
+ *    所以先在原文里找 `"ranges":[{` 这个串：非空的 ranges 必然长这样，
+ *    **这一步只会少干活、不会漏判**（正文里凑巧有这串就多解析一次，结论一样）。
+ *    别把它改成解析 `"ranges":` 后面那段 —— 那就成了在 6MB 对话正文里赌字符串位置。
+ * @param file - 旁车路径
+ * @returns 区间数组
+ */
+function readHiddenRanges(file) {
+	let text
+	try {
+		text = readFileSync(file, 'utf8')
+	} catch {
+		return NO_RANGES
+	}
+	if (!text.includes('"ranges":[{')) return NO_RANGES
+	try {
+		const document = JSON.parse(text)
+		if (!document || document.schemaVersion !== SIDECAR_SCHEMA_VERSION) return NO_RANGES
+		const list = ((document.rewind || {}).ranges) || []
+		const ranges = []
+		for (const item of Array.isArray(list) ? list : []) {
+			if (item && Number.isFinite(item.start) && Number.isFinite(item.end)) ranges.push({ start: item.start, end: item.end })
+		}
+		return ranges.length === 0 ? NO_RANGES : ranges
+	} catch {
+		return NO_RANGES
+	}
+}
+
+/**
+ * 这一轮是不是被撤回了。
+ *
+ * 拿**真人那条消息**的 seq 去比（撤回点就是用户点的那一行）；折不出提示词的轮次
+ * 退而用 turn/end 的 seq —— 它也落在区间里。`seq`（turn/start）不行，它在区间起点之前。
+ * @param entry - 一轮的大纲
+ * @param ranges - 撤回区间
+ * @returns 是否被撤回
+ */
+function turnHidden(entry, ranges) {
+	const at = entry.promptSeq !== undefined ? entry.promptSeq : entry.endSeq
+	if (at === undefined) return false
+	return ranges.some((range) => at >= range.start && at <= range.end)
+}
+
+/**
+ * 给大纲里的轮次盖上「撤回」戳。
+ *
+ * ⚠️ 必须返回**新对象**：传进来的 turns 是 `cache` 里那份，就地改的话，
+ *    撤回状态会被腌进缓存，之后再也刷不掉（新分支 graft 时 ranges 会清空）。
+ * @param turns - foldOutline 折出来的轮次
+ * @param ranges - 撤回区间
+ * @returns 轮次数组；没撤回过就原样返回，不白白拷一遍
+ */
+function markRewound(turns, ranges) {
+	if (!Array.isArray(turns) || ranges.length === 0) return turns
+	return turns.map((entry) => (turnHidden(entry, ranges) ? Object.assign({}, entry, { rewound: true }) : entry))
+}
+
+// ===== 第 4 步：接管新分支 =====
 //
 // 原生 fork 有两个缺陷：会多抄一条还没跑的待办（所有 provider），
 // 外部引擎的记忆不跟随（只有 dsh-claude 这类）。详见 DESIGN.md §4。
@@ -303,7 +422,7 @@ function adoptBranch(ctx, agent) {
 	}
 }
 
-// ===== 第 4 步：graft —— 把外部引擎的记忆接上 =====
+// ===== 第 5 步：graft —— 把外部引擎的记忆接上 =====
 //
 // 普通 provider 走不到这里：对话原文就在 dsh 日志里，fork 抄过去就够了。
 // 例外是 dsh-claude 这类"把对话托管给外部引擎"的桥接——日志里 assistant 正文是空的，
@@ -599,10 +718,10 @@ export function graft(childId, parentId, turn) {
 	return { grafted: true, resumeAt: anchor.uuid, turn, activities: document.activities.length }
 }
 
-// ===== 第 5 步：装配 =====
+// ===== 第 6 步：装配 =====
 
 /** 内部件出口，仅供离线测试（cordis 只读 name/inject/apply）。 */
-export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX }
+export const __test = { adoptBranch, forkTurnOf, inheritedPendingIds, lineage, putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX, hiddenRangesOf, markRewound, turnHidden }
 
 /**
  * 从回调实参里把 agent 捞出来。宿主用的是带作用域载体的 emit，实参形状可能随版本变，
@@ -632,7 +751,7 @@ function json(res, status, value) {
 
 /**
  * 装上两件东西：
- *   · `agent/created` 监听 —— 每条新分支一出生就接管（第 3 步）
+ *   · `agent/created` 监听 —— 每条新分支一出生就接管（第 4 步）
  *   · `GET /plugins/dsh-tree/outlines?cwd=<工作目录>` —— 给前端画树的数据
  * @param ctx - 携带 webServer / sessionPersistence / agents 的 context
  */

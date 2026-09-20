@@ -175,16 +175,30 @@ window.__ModuleLoader__.load({
 				}
 				attachOf.set(session.id, anchor)
 
+				// 撤回过的轮次不能当"下一轮的父亲"：它已经不在对话里了。
+				// previous = 上一个画出来的节点（含撤回的），live = 上一个**还在对话里**的节点。
+				// 于是撤回的那一段自己串成一条支线，撤回之后新发的轮次接回 live —— 也就是
+				// 1-2-3-4（撤回）-5 画成 1-2-3-4 和 1-2-3-5 两条，而不是一条 1-2-3-4-5。
 				let previous = anchor
+				let live = anchor
 				for (const entry of ownTurns(session)) {
+					const rewound = entry.rewound === true
+					// 答到一半被中止、然后撤回 —— 这一轮什么都没留下，节点直接不画。
+					// key 仍指到最近还活着的祖先，免得有分支正好从这一轮岔出去、找不到挂载点。
+					if (rewound && entry.done !== true) {
+						nodeOf.set(`${session.id}:${entry.turn}`, live)
+						continue
+					}
+					const parent = rewound ? previous : live
 					const node = {
 						key: `${session.id}:${entry.turn}`, kind: entry.compact ? 'compact' : 'normal',
-						session, entry, parent: previous, children: [], depth: previous.depth + 1,
+						session, entry, rewound, parent, children: [], depth: parent.depth + 1,
 					}
-					previous.children.push(node)
+					parent.children.push(node)
 					nodes.push(node)
 					nodeOf.set(node.key, node)
 					previous = node
+					if (!rewound) live = node
 				}
 			}
 
@@ -239,7 +253,10 @@ window.__ModuleLoader__.load({
 			const assign = (node) => {
 				const kids = node.children.slice().sort((left, right) => (left.session.createdAt || 0) - (right.session.createdAt || 0))
 				if (kids.length === 0) return
-				const preferred = kids.find((kid) => kid.session.id === node.session.id) || kids[0]
+				// ⚠️ 撤回掉的那一轮虽然也是"本会话的延续"，但它是条废弃支线，
+				//    让它占住主列的话，还活着的下一轮反而被挤到旁边去了。
+				const same = (kid) => kid.session.id === node.session.id
+				const preferred = kids.find((kid) => same(kid) && kid.rewound !== true) || kids.find(same) || kids[0]
 				for (const kid of kids) {
 					kid.column = kid === preferred ? node.column : (nextColumn += 1)
 					assign(kid)
@@ -257,7 +274,12 @@ window.__ModuleLoader__.load({
 			let maxColumn = 0
 			for (const node of nodes) {
 				// 根部那个空节点永远算在路径上
-				node.active = node.entry === undefined ? true : node.entry.turn <= (limitOf.has(node.session.id) ? limitOf.get(node.session.id) : -1)
+				// 撤回掉的轮次恒不在路径上——它就在当前会话里，limitOf 是 Infinity，
+				// 不挡一下的话整条废弃支线会跟着亮成"当前路径"。
+				node.active =
+					node.entry === undefined
+						? true
+						: node.rewound !== true && node.entry.turn <= (limitOf.has(node.session.id) ? limitOf.get(node.session.id) : -1)
 				// 能不能分离：一路往上只要有哪个祖先有多个孩子就能。
 				// 父在前子在后遍历，所以这里可以直接吃父亲算好的结果 —— O(1)，
 				// 不用点击时再回溯，也不会因为别处新增/分离而过期。
@@ -418,10 +440,14 @@ window.__ModuleLoader__.load({
 		/**
 		 * 在某个节点上按 ＋ 该干什么。
 		 * **叶子节点不 fork**：后面什么都没有，复制一份只会多出一条内容重复的会话。
+		 * **撤回掉的节点也不给**：见函数体。
 		 * @param node - 被点的节点
 		 * @returns 'none' 什么都不该做 | 'fresh' 开新对话 | 'open' 就在本会话接着问 | 'fork' 真的开岔路
 		 */
 		function branchAction(node) {
+			// 撤回掉的轮次：claude 那边连锚点都一起删了（planRewind），
+			// 从这儿开分支只会开出一条没有上下文的失忆分支，不如不给按钮。
+			if (node.rewound === true) return 'none'
 			// 根部那个空节点：底下已经有分支了才谈得上"再开一条"。
 			// ⚠️ 刚建的对话只有这一个空节点，它自己就是"一条空对话"，
 			//    再 fresh 一条只是多出一条一模一样的空会话（和叶子节点同一条道理）。
@@ -1147,6 +1173,17 @@ window.__ModuleLoader__.load({
 								title: isEmpty ? '' : `会话内第 ${node.entry.turn} 轮`,
 								style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' },
 							}, isEmpty ? '对话' : `#${node.no}`),
+							// 撤回过的那一轮还画在树上（答完了才留），但它已经不在对话里，
+							// 不挂个牌子的话点开只会看到一条"怎么滚不过去"的旧提问。
+							!shown || node.rewound !== true
+								? null
+								: h('span', {
+										key: 'r', title: '这一轮已被撤回，不在对话里了',
+										style: {
+											flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
+											border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
+										},
+									}, '撤回'),
 							editing
 								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),

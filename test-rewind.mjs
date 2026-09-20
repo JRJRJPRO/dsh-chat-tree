@@ -1,0 +1,377 @@
+/**
+ * dsh-tree —— 撤回（rewind）的用例。
+ *
+ * 【导读】
+ * 干嘛的：John 报的 bug —— 「1-2-3-4，4 发到一半我撤回了，又发了 5，
+ * 树上却画成 1-2-3-4-5；可 4 已经不存在了」。
+ *
+ * 背景（NATIVE-BASELINE.md §4）：dsh-claude 的撤回**不删日志**，只在自己的旁车里
+ * 记一组 hidden `ranges`（界面行 seq），前端拿 CSS 把那些行藏起来。所以只折 dsh
+ * 日志的话，撤回过的轮次一个不少地还在。
+ *
+ * 规矩两条：
+ *   · 撤回时**答完了**（turn/end 的 reason 是 completed）→ 节点留着，但成一条废弃支线；
+ *     后面新发的那轮接回撤回**之前**的那个节点 → 1-2-3-4 和 1-2-3-5 两条。
+ *   · 撤回时**没答完**（aborted / interrupted / error / 干脆没有 turn/end）→ 节点不画，
+ *     只剩 1-2-3-5。
+ *
+ * 数据流：旁车 ranges ─┐
+ *         dsh 日志 → foldOutline（done / promptSeq）→ markRewound → buildGraph
+ *
+ * 阅读顺序：
+ *   第1步  取两半的真函数
+ *   第2步  造数据的小工具
+ *   第3步  用例 1-3：host 半（done / promptSeq / 盖戳）
+ *   第4步  用例 4-6：client 半（成图）
+ *   第5步  用例 7：拿盘上真实的撤回过的会话兜一遍
+ *
+ * 跑法：node test-rewind.mjs
+ *
+ * @module test-rewind
+ */
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import zlib from 'node:zlib'
+import { foldOutline, __test } from './index.js'
+
+const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
+
+let failures = 0
+
+/**
+ * 一条断言。
+ * @param ok - 条件
+ * @param message - 失败时打印什么
+ */
+function check(ok, message) {
+	if (ok) return
+	failures += 1
+	console.log(`  ✗ ${message}`)
+}
+
+// ===== 第 1 步：取两半的真函数 =====
+
+const fakeReact = new Proxy({}, { get: () => () => undefined })
+let pure
+globalThis.window = {
+	__ModuleLoader__: {
+		load: (definition) => {
+			pure = definition.factory((name) => (name === 'react' ? fakeReact : { createPortal: () => null })).__pure
+		},
+	},
+}
+globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
+globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
+await import('./client.js')
+
+const { markRewound, turnHidden, hiddenRangesOf } = __test
+
+// ===== 第 2 步：造数据的小工具 =====
+
+/**
+ * 捏一轮的事件。真实日志里一轮长这样：turn/start → 真人消息 → 宿主注入的
+ * runtime-context 快照（source.kind 不是 'user'）→ … → turn/end。
+ * @param turn - 轮次号
+ * @param from - 这一轮的起始 seq
+ * @param reason - turn/end 的 reason；给 null 表示这轮还没结束（没有 turn/end）
+ * @returns 事件数组
+ */
+function turnEvents(turn, from, reason) {
+	const events = [
+		{ seq: from, type: 'turn/start', time: turn, data: { turn } },
+		{ seq: from + 1, type: 'user/message', data: { content: [{ type: 'text', text: `问题 ${turn}` }], source: { kind: 'user' } } },
+		{ seq: from + 2, type: 'user/message', data: { content: [{ type: 'text', text: 'runtime context' }], source: { kind: 'system' } } },
+	]
+	if (reason !== null) events.push({ seq: from + 3, type: 'turn/end', data: { turn, reason } })
+	return events
+}
+
+/**
+ * 捏一条只有自有轮次的会话（不涉及继承，撤回和 fork 是两件事）。
+ * @param id - 会话 id
+ * @param specs - 每轮 `{turn, done, rewound}`
+ * @returns 一条 /outlines 里的会话记录
+ */
+function session(id, specs) {
+	return {
+		id,
+		cwd: '/x',
+		parentId: undefined,
+		createdAt: 1,
+		forkTurn: undefined,
+		turns: specs.map((spec) => ({
+			turn: spec.turn,
+			seq: spec.turn * 10,
+			promptSeq: spec.turn * 10 + 1,
+			endSeq: spec.turn * 10 + 3,
+			time: spec.turn,
+			prompt: `#${spec.turn}`,
+			compact: false,
+			inherited: false,
+			done: spec.done !== false,
+			...(spec.rewound === true ? { rewound: true } : {}),
+		})),
+	}
+}
+
+/**
+ * 站在 `currentId` 的视角建一次图。
+ * @param sessions - 全部分支
+ * @param currentId - 当前会话
+ * @returns {graph, byKey}
+ */
+function build(sessions, currentId) {
+	const visible = new Set(sessions.map((item) => item.id))
+	const picked = pure.conversationOf(pure.visibleTree(sessions, visible), currentId)
+	const graph = pure.buildGraph(picked, currentId)
+	return { graph, byKey: new Map(graph.nodes.map((node) => [node.key, node])) }
+}
+
+/**
+ * 一个节点的父亲 key（根节点是 'root'）。
+ * @param node - 节点
+ * @returns key 或 '(无)'
+ */
+function parentKey(node) {
+	return node === undefined ? '(无)' : node.parent === undefined ? '(无父)' : node.parent.key
+}
+
+// ===== 第 3 步：host 半 =====
+
+console.log('用例 1：done 只认 completed')
+{
+	const cases = [
+		{ label: '答完', reason: { kind: 'completed' }, want: true },
+		{ label: '用户中止', reason: { kind: 'aborted', reason: { kind: 'user' } }, want: false },
+		{ label: '被打断', reason: { kind: 'interrupted' }, want: false },
+		{ label: '报错', reason: { kind: 'error', error: { message: 'x' } }, want: false },
+		{ label: '还没结束', reason: null, want: false },
+	]
+	for (const one of cases) {
+		const [entry] = foldOutline(turnEvents(1, 4, one.reason)).turns
+		check(entry.done === one.want, `${one.label} 的 done 该是 ${one.want}，实际 ${entry.done}`)
+	}
+	// ⚠️ 这条是整件事的地基：盘上 34 条 aborted **都带着 turn/end**，
+	//    要是把 done 退化成"有没有 turn/end"，中止掉的半截轮次会被当成答完了留在树上。
+	const aborted = foldOutline(turnEvents(1, 4, { kind: 'aborted', reason: { kind: 'user' } })).turns[0]
+	check(aborted.endSeq !== undefined && aborted.done === false, '中止的轮次也有 turn/end —— done 不能靠 endSeq 判')
+	console.log(`  completed → done；aborted / interrupted / error / 没结束 → 不 done（中止的 endSeq=${aborted.endSeq}）`)
+}
+
+console.log('用例 2：promptSeq 记的是真人那一行')
+{
+	const [entry] = foldOutline(turnEvents(7, 100, { kind: 'completed' })).turns
+	check(entry.seq === 100, `turn/start 的 seq 该是 100，实际 ${entry.seq}`)
+	check(entry.promptSeq === 101, `promptSeq 该是真人消息那条（101），实际 ${entry.promptSeq}`)
+	// 撤回点就是用户点的那一行，区间从它开始 —— 拿 turn/start 的 seq 去比永远落在区间外
+	check(turnHidden(entry, [{ start: 101, end: 130 }]) === true, '真人行落在区间里却没判成撤回')
+	check(turnHidden({ seq: 100, endSeq: 103 }, [{ start: 101, end: 130 }]) === true, '折不出提示词时该退而用 endSeq')
+	check(turnHidden(entry, [{ start: 102, end: 130 }]) === false, '区间在这一轮之后，不该算撤回')
+	check(turnHidden(entry, []) === false, '没有区间时不该算撤回')
+	check(turnHidden({}, [{ start: 0, end: 999 }]) === false, '两个 seq 都没有时不该瞎猜')
+	console.log('  seq=100(turn/start) / promptSeq=101(真人行)，区间 [101,130] 命中')
+}
+
+console.log('用例 3：盖戳不碰原对象')
+{
+	const turns = foldOutline([...turnEvents(1, 4, { kind: 'completed' }), ...turnEvents(2, 10, { kind: 'completed' })]).turns
+	const marked = markRewound(turns, [{ start: 5, end: 9 }])
+	check(marked[0].rewound === true, '第 1 轮在区间里，该盖上撤回戳')
+	check(marked[1].rewound !== true, '第 2 轮不在区间里，不该被牵连')
+	// ⚠️ turns 是大纲缓存里那一份。就地改的话撤回状态会被腌进缓存，
+	//    之后 ranges 清空（新分支 graft 就会清）也刷不掉。
+	check(turns[0].rewound === undefined, '盖戳把缓存里那份原对象改掉了')
+	check(markRewound(turns, []) === turns, '没有区间时该原样返回，不白拷一遍')
+	console.log('  戳盖在副本上，缓存里那份原封不动')
+}
+
+// ===== 第 4 步：client 半 =====
+
+console.log('用例 4：4 答完了才撤回 → 1-2-3-4 和 1-2-3-5 两条')
+{
+	const sessions = [session('S', [
+		{ turn: 1 }, { turn: 2 }, { turn: 3 },
+		{ turn: 4, done: true, rewound: true },
+		{ turn: 5 },
+	])]
+	const { graph, byKey } = build(sessions, 'S')
+	check(byKey.has('S:4'), '答完的那一轮被撤回后不该消失')
+	check(parentKey(byKey.get('S:4')) === 'S:3', `4 该挂在 3 下面，实际挂在 ${parentKey(byKey.get('S:4'))}`)
+	check(parentKey(byKey.get('S:5')) === 'S:3', `5 该接回 3（不是接在 4 后面），实际 ${parentKey(byKey.get('S:5'))}`)
+	check(byKey.get('S:4').depth === byKey.get('S:5').depth, '4 和 5 是同一个岔路的两个孩子，该同高度')
+	// 主列留给还活着的那条，废弃支线让到旁边去
+	check(byKey.get('S:5').column === byKey.get('S:3').column, '5 该留在主列上')
+	check(byKey.get('S:4').column !== byKey.get('S:3').column, '撤回掉的 4 占住了主列，把还活着的 5 挤走了')
+	// 撤回掉的那一轮不在对话里，不能跟着亮成"当前路径"
+	check(byKey.get('S:4').active === false, '撤回掉的 4 不该算在当前路径上')
+	check(byKey.get('S:5').active === true, '5 在当前路径上却没亮')
+	check(byKey.get('S:4').rewound === true, '节点上该留着 rewound 标记（卡片要挂"撤回"牌子）')
+	// claude 那边连锚点都一起删了（planRewind），从这儿 fork 只能得到一条失忆分支
+	check(pure.branchAction(byKey.get('S:4')) === 'none', '撤回掉的节点不该给 ＋ 按钮')
+	check(pure.branchAction(byKey.get('S:5')) === 'open', '还活着的叶子该照常给"接着问"')
+	console.log(`  3 的孩子：${byKey.get('S:3').children.map((kid) => kid.key).join(' / ')}，深度 ${graph.maxDepth}`)
+}
+
+console.log('用例 5：4 答到一半被中止再撤回 → 树上不该有 4')
+{
+	const sessions = [session('S', [
+		{ turn: 1 }, { turn: 2 }, { turn: 3 },
+		{ turn: 4, done: false, rewound: true },
+		{ turn: 5 },
+	])]
+	const { graph, byKey } = build(sessions, 'S')
+	check(!byKey.has('S:4'), '没答完就被撤回的那一轮不该画出来')
+	check(parentKey(byKey.get('S:5')) === 'S:3', `5 该直接接在 3 后面，实际 ${parentKey(byKey.get('S:5'))}`)
+	check(byKey.get('S:5').column === byKey.get('S:3').column, '只剩一条线了，5 不该拐弯')
+	check(graph.maxDepth === 4, `1-2-3-5 只有 4 层（含根），实际 ${graph.maxDepth}`)
+	for (const node of graph.nodes) {
+		if (node.parent !== undefined) check(node.depth === node.parent.depth + 1, `depth 不连续：${node.key}`)
+	}
+	// 没撤回的中止轮照旧留着：那半截回答还在对话里，是真历史
+	const kept = build([session('T', [{ turn: 1 }, { turn: 2, done: false }, { turn: 3 }])], 'T')
+	check(kept.byKey.has('T:2'), '只是中止、没撤回的轮次不该被顺手删掉')
+	check(parentKey(kept.byKey.get('T:3')) === 'T:2', '没撤回的中止轮还该串在链上')
+	console.log(`  留下 ${graph.nodes.filter((node) => node.entry !== undefined).map((node) => node.entry.turn).join('-')}`)
+}
+
+console.log('用例 6：连撤两轮')
+{
+	const sessions = [session('S', [
+		{ turn: 1 },
+		{ turn: 2, done: true, rewound: true },
+		{ turn: 3, done: false, rewound: true },
+		{ turn: 4, done: true, rewound: true },
+		{ turn: 5 },
+	])]
+	const { byKey } = build(sessions, 'S')
+	check(!byKey.has('S:3'), '3 没答完，不该画')
+	check(parentKey(byKey.get('S:2')) === 'S:1', '撤回段的第一轮该挂在撤回之前那个节点下')
+	check(parentKey(byKey.get('S:4')) === 'S:2', `撤回段内部还是串成一条（4 接 2），实际 ${parentKey(byKey.get('S:4'))}`)
+	check(parentKey(byKey.get('S:5')) === 'S:1', `5 该一路接回 1，实际 ${parentKey(byKey.get('S:5'))}`)
+	check(byKey.get('S:5').column === byKey.get('S:1').column, '5 该留在主列上')
+	console.log('  1 →{ 2 → 4（废弃）, 5（活着）}')
+}
+
+// ===== 第 5 步：拿盘上真实的会话兜一遍 =====
+
+console.log('用例 7：真实日志 + 真实旁车')
+{
+	/**
+	 * 解一个 session 文件（v3 是多 frame 拼接的 zstd，只解第一个会漏）。
+	 * @param file - 绝对路径
+	 * @returns 事件数组
+	 */
+	const readSession = (file) => {
+		const buffer = fs.readFileSync(file)
+		const parts = []
+		let at = 0
+		while (at < buffer.length) {
+			if (buffer.length - at < 4 || buffer.readUInt32LE(at) !== 0xfd2fb528) break
+			let cursor = at + 4
+			const descriptor = buffer.readUInt8(cursor)
+			cursor += 1
+			const single = (descriptor & 32) !== 0
+			const dictionary = (descriptor & 3) === 3 ? 4 : descriptor & 3
+			const sized = descriptor >>> 6 === 0 ? (single ? 1 : 0) : 1 << (descriptor >>> 6)
+			cursor += (single ? 0 : 1) + dictionary + sized
+			for (;;) {
+				const header = buffer.readUIntLE(cursor, 3)
+				cursor += 3
+				cursor += (header >>> 1) & 3 ? ((header >>> 1) & 3) === 1 ? 1 : header >>> 3 : header >>> 3
+				if ((header & 1) !== 0) break
+			}
+			if ((descriptor & 4) !== 0) cursor += 4
+			parts.push(zlib.zstdDecompressSync(buffer.subarray(at, cursor)))
+			at = cursor
+		}
+		return Buffer.concat(parts)
+			.toString('utf8')
+			.split('\n')
+			.filter((line) => line.trim() !== '')
+			.map((line) => {
+				try {
+					return JSON.parse(line)
+				} catch {
+					return null
+				}
+			})
+			.filter(Boolean)
+	}
+
+	const root = path.join(HOME, 'sessions')
+	let looked = 0
+	let found = 0
+	if (fs.existsSync(root)) {
+		for (const bucket of fs.readdirSync(root)) {
+			for (const dir of fs.readdirSync(path.join(root, bucket))) {
+				const file = path.join(root, bucket, dir, 'session.v3.jsonl.zstd')
+				if (!fs.existsSync(file)) continue
+				const events = readSession(file)
+				const id = (events[0] || {}).id
+				if (id === undefined) continue
+				const ranges = hiddenRangesOf(id)
+				looked += 1
+				if (ranges.length === 0) continue
+				found += 1
+				const turns = markRewound(foldOutline(events).turns, ranges)
+				const hidden = turns.filter((entry) => entry.rewound === true)
+				check(hidden.length > 0, `${id.slice(8, 16)} 有撤回区间却一轮都没命中 —— 对不上说明 seq 的口径错了`)
+				// 撤回区间从用户点的那一行伸到"当时日志的末尾"，所以命中的必然是连着的一段尾巴，
+				// 而不是中间挖几个洞。对不上就是把不该撤的轮次也算进去了。
+				const turnsIn = hidden.map((entry) => entry.turn)
+				const span = Math.max(...turnsIn) - Math.min(...turnsIn) + 1
+				check(span === turnsIn.length, `${id.slice(8, 16)} 命中的轮次不连续：${turnsIn.join(',')}`)
+				console.log(`  ${id.slice(8, 16)}  区间 ${JSON.stringify(ranges)}  撤回轮次 ${turnsIn.join(',')}（答完的 ${hidden.filter((entry) => entry.done).length} 条）`)
+			}
+		}
+	}
+	check(looked > 0, `${root} 下一个会话都没读到，这个用例等于没跑`)
+	if (looked > 0 && found === 0) console.log('  （这台机器上没有撤回过的会话，只跑了"不误伤"那一半）')
+}
+
+console.log('用例 8：旁车读得对、读坏了也不崩、撤回后能刷新')
+{
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-rewind-'))
+	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
+	fs.mkdirSync(folder, { recursive: true })
+	const fileOf = (id) => path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
+	const write = (id, text) => fs.writeFileSync(fileOf(id), text)
+	const put = (id, ranges, filler) =>
+		write(id, JSON.stringify({ schemaVersion: 1, revision: 3, activities: [{ text: filler || '' }], binding: {}, rewind: { ranges, anchors: [], snapshots: [] } }))
+
+	const was = process.env.DSH_HOME
+	process.env.DSH_HOME = home
+	try {
+		// ⚠️ 正文里故意塞一段长得像 ranges 的话：读旁车前有个"原文里没有 `"ranges":[{` 就
+		//    不 JSON.parse"的快速通道（旁车能到 6.7MB，parse 一次 42ms）。
+		//    正文骗得到它只是多解析一次，**结论必须一样**。
+		put('s-ok', [{ start: 8, end: 17 }], '我在对话里写了 "ranges":[{"start":1}] 这么一串')
+		check(JSON.stringify(hiddenRangesOf('s-ok')) === '[{"start":8,"end":17}]', `正常旁车没读出区间，实际 ${JSON.stringify(hiddenRangesOf('s-ok'))}`)
+		put('s-none', [], '我在对话里写了 "ranges":[{"start":1}] 这么一串')
+		check(hiddenRangesOf('s-none').length === 0, '没撤回过却读出了区间')
+
+		// 读不到 / 版本对不上 / 文件半截 —— 一律当"没撤回"。这东西坏了只是撤回状态没了，
+		// 不该把整条导轨带崩（和 readSidecar 一个脾气）。
+		write('s-old', JSON.stringify({ schemaVersion: 99, rewind: { ranges: [{ start: 1, end: 2 }] } }))
+		check(hiddenRangesOf('s-old').length === 0, '版本对不上还照读')
+		write('s-bad', '{"rewind":{"ranges":[{"start":1,')
+		check(hiddenRangesOf('s-bad').length === 0, '半截文件没被挡住')
+		check(hiddenRangesOf('s-missing').length === 0, '没有旁车时不该崩')
+
+		// ⚠️ 缓存跟着旁车文件的 mtime+size 走，**不能挂在会话 revision 上**：
+		//    撤回一个 dsh 事件都不写，revision 纹丝不动，挂上去就永远刷不出来。
+		put('s-ok', [{ start: 40, end: 50 }], '')
+		fs.utimesSync(fileOf('s-ok'), new Date(), new Date(Date.now() + 5000))
+		check(JSON.stringify(hiddenRangesOf('s-ok')) === '[{"start":40,"end":50}]', `旁车变了却还在吃缓存，实际 ${JSON.stringify(hiddenRangesOf('s-ok'))}`)
+		console.log('  正常 / 空 / 老版本 / 半截 / 缺文件 都对；旁车一变就重读')
+	} finally {
+		if (was === undefined) delete process.env.DSH_HOME
+		else process.env.DSH_HOME = was
+		fs.rmSync(home, { recursive: true, force: true })
+	}
+}
+
+console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
+process.exit(failures === 0 ? 0 : 1)

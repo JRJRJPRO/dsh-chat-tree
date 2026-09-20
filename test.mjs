@@ -25,7 +25,7 @@
 import fs from 'node:fs'
 import zlib from 'node:zlib'
 import path from 'node:path'
-import { foldOutline } from './index.js'
+import { foldOutline, __test } from './index.js'
 
 const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 const PRINT = process.argv.includes('--print')
@@ -90,7 +90,8 @@ function collect(cwdFilter) {
 				title: outline.title,
 				forkTurn: outline.forkTurn,
 				model: outline.model,
-				turns: outline.turns,
+				// 和 host 的 collect 一样要盖撤回戳，否则这里跑的是一份比现实干净的数据
+				turns: __test.markRewound(outline.turns, __test.hiddenRangesOf(header.id)),
 			})
 		}
 	}
@@ -210,9 +211,13 @@ async function main() {
 		}
 
 		// 断言 4：同一会话的延续必须留在父节点那一列（于是每条分支自己是一条直线）
+		//
+		// ⚠️ 撤回掉的轮次除外：它和后面还活着的那一轮是**同一个父亲的两个孩子**，
+		//    图上就是一个岔路，本来就该分列。早先这条是无条件的，撤回一上来就会炸。
 		for (const node of nodes) {
 			if (node.parent === undefined) continue
 			if (node.session.id !== node.parent.session.id) continue
+			if (node.rewound === true) continue
 			check(node.column === node.parent.column, `[${tag}] 同分支却换了列：${node.key}`)
 		}
 
