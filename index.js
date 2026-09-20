@@ -91,6 +91,11 @@ export function foldOutline(events) {
 				// 只认每轮第一条真人消息
 				if (current !== undefined && current.prompt === '' && isHumanPrompt(data)) {
 					current.prompt = textOf(data).replace(/\s+/g, ' ').trim().slice(0, PREVIEW_MAX)
+					// 桥接类 provider 的压缩兼容：走 dsh-claude 时 `/compact` 不会被 dsh 的
+					// 命令分发拦下，而是当普通提示词发给外部引擎，压缩全程在引擎内部
+					// 完成，dsh 的日志里一条 compaction/* 都没有（盘上 64 个会话实测为 0）。
+					// 只能从提示词认。原生 provider 走下面 compaction/end 那条，两者不冲突。
+					if (/^\/compact\b/.test(current.prompt)) current.compact = true
 				}
 				break
 			case 'compaction/end':
@@ -311,6 +316,84 @@ function dshHome() {
 }
 
 /**
+ * 树形关系的落盘位置。
+ *
+ * dsh 自己只记 fork 血缘（parentSession），而"哪几条独立对话算同一棵树"
+ * 和"哪条支线被手动拆出去了"是我们自己的概念，它不在任何日志里，只能自己存。
+ * 放在 home 而不是 localStorage：换浏览器、进手机都还在。
+ * @returns 绝对路径
+ */
+function shapePath() {
+	return join(dshHome(), 'plugins', 'dsh-tree', 'shape.json')
+}
+
+/** 空白形状。`groupOf` 只给**同树的非首条**对话登记；detached 是被手动拆出去的会话。 */
+const EMPTY_SHAPE = { version: 1, groupOf: {}, detached: [] }
+
+/**
+ * 读树形关系。读不到 / 坏了 / 版本对不上都退回空白 —— 这东西丢了只是分组没了，
+ * 不应该把整条导轨带崩。
+ * @returns 形状对象
+ */
+function readShape() {
+	try {
+		const document = JSON.parse(readFileSync(shapePath(), 'utf8'))
+		if (document === null || typeof document !== 'object' || document.version !== 1) return EMPTY_SHAPE
+		return {
+			version: 1,
+			groupOf: document.groupOf !== null && typeof document.groupOf === 'object' ? document.groupOf : {},
+			detached: Array.isArray(document.detached) ? document.detached : [],
+		}
+	} catch {
+		return EMPTY_SHAPE
+	}
+}
+
+/**
+ * 写树形关系。先写临时文件再 rename，避免半截文件。
+ * @param next - 完整的新形状
+ * @returns 写进去的形状
+ */
+function writeShape(next) {
+	const target = shapePath()
+	mkdirSync(dirname(target), { recursive: true })
+	const temporary = `${target}.${randomUUID()}.tmp`
+	writeFileSync(temporary, `${JSON.stringify(next)}
+`, { mode: 0o600 })
+	renameSync(temporary, target)
+	return next
+}
+
+/**
+ * 打一条形状补丁。
+ *
+ * `group` ：把 `session` 登记到 `group` 这棵树（group 为空则销掉登记）。
+ * `detach`：真假—— 把 `session` 拆出来自成一棵 / 收回去。
+ * 两者可以同时给。
+ * @param patch - `{session, group?, detach?}`
+ * @returns 打完补丁的形状
+ */
+export function reshape(patch) {
+	const session = patch?.session
+	if (typeof session !== 'string' || session.length === 0) throw new Error('reshape 需要 session')
+	const current = readShape()
+	const groupOf = Object.assign({}, current.groupOf)
+	const detached = new Set(current.detached)
+
+	if (patch.group !== undefined) {
+		if (typeof patch.group === 'string' && patch.group.length > 0 && patch.group !== session) groupOf[session] = patch.group
+		else delete groupOf[session]
+	}
+	if (patch.detach !== undefined) {
+		if (patch.detach === true) detached.add(session)
+		else detached.delete(session)
+		// 拆出去的会话自成一棵，带着旧分组只会把它又拉回原树
+		if (patch.detach === true) delete groupOf[session]
+	}
+	return writeShape({ version: 1, groupOf, detached: [...detached] })
+}
+
+/**
  * sidecar 路径。文件名是会话 id 原样 base64url。
  * @param sessionId - dsh 会话 id
  * @returns 绝对路径
@@ -474,13 +557,34 @@ export function apply(ctx) {
 				handler: async (req, res) => {
 					try {
 						const url = new URL(req.url || '/', 'http://dsh.invalid')
-						json(res, 200, await collect(ctx, url.searchParams.get('cwd') || ''))
+						const body = await collect(ctx, url.searchParams.get('cwd') || '')
+						// 形状跟大纲一起发：少一个往返，也不会出现"大纲到了形状没到"那一帧的错分组
+						json(res, 200, Object.assign(body, { shape: readShape() }))
 					} catch (error) {
 						json(res, 500, { error: String(error) })
 					}
 				},
 			}),
 		'dsh-tree: outlines route',
+	)
+
+	ctx.effect(
+		() =>
+			ctx.webServer.register({
+				kind: 'exact',
+				path: '/plugins/dsh-tree/shape',
+				handler: async (req, res) => {
+					try {
+						if (req.method !== 'POST') return json(res, 200, readShape())
+						const chunks = []
+						for await (const chunk of req) chunks.push(chunk)
+						return json(res, 200, reshape(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')))
+					} catch (error) {
+						return json(res, 400, { error: String(error) })
+					}
+				},
+			}),
+		'dsh-tree: shape route',
 	)
 }
 

@@ -70,7 +70,12 @@ function branch(id, parentId, forkTurn, turns) {
 		parentId,
 		createdAt: clock,
 		forkTurn,
-		turns: turns.map((turn) => ({ turn, seq: turn * 10, time: turn, prompt: `#${turn}`, compact: false, inherited: false })),
+		// 真实大纲里，分支**也带着**继承来的那几轮（inherited: true），
+		// 平时被 ownTurns 滤掉；但"分离"之后它们要改算自有，所以这里必须造出来。
+		turns: [
+			...Array.from({ length: forkTurn === undefined ? 0 : forkTurn }, (_, i) => ({ turn: i + 1, seq: (i + 1) * 10, time: i + 1, prompt: `#${i + 1}`, compact: false, inherited: true })),
+			...turns.map((turn) => ({ turn, seq: turn * 10, time: turn, prompt: `#${turn}`, compact: false, inherited: false })),
+		],
 	}
 }
 
@@ -338,6 +343,76 @@ console.log('\n用例 8：＋ 在空节点 / 叶子上该做什么')
 	check(pure.workspaceOf(undefined, 's1') === undefined, '快照还没到时不该崩')
 	check(pure.workspaceOf({ items: [{ workspaceId: 'w' }] }, 's1') === undefined, 'sessionIds 缺失不该崩')
 	console.log('  工作区归属：命中 / 另一个 / 查不到 / 空快照 / 字段缺失，五种都对')
+}
+
+console.log('\n用例 9：分组与分离 —— 哪几条对话算同一棵树')
+{
+	// John 定的规矩：分组必须是**主动登记**的。
+	//   · a / b / c 三条互不相干的对话 → 三棵树，互不显示
+	//   · 在 b 的空节点上按 ＋ 开出来的 d → 登记进 b 那棵树，b 和 d 同树
+	//   · 在某个支线起点按"分离" → 那条支线脱离原树，自成一棵
+	//
+	// ⚠️ 曾经试过"整个 cwd 全算一棵"，16 条对话把导轨撑到 326px，且互不相干的
+	//    对话挤在一个空节点下面。别再回去。
+	const pick = (sessions, currentId, shape) => {
+		const visible = new Set(sessions.map((item) => item.id))
+		const tree = pure.visibleTree(sessions, visible, (shape || {}).detached)
+		return pure
+			.conversationOf(tree, currentId, (shape || {}).groupOf)
+			.map((item) => item.id)
+			.sort()
+	}
+
+	const a = branch('a', undefined, undefined, [1, 2])
+	const b = branch('b', undefined, undefined, [1, 2])
+	const c = branch('c', undefined, undefined, [1])
+	const all = [a, b, c]
+
+	check(JSON.stringify(pick(all, 'a')) === '["a"]', '没登记过分组时 a 该自成一棵')
+	check(JSON.stringify(pick(all, 'b')) === '["b"]', '没登记过分组时 b 该自成一棵')
+
+	// 在 b 上按 ＋ 开出 d，登记进 b 那棵树
+	const d = branch('d', undefined, undefined, [1])
+	const grouped = { groupOf: { d: 'b' } }
+	check(JSON.stringify(pick([...all, d], 'b', grouped)) === '["b","d"]', 'b 和 d 该同树')
+	check(JSON.stringify(pick([...all, d], 'd', grouped)) === '["b","d"]', '从 d 看过去也该是同一棵')
+	check(JSON.stringify(pick([...all, d], 'a', grouped)) === '["a"]', 'a 不该被卷进 b 那棵树')
+
+	// 分离：e 有一条从第 2 轮岔出的支线 f，拆掉后互不相见
+	const e = branch('e', undefined, undefined, [1, 2, 3])
+	const f = branch('f', 'e', 2, [3])
+	check(JSON.stringify(pick([e, f], 'e')) === '["e","f"]', '没拆之前 e 和 f 本来就同树')
+	check(JSON.stringify(pick([e, f], 'e', { detached: ['f'] })) === '["e"]', '拆掉 f 之后 e 那棵不该再看到 f')
+	check(JSON.stringify(pick([e, f], 'f', { detached: ['f'] })) === '["f"]', '拆出来的 f 该自成一棵')
+
+	// 拆出来的那棵不能缺开头：f 自有轮次只有 3，继承的 1-2 必须改算自有
+	{
+		const visible = new Set(['e', 'f'])
+		const tree = pure.visibleTree([e, f], visible, ['f'])
+		const graph = pure.buildGraph(pure.conversationOf(tree, 'f', undefined), 'f')
+		const turns = graph.nodes
+			.filter((node) => node.entry !== undefined)
+			.map((node) => node.entry.turn)
+			.sort((left, right) => left - right)
+		check(JSON.stringify(turns) === '[1,2,3]', `拆出来的树该是完整的 1-2-3，实际 ${JSON.stringify(turns)}`)
+	}
+	console.log('  三条独立对话各自成树；＋ 登记后同树；分离后互不相见且开头不缺')
+
+	// 分离按钮该在哪些节点上出现
+	{
+		const seam = { entry: { turn: 3 }, session: { id: 'f', parentId: 'e' }, parent: { session: { id: 'e' } } }
+		const middle = { entry: { turn: 4 }, session: { id: 'f', parentId: 'e' }, parent: { session: { id: 'f' } } }
+		const lone = { entry: { turn: 1 }, session: { id: 'a', parentId: undefined }, parent: { session: { id: 'a' } } }
+		const joined = { entry: { turn: 1 }, session: { id: 'd', parentId: undefined }, parent: { session: { id: 'x' } } }
+		const root = { entry: undefined, session: { id: 'a' }, parent: undefined }
+
+		check(pure.detachTarget(seam) === 'f', '支线起点该能分离')
+		check(pure.detachTarget(middle) === undefined, '支线中间某一轮不是接缝，不该给分离')
+		check(pure.detachTarget(lone) === undefined, '本来就独立的对话没什么可分离的')
+		check(pure.detachTarget(joined, { d: 'b' }) === 'd', '被登记进别人那棵树的对话，该能退出来')
+		check(pure.detachTarget(root) === undefined, '空节点不该给分离')
+		console.log('  分离按钮：支线起点 / 登记过的对话 → 给；中间轮 / 独立对话 / 空节点 → 不给')
+	}
 }
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)

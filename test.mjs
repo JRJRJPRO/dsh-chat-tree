@@ -376,6 +376,20 @@ async function main() {
 		check(JSON.stringify(marks(ok)) === '[2]', `成功的压缩该只标第 2 轮，实际 ${JSON.stringify(marks(ok))}`)
 		check(marks(bad).length === 0, `压缩失败了却还是标了 ${JSON.stringify(marks(bad))} —— 明明什么都没压掉`)
 		console.log('压缩标记：成功的标在 owner 轮上，失败的一个都不标')
+
+		// 桥接兑底：走 dsh-claude 时 `/compact` 只是一条普通 user/message，
+		// 压缩在外部引擎内部完成，dsh 侧一条 compaction/* 事件都没有。
+		const said = (text) => foldOutline([
+			at(1, 'turn/start', { turn: 1 }),
+			at(2, 'user/message', { content: [{ type: 'text', text }], source: { kind: 'user' } }),
+			at(3, 'turn/end', { turn: 1 }),
+		]).turns[0]
+
+		check(said('/compact').compact === true, '`/compact` 没被认出来')
+		check(said('/compact 保留重点').compact === true, '带参数的 `/compact` 没被认出来')
+		check(said('/compacted 是什么').compact !== true, '`/compacted` 不是压缩命令，不该标')
+		check(said('讲讲 /compact 怎么用').compact !== true, '正文里提到 /compact 不该标')
+		console.log('桥接兑底：/compact 与 /compact 参数 → 标；/compacted 与 正文提到 → 不标')
 	}
 	console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 	process.exit(failures === 0 ? 0 : 1)

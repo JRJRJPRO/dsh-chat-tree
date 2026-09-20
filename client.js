@@ -73,14 +73,18 @@ window.__ModuleLoader__.load({
 		 * @param all - host 返回的全部分支（含已归档）
 		 * @param visible - 可见 sessionId 集合
 		 */
-		function visibleTree(all, visible) {
+		function visibleTree(all, visible, detached) {
+			const cut = detached instanceof Set ? detached : new Set(detached || [])
 			const byId = new Map(all.map((item) => [item.id, item]))
 			return all
 				.filter((item) => visible.has(item.id))
 				.map((item) => {
+					// 被手动"分离"的会话当作没有父亲：它自成一棵树，和原树互不显示。
+					// 它继承来的那几轮要在 buildGraph 里改算自有，否则这棵树开头会缺一截。
+					if (cut.has(item.id)) return Object.assign({}, item, { parentId: undefined, detached: true })
 					let parent = item.parentId
 					const guard = new Set()
-					while (parent !== undefined && !visible.has(parent) && byId.has(parent) && !guard.has(parent)) {
+					while (parent !== undefined && !cut.has(parent) && !visible.has(parent) && byId.has(parent) && !guard.has(parent)) {
 						guard.add(parent)
 						parent = byId.get(parent).parentId
 					}
@@ -89,36 +93,44 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 只挑出当前会话所在的那一棵树：先顺着 parentId 爬到根，再把整棵子树收下来。
+		 * 某条会话所在那棵树的编号。
 		 *
-		 * 两个 while 都带 `seen` 守卫：盘上的血缘理论上不会成环，但一旦成环
-		 * 这里就是死循环，整条导轨直接卡死，代价太大，所以宁可多这一个 Set。
-		 * @param sessions - 全部可见分支
-		 * @param currentId - 当前会话
-		 * @returns 这棵树里的分支（根在最前）
+		 * 先顺着 parentId 爬到树根（被"分离"的会话在 visibleTree 里已经断了父链，
+		 * 自然就是自己的根），再看这个根有没有被登记进别人的组。
+		 * @param byId - id → 会话
+		 * @param groupOf - 登记表 `{sessionId: groupId}`
+		 * @param id - 会话 id
+		 * @returns 树编号；查不到返回 undefined
 		 */
-		function conversationOf(sessions, currentId) {
-			const byId = new Map(sessions.map((item) => [item.id, item]))
-			let root = byId.get(currentId)
-			if (root === undefined) return []
-
-			const climbed = new Set()
-			for (let node = root; node !== undefined && !climbed.has(node.id); node = byId.get(node.parentId)) {
-				climbed.add(node.id)
+		function treeOf(byId, groupOf, id) {
+			let root
+			const seen = new Set()
+			for (let node = byId.get(id); node !== undefined && !seen.has(node.id); node = byId.get(node.parentId)) {
+				seen.add(node.id)
 				root = node
 			}
+			if (root === undefined) return undefined
+			return (groupOf && groupOf[root.id]) || root.id
+		}
 
-			const out = []
-			const seen = new Set()
-			const stack = [root]
-			while (stack.length > 0) {
-				const item = stack.pop()
-				if (item === undefined || seen.has(item.id)) continue
-				seen.add(item.id)
-				out.push(item)
-				for (const candidate of sessions) if (candidate.parentId === item.id) stack.push(candidate)
-			}
-			return out
+		/**
+		 * 当前该画出来的那棵树。
+		 *
+		 * 同一棵树 = 树根相同，**或者**树根被显式登记进了同一组。
+		 *
+		 * ⚠️ 别改成"整个 cwd 全要"。那样 a/b/c 三条互不相干的对话会挤在一个空节点下面，
+		 *    实测 16 条对话把导轨撑到 326px。分组必须是**主动登记**的：
+		 *    只有在空节点上按 ＋ 开出来的新对话才登记进当前这棵树（见 onFork）。
+		 * @param sessions - 本 cwd 下全部可见分支（已过 visibleTree）
+		 * @param currentId - 当前会话
+		 * @param groupOf - 登记表
+		 * @returns 这棵树里的分支
+		 */
+		function conversationOf(sessions, currentId, groupOf) {
+			const byId = new Map(sessions.map((item) => [item.id, item]))
+			const mine = treeOf(byId, groupOf, currentId)
+			if (mine === undefined) return []
+			return sessions.filter((item) => treeOf(byId, groupOf, item.id) === mine)
 		}
 
 		/**
@@ -138,7 +150,9 @@ window.__ModuleLoader__.load({
 		 */
 		function buildGraph(sessions, currentId) {
 			const byId = new Map(sessions.map((item) => [item.id, item]))
-			const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
+			// 被"分离"的会话没有父亲可依靠，继承来的那几轮得改算它自己的，
+			// 否则拆出来的那棵树开头会凭空少一截（1-2-4 只剩一个孤零零的 4）。
+			const ownTurns = (session) => (session.turns || []).filter((entry) => session.detached === true || !entry.inherited)
 
 			// 父在前、子在后，保证接线时父节点已经建好
 			const ordered = []
@@ -297,6 +311,25 @@ window.__ModuleLoader__.load({
 		function workspaceOf(state, sessionId) {
 			const hit = ((state && state.items) || []).find((item) => (item.sessionIds || []).includes(sessionId))
 			return hit === undefined ? undefined : hit.workspaceId
+		}
+
+		/**
+		 * 这个节点能不能"分离"，能的话分离谁。
+		 *
+		 * 只有**支线的起点**才谈得上分离 —— 即某条会话自有轮次里的第一轮，
+		 * 且它上面还挂着别的东西（有父会话，或者它是被登记进别人那棵树的对话首条）。
+		 * 中间某一轮点分离没有意义：那不是接缝。
+		 * @param node - 被点的节点
+		 * @param groupOf - 登记表
+		 * @returns 要分离的 sessionId；不能分离就 undefined
+		 */
+		function detachTarget(node, groupOf) {
+			if (node.entry === undefined || node.parent === undefined) return undefined
+			// 不是自有轮次的第一轮 → 不是接缝
+			if (node.parent.session.id === node.session.id) return undefined
+			const grouped = groupOf !== undefined && groupOf !== null && groupOf[node.session.id] !== undefined
+			if (node.session.parentId === undefined && !grouped) return undefined
+			return node.session.id
 		}
 
 		/**
@@ -695,6 +728,7 @@ window.__ModuleLoader__.load({
 								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
 								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
 							branchAction(node) === 'none' ? null : button('＋', '从这之后新开分支', () => props.onFork(node)),
+							props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
 							isEmpty ? null : button('↺', '这一轮重来', () => props.onRedo(node)),
 						]
 					: null,
@@ -954,7 +988,8 @@ window.__ModuleLoader__.load({
 			const visible = new Set((listState.ids || []).filter((id) => !archived.has(id)))
 			if (!visible.has(current)) visible.add(current)
 
-			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current)
+			const shape = (outlines && outlines.shape) || {}
+			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible, shape.detached), current, shape.groupOf)
 
 			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 			//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
@@ -1110,12 +1145,17 @@ window.__ModuleLoader__.load({
 					h(Detail, {
 						node: hover ? hover.node : null,
 						y: hover ? hover.y : 0,
+						detachable: hover !== null && detachTarget(hover.node, shape.groupOf) !== undefined,
+						onDetach: (node) => {
+							const target = detachTarget(node, shape.groupOf)
+							if (target !== undefined) api.reshape({ session: target, detach: true })
+						},
 						railWidth, labels, hold, release,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFork: (node) => {
 							const action = branchAction(node)
 							if (action === 'none') return undefined
-							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd)
+							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOf(new Map(picked.map((item) => [item.id, item])), shape.groupOf, current))
 							if (action === 'open') return api.open(node.session.id)
 							return api.fork(node.session.id, node.entry.seq)
 						},
@@ -1180,12 +1220,30 @@ window.__ModuleLoader__.load({
 				//    workspace.sessionIds 这张显式成员表分组，只传 cwd 建出来的会话谁都不认领，
 				//    于是掉进"未分组"。宿主自己的新建按钮就是 create({ workspaceId })。
 				//    查不到归属时才退回 cwd（至少工作目录是对的）。
-				fresh: (workspaceId, cwd) => {
+				fresh: (workspaceId, cwd, tree) => {
 					ctx.sessions
 						.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
-						.then((id) => ctx.sessions.open(id))
+						.then(async (id) => {
+							// 登记进当前这棵树 —— 这是"空节点底下能有好几条对话"的唯一来源。
+							// dsh 不给新建会话任何父子关系，不自己记就永远各自成树。
+							if (tree) await api.reshape({ session: id, group: tree })
+							return ctx.sessions.open(id)
+						})
 						.catch((error) => console.warn('[dsh-tree] create failed', error))
 				},
+				/**
+				 * 改树形关系（登记分组 / 分离）。写 host 半的 shape.json。
+				 * @param patch - `{session, group?, detach?}`
+				 */
+				reshape: (patch) =>
+					fetch('/plugins/dsh-tree/shape', {
+						method: 'POST',
+						credentials: 'same-origin',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify(patch),
+					})
+						.then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+						.catch((error) => console.warn('[dsh-tree] reshape failed', error)),
 			}
 
 			api.settings = settingsStore(ctx)
@@ -1219,7 +1277,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, detachTarget, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })
