@@ -207,7 +207,7 @@ console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand
 
 console.log('\n用例 6：hover intent —— 赶路途中谁都不许抢走卡片')
 {
-	// 为什么要守这条：列间距 14px 而命中区宽 18px，往左挪 5px 就进了左邻居的地盘。
+	// 为什么要守这条：列间距只有 17px 而命中区宽 22px，往左挪几像素就进了左邻居的地盘。
 	// ＋ 在卡片上（导轨外侧），鼠标必须横穿左边所有列才够得着。
 	//
 	// 上一版靠"透明走廊 + 梯形 clip-path + 掉头就让位 + 超时拆除"四套启发式互相兜底，
@@ -237,8 +237,8 @@ console.log('\n用例 6：hover intent —— 赶路途中谁都不许抢走卡�
 	}
 
 	for (const maxColumn of [1, 2, 5]) {
-		const railWidth = 18 + maxColumn * Z.lane
-		const xOf = (column) => railWidth - 9 - column * Z.lane
+		const railWidth = Z.hit + maxColumn * Z.lane
+		const xOf = (column) => railWidth - Z.hit / 2 - column * Z.lane
 		const seats = Array.from({ length: maxColumn + 1 }, (_, column) => ({ x: xOf(column), y: 0, node: `c${column}` }))
 
 		for (let hovered = 0; hovered <= maxColumn; hovered++) {
@@ -731,7 +731,10 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	const pictured = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: `img:${id}` }))
 	check(pictured.background.includes(id) && /contain/.test(pictured.background), `图片节点该用 contain 铺底，实际 ${pictured.background}`)
 	check(pictured.borderWidth === '0px', '图片节点不该再套方框边')
-	check(pure.ICON_EDGE >= 32 && pure.ICON_EDGE <= 128, `存下来的边长 ${pure.ICON_EDGE} 不合理`)
+	// 存多大要够屏幕上最大的那个点：直径 × 最大缩放 × 悬停放大 × 二倍屏
+	const biggest = pure.Z.dot * (pure.SCALE.max / 100) * 1.4 * 2
+	check(pure.ICON_EDGE >= biggest, `图存成 ${pure.ICON_EDGE}px，但最大能画到 ${biggest.toFixed(0)}px —— 放大后会糊`)
+	check(pure.ICON_EDGE <= 4 * biggest, `图存成 ${pure.ICON_EDGE}px，比用得上的 ${biggest.toFixed(0)}px 大太多了`)
 
 	// key 集合仍然恒定 —— 三角 / 字 / 图 / 圆都得逐字段对齐
 	const base = Object.keys(pure.dotStyle('normal', true, false, 9, false)).sort()

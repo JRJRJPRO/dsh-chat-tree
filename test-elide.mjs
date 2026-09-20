@@ -294,7 +294,13 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 		const z = pure.scaleZ(percent)
 		check(Math.abs(z.hit / z.lane - Z.hit / Z.lane) < 1e-9, `${percent}% 时命中区与列距的比例变了`)
 	}
-	console.log(`  100% 逐字段相等；200% 下 dot ${Z.dot}→${big.dot}、lane ${Z.lane}→${big.lane}、hit ${Z.hit}→${big.hit}`)
+	// 基准尺寸整体上调过一次：老基准要调到 120% 才顺眼，就把 120% 挪成了默认的 100%。
+	// 钉住这个换算，免得哪天有人"顺手"把 Z 改回去，默认又变小。
+	const was = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14 }
+	for (const [key, before] of Object.entries(was)) {
+		check(Z[key] === Math.round(before * 1.2), `${key} 该是老基准 ${before} 的 1.2 倍取整（${Math.round(before * 1.2)}），实际 ${Z[key]}`)
+	}
+	console.log(`  100% 逐字段相等；200% 下 dot ${Z.dot}→${big.dot}、lane ${Z.lane}→${big.lane}、hit ${Z.hit}→${big.hit}；基准 = 老基准 ×1.2`)
 }
 
 // 用例 11（走廊跟着缩放）已删：走廊那套机制整个被 hover intent 取代了，
@@ -304,8 +310,13 @@ console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，
 console.log('用例 9：档位文案')
 {
 	check(pure.stepText(pure.RADIUS.off) === '不省略', `0 该显示"不省略"，实际 ${pure.stepText(pure.RADIUS.off)}`)
-	check(pure.stepText(12) === '12 步以内', `12 该显示"12 步以内"，实际 ${pure.stepText(12)}`)
-	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}`)
+	check(pure.stepText(12) === '12 步', `12 该显示"12 步"，实际 ${pure.stepText(12)}`)
+	check(!pure.stepText(12).includes('以内'), '档位读数里不要"以内"两个字')
+	// 默认档位：12 步，且必须真的在档位表里 —— 不在的话滑杆会跳到第 0 档
+	check(pure.RADIUS.fallback === 12, `默认该是 12 步，实际 ${pure.RADIUS.fallback}`)
+	check(pure.STEPS.includes(pure.RADIUS.fallback), `默认档 ${pure.RADIUS.fallback} 不在档位表里，滑杆会跳掉`)
+	check(pure.SCALES.includes(pure.SCALE.fallback), `默认缩放 ${pure.SCALE.fallback} 不在档位表里`)
+	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}；默认 ${pure.stepText(pure.RADIUS.fallback)}`)
 }
 
 console.log('')

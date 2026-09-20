@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
 		const SETTINGS_NS = 'dsh-tree'
 
 		/** 省略半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
-		const RADIUS = { min: 5, max: 30, fallback: 10, off: 0 }
+		const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
 
 		/** 节点缩放，百分比。 */
 		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
@@ -504,7 +504,7 @@ window.__ModuleLoader__.load({
 		 *
 		 * ⚠️ 这是 ＋ 够不够得着的**唯一**关键。卡片开着时换目标一律返回 'rest'
 		 *    （= 等鼠标停下来），绝不能图省事返回 'now'：从点走到卡片上的 ＋ 要横穿
-		 *    左边每一列（列距 14px < 命中区 18px），沿途每个点都会抢走卡片，
+		 *    左边每一列（列距 17px < 命中区 22px），沿途每个点都会抢走卡片，
 		 *    ＋ 就永远够不着。改成 'now' 等于退回挂 onMouseEnter 的老做法。
 		 * @param hover - 当前停着的点，null = 还没开卡片
 		 * @param at - 鼠标正压着的点，undefined = 没压着
@@ -542,13 +542,21 @@ window.__ModuleLoader__.load({
 
 		// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的宽度（圆心在 hit/2 处）。
 		// 以前 18 和 9 是散在渲染里的魔数，收进来才能跟着缩放一起动。
-		const Z = { row: 20, rowMin: 7, dot: 9, dotMin: 6, dotPad: 5, lane: 14, hit: 18, ell: 14, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
+		/**
+		 * 基准尺寸。滑杆上的 100% 指的就是这张表。
+		 *
+		 * 前八项（`scaleZ` 会缩的那些）是**老基准的 1.2 倍再取整** —— 原来要调到 120%
+		 * 才顺眼，那就把 120% 挪成默认的 100%。取整是为了 1px 描边落在整像素上不发虚，
+		 * 代价是各项相对老基准差 ±2% 以内。
+		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18 / ell 14
+		 */
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, ell: 17, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
 		 * 跟着点一起放大只会挡住聊天区，所以都不动。
 		 *
-		 * 小例子（percent=150）：dot 9→13.5、lane 14→21、hit 18→27，
+		 * 小例子（percent=150）：dot 11→16.5、lane 17→25.5、hit 22→33，
 		 * 于是点变大、列变宽、命中区同比变宽，图整体等比例放大。
 		 *
 		 * @param percent - 百分比，100 = 原样
@@ -575,12 +583,13 @@ window.__ModuleLoader__.load({
 		const ICON_URL = '/plugins/dsh-tree/icon'
 
 		/**
-		 * 上传的图统一缩成 64×64 再存。
+		 * 上传的图统一缩成 96×96 再存。
 		 *
-		 * 为什么正好是 64：点最大 `Z.dot(9) × 缩放 250% = 22.5px`，悬停再放大 1.4 倍 ≈ 31.5px，
-		 * 二倍屏上 63 个物理像素 —— 64 刚好够用，再大纯属白存。
+		 * 为什么是 96：点最大 `Z.dot(11) × 缩放 250% = 27.5px`，悬停再放大 1.4 倍 ≈ 38.5px，
+		 * 二倍屏上 77 个物理像素 —— 96 够用且有余，再大纯属白存。
+		 * （基准尺寸上调前这里是 64。改 Z.dot 时记得回来看一眼。）
 		 */
-		const ICON_EDGE = 64
+		const ICON_EDGE = 96
 
 		/** 上传前的原图最大多少字节。太大的图光解码就能卡一下。 */
 		const ICON_SOURCE_MAX = 4 * 1024 * 1024
@@ -1106,7 +1115,7 @@ window.__ModuleLoader__.load({
 		 * @param step - 档位值
 		 */
 		function stepText(step) {
-			return step === RADIUS.off ? '不省略' : `${step} 步以内`
+			return step === RADIUS.off ? '不省略' : `${step} 步`
 		}
 
 		/**

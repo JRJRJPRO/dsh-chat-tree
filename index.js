@@ -31,7 +31,7 @@ export const SETTINGS_NS = 'dsh-tree'
  * 前端滑杆只给这几档，但设置文件是人可以手改的，所以边界还是写在 schema 里。
  */
 export const SETTINGS_SCHEMA = Schema.object({
-	visibleRadius: Schema.natural().max(30).default(10).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
+	visibleRadius: Schema.natural().max(30).default(12).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
 	// 颜色存 `#rrggbb`，形状存 circle / rounded / square / diamond。
 	// 这里只声明成字符串，合法值由浏览器半的 FIELDS.accept 把关 ——
