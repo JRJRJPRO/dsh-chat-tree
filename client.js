@@ -342,6 +342,25 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 在某个节点上点"分离"，实际该剪在哪。
+		 *
+		 * **不是剪在你点的那个节点上。** 一路往上走，只要父亲只有这一个孩子就继续往上，
+		 * 直到撞见一个有多个孩子的父亲 —— 剪点就是它底下的那个节点。
+		 *
+		 * 小例子：1 → 2 → {3 → 5, 4 → 6}，在 6 上点分离。
+		 *   6 的父亲 4 只有一个孩子 → 上移；4 的父亲 2 有两个孩子 → 停，剪点是 **4**。
+		 *   新树 = 1-2-4-6，旧树 = 1-2-3-5。
+		 * ⚠️ 剪在 6 上的话，4 会留在旧树里，两棵树看起来"没同步"（踩过）。
+		 * @param node - 被点的节点
+		 * @returns 该剪的节点；一路到根都没岔路就 undefined（这时也不该给按钮）
+		 */
+		function cutPointOf(node) {
+			let at = node
+			while (at.parent !== undefined && at.parent.children.length === 1) at = at.parent
+			return at.parent === undefined ? undefined : at
+		}
+
+		/**
 		 * 把存盘的 `detached` 翻成一组**节点 key**。
 		 *
 		 * 现在剪的是图上的边，所以记的是 `<会话>:<轮次>`。早先记的是纯会话 id
@@ -668,8 +687,18 @@ window.__ModuleLoader__.load({
 			return snapshot
 		}
 
-		/** 拉大纲；拉取期间保留旧数据，图不会闪空。 */
-		function useOutlines(cwd, listState) {
+		/**
+		 * 拉大纲；拉取期间保留旧数据，图不会闪空。
+		 *
+		 * ⚠️ `nonce` 不能省。重拉的条件里只有 cwd 和会话列表，而**改树形（分组/分离）
+		 *    不会动这两样** —— 没有它的话，分离要等到下一次发消息或切会话才顺带刷出来，
+		 *    用起来就是"点了没反应，过几秒突然全生效"。
+		 * @param cwd - 工作目录
+		 * @param listState - 会话列表快照
+		 * @param nonce - 手动催一次重拉
+		 * @returns 大纲，还没到就是 undefined
+		 */
+		function useOutlines(cwd, listState, nonce) {
 			const [data, setData] = react.useState(undefined)
 			const stamp = listState
 				? `${(listState.ids || []).length}:${listState.current}:${(listState.ids || []).map((id) => (listState.byId[id] || {}).updatedAt).join(',')}`
@@ -687,7 +716,7 @@ window.__ModuleLoader__.load({
 					alive = false
 					clearTimeout(timer)
 				}
-			}, [cwd, stamp])
+			}, [cwd, stamp, nonce])
 			return data
 		}
 
@@ -991,7 +1020,21 @@ window.__ModuleLoader__.load({
 
 			const current = listState && listState.current
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
-			const outlines = useOutlines(cwd, listState)
+			const [nonce, setNonce] = react.useState(0)
+			const [echo, setEcho] = react.useState(undefined)
+			const outlines = useOutlines(cwd, listState, nonce)
+			// 服务端答复一到就让位给它；回显只用来填补这一两百毫秒
+			react.useEffect(() => setEcho(undefined), [outlines])
+			/**
+			 * 改树形：先本地回显（点下去立刻见效），再催一次重拉对齐服务端。
+			 * 重复点是安全的 —— host 那边 detached 是个集合，同一个节点加两次等于加一次。
+			 * @param patch - `{session, group?, detach?}`
+			 */
+			const reshape = (patch) =>
+				api.reshape(patch).then((next) => {
+					if (next !== undefined) setEcho(next)
+					setNonce((value) => value + 1)
+				})
 
 			const [hover, setHover] = react.useState(null)
 			const [tick, setTick] = react.useState(0)
@@ -1022,7 +1065,7 @@ window.__ModuleLoader__.load({
 			const visible = new Set((listState.ids || []).filter((id) => !archived.has(id)))
 			if (!visible.has(current)) visible.add(current)
 
-			const shape = (outlines && outlines.shape) || {}
+			const shape = echo || (outlines && outlines.shape) || {}
 			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current, shape.groupOf)
 
 			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
@@ -1180,7 +1223,10 @@ window.__ModuleLoader__.load({
 						node: hover ? hover.node : null,
 						y: hover ? hover.y : 0,
 						detachable: hover !== null && hover.node.canDetach === true,
-						onDetach: (node) => api.reshape({ session: node.key, detach: true }),
+						onDetach: (node) => {
+							const at = cutPointOf(node)
+							if (at !== undefined) reshape({ session: at.key, detach: true })
+						},
 						railWidth, labels, hold, release,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFork: (node) => {
@@ -1301,7 +1347,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply
 		exports.inject = inject
 		// 纯函数出口，仅供离线测试（cordis 只读 apply/inject）
-		exports.__pure = { visibleTree, conversationOf, treeOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
+		exports.__pure = { visibleTree, conversationOf, treeOf, cutPointOf, cutSet, buildGraph, branchAction, jumpTarget, isFocusedNode, edgeOrder, nodeAt, hoverNext, workspaceOf, dotStyle, elide, anchorNode, settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, Z }
 		return module.exports
 	},
 })

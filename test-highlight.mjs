@@ -459,7 +459,56 @@ console.log('\n用例 10：分离 —— 剪的是图上的边，不是会话边
 		check(pure.cutSet(undefined, sessions).size === 0, '空清单不该崩')
 		console.log('  老格式的会话 id 自动翻成节点 key')
 	}
+	// 剪点：**不是**你点的那个节点。一路往上，直到撞见有多个孩子的父亲，
+	// 剪点是它底下的那个节点。
+	{
+		check(pure.cutPointOf(byKey.get('M:6')) === byKey.get('M:2'), '在 6 上点分离，该剪在 2（6 的父亲 2 是独苗，要继续往上）')
+		check(pure.cutPointOf(byKey.get('M:2')) === byKey.get('M:2'), '2 本身就贴着岔路，剪点就是它自己')
+		check(pure.cutPointOf(byKey.get('P:3')) === byKey.get('P:3'), '分支起点的剪点是它自己')
+		check(pure.cutPointOf(byKey.get('M:1')) === undefined, '一路到根都没岔路，没得剪')
+		// 和 canDetach 必须是同一件事，否则会出现"按钮在但点了没用"
+		for (const node of whole.nodes) {
+			check((pure.cutPointOf(node) !== undefined) === (node.canDetach === true), `${node.key}：canDetach 和 cutPointOf 对不上`)
+		}
+		console.log('  剪点：6→2、2→2、3→3、1→无；和 canDetach 完全一致')
+	}
 }
+
+console.log('\n用例 11：分离后两棵树不能互相残留（John 报的"不同步"）')
+{
+	// 1-2-3-5 和 1-2-4-6 本来一棵树，在 6 上点分离。
+	// 期望：新树 1-2-4-6，旧树 1-2-3-5 —— **4 必须跟着走**，不能留在旧树里。
+	// A 自有 1,2,3,4；B 从 A 第 2 轮岔出，自有 3,4。
+	// 图上：root → A:1 → A:2 → { A:3 → A:4, B:3 → B:4 }
+	const A = branch('A', undefined, undefined, [1, 2, 3, 4])
+	const B = branch('B', 'A', 2, [3, 4])
+	const sessions = [A, B]
+	const visible = new Set(['A', 'B'])
+	const graphOf = (currentId, cuts) =>
+		pure.buildGraph(pure.conversationOf(pure.visibleTree(sessions, visible), currentId, undefined), currentId, cuts)
+	const keysOf = (graph) =>
+		graph.nodes
+			.filter((node) => node.entry !== undefined)
+			.map((node) => node.key)
+			.sort()
+
+	const whole = graphOf('B')
+	const clicked = whole.nodes.find((node) => node.key === 'B:4')
+	const at = pure.cutPointOf(clicked)
+	check(at !== undefined && at.key === 'B:3', `在 B:4 上点分离该剪在 B:3，实际 ${at && at.key}`)
+
+	const cuts = [at.key]
+	const mine = keysOf(graphOf('B', cuts))
+	const other = keysOf(graphOf('A', cuts))
+	check(JSON.stringify(mine) === '["A:1","A:2","B:3","B:4"]', `拆出来的该是 1-2-4-6，实际 ${JSON.stringify(mine)}`)
+	check(JSON.stringify(other) === '["A:1","A:2","A:3","A:4"]', `旧树该是 1-2-3-5，实际 ${JSON.stringify(other)}`)
+	check(!other.includes('B:3'), 'B:3（图上的 4）还留在旧树里 —— 这就是"不同步"的样子')
+	// 除了照抄的前缀，两棵树不该有交集
+	const overlap = mine.filter((key) => other.includes(key))
+	check(JSON.stringify(overlap) === '["A:1","A:2"]', `两棵树只该共享前缀 1-2，实际重合 ${JSON.stringify(overlap)}`)
+	console.log('  在 6 上分离 → 新树 1-2-4-6、旧树 1-2-3-5，只共享前缀 1-2')
+}
+
 
 console.log(failures === 0 ? '\n✓ 全部断言通过' : `\n✗ ${failures} 条断言失败`)
 process.exit(failures === 0 ? 0 : 1)
