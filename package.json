@@ -19,9 +19,12 @@
     "index.js",
     "client.js",
     "src",
+    "docs",
     "build.mjs",
     "cordis.patch.yml",
     "README.md",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
     "DESIGN.md",
     "NATIVE-BASELINE.md",
     "LICENSE"
