@@ -744,32 +744,52 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(pure.clampGlyph('一二三') === '一二三', '没超上限的不该被动')
 	check(pure.clampGlyph('') === '' && pure.clampGlyph(undefined) === '', '空值不该炸')
 
-	// 字是横着摊开的：宽度跟着字数长，高度永远只有一个字高。
+	// 字是横着摊开的：宽度跟着内容长，高度**所有带框的字一律相同**。
 	// 列距按宽度留（否则隔壁列被糊住），连线让位按高度留（否则上下凭空空两倍）。
 	const one = pure.shapeSpec('char:甲')
 	const three = pure.shapeSpec('char:甲乙丙')
 	check(pure.drawnWidth(three, 10) > pure.drawnWidth(one, 10), '三个字该比一个字宽')
-	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10), '不管几个字，高度都只有一个字高')
-	// 封顶算的是**字本身**，外面那圈框另算（GLYPH_PAD）——
-	// 不封的话一个 5 字标签能把整棵树的列距撑开。
-	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * pure.GLYPH_SPAN * pure.GLYPH_PAD,
-		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍字宽加一圈框`)
+	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10) && pure.shapeHeight(one, 10) === 10 * pure.GLYPH_BOX,
+		'带框的字高度必须一律相同，一排看过去才齐')
+	// 封顶算的是**字本身**，外面那圈框另算 —— 不封的话一个 5 字标签能把整棵树的列距撑开
+	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * (pure.GLYPH_SPAN + 2 * pure.GLYPH_PAD),
+		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍字宽外加左右各一圈框`)
 	// 框往外撑，字一个像素不缩 —— 默认点才 11px，把字缩进框里反而更难认
-	check(pure.shapeHeight(one, 10) > 10, '字外面那圈框得占地方，不然框和字就贴上了')
-	check(pure.glyphFont('甲', 10) === 10, '加了框之后字号不许缩')
-	// 字号跟着字数缩，好让这几个字正好填满那个封顶的宽度
+	check(pure.shapeHeight(one, 10) > 10, '框得占地方，不然框和字就贴上了')
 	check(pure.glyphFont('甲', 10) === 10, '一个字该用满字号')
 	check(pure.glyphFont('甲乙', 10) === 10, '两个字宽度也跟着翻倍，字号不用缩')
 	check(pure.glyphFont(full, 10) < pure.glyphFont('甲乙丙', 10), '宽度封顶之后，字数越多字号越小')
 	check(pure.glyphFont(full, 10) * [...full].length <= 10 * pure.GLYPH_SPAN + 1e-9, '五个字合起来不该超出封顶宽度')
 
-	// 自定义字外面那个框，描边 / 填充 / 线宽必须和别的形状同源 ——
-	// 不同源的话一排节点里混一个"没有边、直接浮着的字"，一眼就看得出是两拨人画的。
+	// ⚠️ 宽窄分档：以前一律按汉字算，加了框之后立刻露馅 —— `AB` 实际只有 1.2 个汉字宽，
+	//    框却按 2 个汉字画，两边空出一大片；而汉字的框是贴着的。同样两个字，松紧差一倍。
+	check(pure.emWidth('A'.codePointAt(0)) < pure.emWidth('甲'.codePointAt(0)), '拉丁字母该比汉字窄')
+	check(pure.emWidth('★'.codePointAt(0)) === 1 && pure.emWidth('🔥'.codePointAt(0)) === 1, '符号和 emoji 该按方块字算')
+	check(pure.glyphEm('A') < 1, '单个字母的 em 不许被兜底成 1，不然分档白写了')
+	check(pure.glyphEm('') === 1, '空串按 1 算，别把除法炸掉')
+
+	// **这一条才是"框看起来统一"的全部来源**：不管框里是几个字、是汉字还是字母，
+	// 字到框的那圈空白一样宽。以前 `AB` 两边各空 7px、`甲乙` 各空 2px —— John 报的
+	// "有的两边空白特别多、显得又窄又长、不统一"就是这条。
+	for (const glyph of ['甲乙', 'AB', 'Hello', '甲乙丙', full]) {
+		const spec = pure.shapeSpec(`char:${glyph}`)
+		const gap = (pure.drawnWidth(spec, 10) - pure.glyphFont(glyph, 10) * pure.glyphEm(glyph)) / 2
+		check(Math.abs(gap - 10 * pure.GLYPH_PAD) < 1e-9, `「${glyph}」两边的空白该是定值，实际 ${gap.toFixed(2)}`)
+	}
+	// 单个窄字兜成方块：一个 `i` 只有 0.3 em，不兜底会画成一根瘦条
+	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) === pure.shapeHeight(pure.shapeSpec('char:i'), 10),
+		'单个窄字该兜成正方形，不然是根瘦条')
+	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) === pure.drawnWidth(one, 10),
+		'单个字不管宽窄，框都该一样大')
+
+	// 框和别的形状同源：一样的描边色、线宽。唯独**不填底**。
 	{
 		const skin = { ink: '#abc', fill: '#123', accent: '#abc' }
 		const box = pure.glyphBoxStyle(one, 10, skin, 1.5, false)
-		check(box.borderColor === skin.ink && box.background === skin.fill, '框的描边色和填充色要和别的形状同源')
+		check(box.borderColor === skin.ink, '框的描边色要和别的形状同源')
 		check(box.borderWidth === '1.5px', '框的线宽要和同尺寸的方框类形状一样粗')
+		// ⚠️ 填了底字就糊在底色里，当前那一轮（填充最实）反而最看不清
+		check(box.background === 'none', '框不许填底')
 		check(box.width === `${pure.drawnWidth(one, 10)}px` && box.height === `${pure.shapeHeight(one, 10)}px`,
 			'框的大小要和布局给它留的位置一致，否则不是糊出去就是空一圈')
 	}

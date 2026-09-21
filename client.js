@@ -1361,7 +1361,7 @@ window.__ModuleLoader__.load({
 		const GLYPH_MAX = 5
 
 		/**
-		 * 字最多摊到点的几倍宽。
+		 * 字最多摊到点的几倍宽（**只算字，不含外面那圈框**）。
 		 *
 		 * 封顶是因为列距按画出来最宽的形状留（见 geometry.js 的 railLayout）：
 		 * 不封的话，某一个节点挂个 5 字标签，**整棵树**的列距都会被它撑开。
@@ -1369,41 +1369,87 @@ window.__ModuleLoader__.load({
 		const GLYPH_SPAN = 3
 
 		/**
-		 * 字外面那个框比字本身大多少倍。
+		 * 字和外面那圈框之间留多少空，单位是点直径的倍数。
 		 *
-		 * 【为什么框要往外撑，而不是把字缩进去】默认点只有 11px。框画在原尺寸里的话，
-		 * 一圈 1.5px 的边就吃掉三成，字要缩到 8px —— 加了个框反而更难认，那就白加了。
-		 * 所以框往外撑，字一个像素不缩。撑出来的宽度走 `grow`，列距自己会让开
-		 * （放不下时 `railLayout` 会压列距，不会戳到一起）。
+		 * ⚠️ 这是个**定值**，不是比例 —— 左右上下四边都是它。这正是"框看起来统一"
+		 *    的全部来源：不管框里是一个汉字、一个字母还是三个字，边上那圈空白一样宽。
 		 */
-		const GLYPH_PAD = 1.3
+		const GLYPH_PAD = 0.2
+
+		/** 带框的字竖向占点直径的几倍。所有带框的字**高度一律相同**，一排看过去才齐。 */
+		const GLYPH_BOX = 1 + 2 * GLYPH_PAD
 
 		/**
-		 * 一串字占点的几倍宽。`shapeSpec` 把它塞进 `grow`，于是列距、连线让位
-		 * 全都自动跟着走，不需要各处再认一次"这是个字"。
-		 * @param glyph - 那几个字
-		 * @returns 倍数，1..GLYPH_SPAN
+		 * 一个码点横向占几个 em。
+		 *
+		 * 【为什么要分宽窄】以前一律按汉字算（一个码点 = 一个 em）。没有框的时候看不出来，
+		 * 加了框之后立刻露馅：`A` 实际只有半个 em 宽，框却按一个 em 画，于是字两边空出一大片，
+		 * 整个框又窄又长；而汉字的框就是贴着的。**同样是一个字，框的松紧差一倍** —— John
+		 * 报的"有的空白特别多、不统一"就是这条。
+		 *
+		 * 判据只分两档，够用了：CJK / 全角 / emoji 这些是**方块字**，一个 em；
+		 * 拉丁字母、数字、半角标点是**窄字**，按 0.6 em 算（常见无衬线字体里大写字母约
+		 * 0.67、小写约 0.55、数字 0.56，取中间偏上，宁可框略松也不要字糊出去）。
+		 * @param code - 码点
+		 * @returns em 数
 		 */
-		function glyphGrow(glyph) {
-			return Math.min(Math.max(1, [...String(glyph)].length), GLYPH_SPAN)
+		function emWidth(code) {
+			if (code === undefined) return 0
+			// ASCII 可打印字符 + 拉丁扩展 + 音标：窄
+			if (code >= 0x20 && code <= 0x2ff) return 0.6
+			// 希腊 / 西里尔：也是窄字
+			if (code >= 0x370 && code <= 0x4ff) return 0.6
+			// 半角片假名 / 半角符号
+			if (code >= 0xff61 && code <= 0xffdc) return 0.6
+			// 其余（CJK、假名、全角、emoji、各种符号）一律按方块字算
+			return 1
+		}
+
+		/**
+		 * 一串字横向一共占几个 em。
+		 * @param glyph - 那几个字
+		 * @returns em 数；空串按 1 算（别把除法炸掉）
+		 *
+		 * ⚠️ 别写成 `Math.max(sum, 1)`。那样一个 `A` 会被当成一个汉字那么宽，
+		 *    这个函数存在的唯一理由当场作废。兜底只该兜**空串**。
+		 */
+		function glyphEm(glyph) {
+			let sum = 0
+			for (const ch of String(glyph)) sum += emWidth(ch.codePointAt(0))
+			return sum > 0 ? sum : 1
 		}
 
 		/**
 		 * 这几个字该用多大的字号。
 		 *
-		 * 按**汉字**算（一个字占一个 em）—— 拉丁字母比这窄，算宽一点只会显得小一号，
-		 * 反过来算窄了就会糊出框外。
+		 * 先按点的直径给满，**只有摊不下的时候才缩** —— 缩的判据是 `GLYPH_SPAN` 那个封顶，
+		 * 所以一个字母和一个汉字用的是同一个字号（它俩只是占宽不同），不会出现"字母显得小一号"。
 		 *
-		 * 小例子（点直径 11）：
-		 *   1 个字 → 宽 11，字号 11；2 个字 → 宽 22，字号 11；3 个字 → 宽 33，字号 11；
-		 *   4 个字 → 宽封顶在 33，字号 8.25；5 个字 → 宽 33，字号 6.6（小，但塞得下）。
+		 * 小例子（点直径 10，封顶 3 倍）：
+		 *   `甲` → em 1，字号 10；`甲乙丙` → em 3，字号 10（正好顶到封顶）；
+		 *   `一二三四五` → em 5，字号 10×3/5 = 6；
+		 *   `Hello` → em 3，字号 10（五个字母才占三个汉字宽，不用缩）。
 		 * @param glyph - 那几个字
 		 * @param size - 点的直径
 		 * @returns 字号（像素）
 		 */
 		function glyphFont(glyph, size) {
-			const count = Math.max(1, [...String(glyph)].length)
-			return (size * glyphGrow(glyph)) / count
+			return size * Math.min(1, GLYPH_SPAN / glyphEm(glyph))
+		}
+
+		/**
+		 * 带框的字横向占点直径的几倍（`shapeSpec` 把它塞进 `grow`，列距和连线让位自动跟着走）。
+		 *
+		 * = 字本身的宽 + 左右各一圈 `GLYPH_PAD`，**并且不许比高还窄**：
+		 * 一个 `i` 只有 0.3 em，不兜底的话会画成一个瘦条；兜住之后它就是个圆角方块，
+		 * 和预设里的"圆角方"一模一样 —— 这也是统一。
+		 * @param glyph - 那几个字
+		 * @returns 倍数
+		 */
+		function glyphGrow(glyph) {
+			const em = glyphEm(glyph)
+			const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD
+			return Math.max(wide, GLYPH_BOX)
 		}
 
 		/**
@@ -1583,7 +1629,7 @@ window.__ModuleLoader__.load({
 		function shapeHeight(shape, size) {
 			// 字是横着摊开的：`grow` 说的是横向几倍宽，竖直方向永远只有一个字那么高，
 			// 再加上外面那圈框 —— 所以是 `GLYPH_PAD`，不是 `grow`。
-			if (shape.glyph !== undefined) return size * GLYPH_PAD
+			if (shape.glyph !== undefined) return size * GLYPH_BOX
 			return shapeBox(shape, size)
 		}
 
@@ -2029,10 +2075,9 @@ window.__ModuleLoader__.load({
 			if (text.startsWith(CUSTOM)) {
 				const glyph = text.slice(CUSTOM.length).trim()
 				// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
-				// ⚠️ `grow` 是**连框在内**的占宽（glyphGrow × GLYPH_PAD），而 `glyphFont` 算字号时
-				//    用的是不带 pad 的 `glyphGrow` —— 两个数差的那一圈就是框和字之间的空。
+				// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
 				if (glyph !== '' && [...glyph].length <= GLYPH_MAX)
-					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) * GLYPH_PAD }
+					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
 			}
 			if (text.startsWith(PICTURE)) {
 				// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于
@@ -2229,8 +2274,10 @@ window.__ModuleLoader__.load({
 				width: `${drawnWidth(shape, size)}px`, height: `${shapeHeight(shape, size)}px`,
 				display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
 				borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,
-				borderRadius: `${stroke}px`,
-				background: skin.fill,
+				borderRadius: `${2 * stroke}px`,
+				// ⚠️ **不填底**。别的形状靠填充区分状态，可框里坐着字 —— 填上去字就糊在底色里，
+				//    当前那一轮（填充最实）反而最看不清。这里的状态改由描边色和字色一起表达。
+				background: 'none',
 				whiteSpace: 'nowrap', pointerEvents: 'none',
 				fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1, color: skin.ink,
 			}
@@ -4786,7 +4833,7 @@ window.__ModuleLoader__.load({
 			polyArea, growOf, regularPoly, crossPoly,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 			// 自定义字：上限、占几倍宽、该用多大字号
-			GLYPH_MAX, GLYPH_SPAN, GLYPH_PAD, glyphGrow, glyphFont, glyphBoxStyle,
+			GLYPH_MAX, GLYPH_SPAN, GLYPH_PAD, GLYPH_BOX, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
 			// 收藏：五角星的形状、配色、以及点下去那一下的动画
 			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
