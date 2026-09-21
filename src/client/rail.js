@@ -90,7 +90,20 @@ export function Rail(props) {
 	const hoverable = react.useRef(true)
 	hoverable.current = canHover
 	const onLock = react.useCallback((value) => { locked.current = value === true }, [])
-	const hold = react.useCallback(() => clearTimeout(closeTimer.current), [])
+	// 「按住」= 别关卡片，**也别换目标**。
+	//
+	// ⚠️ restTimer 这一下是后补的，别删。卡片如今贴着点放（见 cardAnchor），会压在
+	//    导轨的横向范围里；而卡片是**导轨那个 div 的子元素**，它上面的 mousemove 会
+	//    冒泡到下面那个 hover intent。鼠标从点走向卡片的最后一下 mousemove 已经把
+	//    restTimer 按 restMs 起了表，指针随后进了卡片就再没有 mousemove 来撤它 ——
+	//    表照响，hover 换到别的点，**卡片从指针底下挪走**，这一下就点到了底下那个点。
+	//    John 报的原话是"鼠标已经在卡片上了，结果点到了卡片下的另一个结点，永远点不到卡片"。
+	//    卡片那边还配了一条 onMouseMove 阻止冒泡，两条缺一不可：那条管住"进去之后"，
+	//    这条管住"进去之前已经起了的表"。
+	const hold = react.useCallback(() => {
+		clearTimeout(closeTimer.current)
+		clearTimeout(restTimer.current)
+	}, [])
 	const release = react.useCallback(() => {
 		if (locked.current) return
 		// ⚠️ 触摸设备上这条**整个不能跑**。手指没有"移开"这个状态，可 iOS 在别处一戳
@@ -385,8 +398,7 @@ export function Rail(props) {
 					if (locked.current) return hold()
 					const rect = event.currentTarget.getBoundingClientRect()
 					const at = nodeAt(seats, event.clientX - rect.left, event.clientY - rect.top, hitW, rowH)
-					hold()
-					clearTimeout(restTimer.current)
+					hold()   // 连"换目标"的表一起撤（见上面 hold 的注释）
 					const want = hoverNext(hover === null ? null : hover.node, at)
 					if (want === 'keep') return
 					// ⚠️ x 也要记：详情卡锚在**这个点**上，不是锚在整条导轨的左缘（见 cardAnchor）

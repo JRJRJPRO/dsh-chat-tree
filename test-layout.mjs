@@ -7,6 +7,7 @@
  *   · 树贴着聊天区右缘钉死；横向放不下就压列距，别压到正文上或者从屏幕左边出去
  *   · 聊天被别的插件的浮层整个盖住时，树得跟着收起来
  *   · 同一行上的横段一像素只许画一次（不然一个父节点带几个孩子，横线就忽粗忽细）
+ *   · 详情卡锚在**那个点**上，岔路多了也不许被甩到整棵树的左边去
  *
  * 阅读顺序：
  *   第1步  取 client 的真函数
@@ -15,6 +16,7 @@
  *   第4步  用例 3：正文右缘怎么量
  *   第5步  用例 4：被盖住的判定
  *   第6步  用例 5：同一行的横段不许重复画
+ *   第7步  用例 6：详情卡贴着那个点放，不贴整棵树的左缘
  *
  * 跑法：node test-layout.mjs
  *
@@ -24,7 +26,7 @@
 import { check, loadClientPure, report } from './test-kit.mjs'
 
 const pure = await loadClientPure()
-const { Z, railLayout, railRight, railRoom, drawnWidth, shapeBox, contentRightOf, isCovered, trimRuns, segments, MIN_RUN, SHAPES, STAR } = pure
+const { Z, railLayout, railRight, railRoom, drawnWidth, shapeBox, contentRightOf, isCovered, trimRuns, segments, MIN_RUN, SHAPES, STAR, cardAnchor, CARD_GAP } = pure
 
 /** 一个够高够宽的聊天区，免得 rowH 被压到下限、dotSize 跟着缩。 */
 const BOX = { top: 0, height: 600, right: 1600 }
@@ -257,6 +259,43 @@ const BOX = { top: 0, height: 600, right: 1600 }
 		`部分重叠时总长该是并集 50，实际 ${cut.reduce((sum, run) => sum + run.width, 0)}`)
 
 	console.log(`  三条嵌套横段 → 去重成 ${kept.length} 条，覆盖范围不变、无缝、靠父节点那截归蓝线`)
+}
+
+// ===== 第7步：用例 6 —— 详情卡贴着那个点放 =====
+{
+	console.log('用例 6：详情卡锚在那个点上，不锚在整条导轨的左缘')
+
+	// 一棵有岔路的树：五个孩子 → maxColumn = 4
+	const star = (size) => drawnWidth(STAR, size)
+	const L = railLayout(BOX, 100, 12, 4, star, undefined)
+	const hitW = Math.max(L.z.hit, L.lane)
+	const right = (column) => cardAnchor(L.railWidth, L.xOf(column), hitW)
+	const old = L.railWidth + 4   // 老写法：不管点在第几列，一律甩到整棵树左边
+
+	// 1) 主干那列（第 0 列，最常悬停）必须**明显**比老写法近
+	check(right(0) < old - L.lane * 3,
+		`第 0 列该至少近三个列距，实际 right=${right(0).toFixed(1)}，老写法 ${old.toFixed(1)}`)
+
+	// 2) 但最左那列不许被推得更远 —— 这一改只拉近，不推远
+	check(right(4) <= old + L.z.hit,
+		`最左列不该被推远，实际 right=${right(4).toFixed(1)}，老写法 ${old.toFixed(1)}`)
+
+	// 3) 列号每大一，卡片正好往左挪一个列距
+	for (let column = 1; column <= 4; column += 1) {
+		const step = right(column) - right(column - 1)
+		check(Math.abs(step - L.lane) < 1e-9,
+			`第 ${column} 列该正好差一个列距 ${L.lane.toFixed(2)}，实际 ${step.toFixed(2)}`)
+	}
+
+	// 4) 卡片不许压到那个点**自己**的命中区上。压上了就是"浮层盖住自己的触发器"，
+	//    鼠标还没走出去就先被自己的命中区吃掉。
+	for (let column = 0; column <= 4; column += 1) {
+		const gap = right(column) - (L.railWidth - L.xOf(column) + hitW / 2)
+		check(Math.abs(gap - CARD_GAP) < 1e-9,
+			`第 ${column} 列该离命中区外缘正好 ${CARD_GAP}px，实际 ${gap.toFixed(2)}`)
+	}
+
+	console.log(`  五个岔路（maxColumn=4）：第 0 列 right=${right(0).toFixed(1)}，老写法 ${old.toFixed(1)} → 近了 ${(old - right(0)).toFixed(1)}px；最左列 ${right(4).toFixed(1)}`)
 }
 
 report()

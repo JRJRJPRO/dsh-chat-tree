@@ -720,6 +720,11 @@ export function Detail(props) {
 				...NO_ZOOM,
 			},
 			onMouseEnter: hold,
+			// ⚠️ 卡片是**导轨那个 div 的子元素**，而导轨上挂着 hover intent 的 mousemove。
+			//    不拦住的话，鼠标在卡片里动一下就会冒泡下去，被当成"你正压着卡片底下那个点"，
+			//    restMs 一到目标就换走、卡片跟着挪位置，于是永远点不到它（见 rail.js 的 hold）。
+			//    浮层里的指针位置不是导轨的事，这里断掉是本分，不是权宜。
+			onMouseMove: (event) => event.stopPropagation(),
 			// 锁住的时候连"鼠标走了就关"都不许 —— 草稿还在里面
 			onMouseLeave: () => { if (!busy) release() },
 			// 双击开合。⚠️ 改过名之后不许用双击收起：那条路不经过保存/不保存，
