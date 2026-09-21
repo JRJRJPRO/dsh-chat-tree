@@ -53,7 +53,7 @@ dsh plugin --profile web add link:D:/绝对路径/dsh-tree
 ## 3. 测试
 
 ```bash
-npm test                   # 先构建，再十三套一起跑
+npm test                   # 先构建，再十四套一起跑
 
 node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
 node test-highlight.mjs    # 高亮、hover intent、连线遮挡
@@ -68,6 +68,7 @@ node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管�
 node test-http.mjs         # 路由外壳：信任围栏、方法分发、出错码、body 上限
 node test-net.mjs          # 浏览器半：直连被拒时改走 /remote 通道
 node test-lifecycle.mjs    # 启用 / 停用 / 再启用：两半都不许留东西
+node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 3000 棵随机树扫不变式
 ```
 
 单独跑某一个之前记得 `npm run build` —— 测的是生成物 `client.js`。

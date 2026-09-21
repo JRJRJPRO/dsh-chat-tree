@@ -1186,24 +1186,77 @@ window.__ModuleLoader__.load({
 			}
 
 			// ⑤ 算 column —— **刻意和 currentId 无关**，否则每切一次分支整张图就左右翻一遍。
-			//    同一会话的延续继承父节点那一列（主干天然是直线），
-			//    岔出去的子分支各领一个新列，按创建时间从右往左排。
 			//    必须排在剪边**之后**：剪掉的子树不该再占着列宽。
-			let nextColumn = 0
-			root.column = 0
-			const assign = (node) => {
+			//
+			// 【为什么不是"来一条新分支就发一个新列号"】那是最早的写法：深度优先走一遍，
+			// 遇到岔路就 `nextColumn += 1`，发出去的号永不回收。它保证了一件要紧的事 ——
+			// **一棵子树占一段连续的列**，于是连线永远不会从别的节点头顶压过去。
+			// 但它从不回收，所以深处才出现的分支会先占掉小列号，把浅处那条挤到更外面，
+			// 中间空出一整列。John 报的就是这个：
+			//
+			//     主干 1-2-3-4，5 从 1 岔出；然后在 3 后面再开一个 6
+			//       col2 col1 col0            col1 col0
+			//   d1     ·    ·    1        d1     ·    1
+			//   d2     5    ·    2   →    d2     5    2     ← 5 不该被挤出去，
+			//   d3     ·    ·    3        d3     ·    3        col1 那个洞底下还横穿着
+			//   d4     ·    6    4        d4     6    4        一条 3→6 的线，很难看
+			//
+			// 【换成什么】Reingold–Tilford 那套**紧凑树**（tidy tree，1981 年那篇，
+			// d3.tree / graphviz 用的都是它的后裔）。换掉的只是"往外挪多少"这一步：
+			// 每棵子树先各自排好，再让兄弟子树**按轮廓**互相贴紧 —— 一条只有一行的短支线，
+			// 可以整个嵌进旁边那棵子树空着的那几行里，而不是白占一整列。
+			//
+			// ⚠️ 试过 git 提交图那套泳道复用（`git log --graph` / GitKraken）。洞是没了，
+			//    但它是给 **DAG** 用的，允许连线交叉；我们这儿有一条"连线不许压过任何节点"的
+			//    硬约束（test.mjs 断言 5b），压测里它当场画出从别人头顶压过去的横线。
+			//    树就该用树的算法。
+
+			/**
+			 * 一棵子树的**轮廓**：行 → 这一行用到的最外侧那一列（相对子树根那一列）。
+			 *
+			 * 这就是 Reingold–Tilford 紧凑树的核心数据。有了它，兄弟子树才能"贴着彼此的
+			 * 凹凸互相嵌进去"，而不是各占一整段互不相让的列。
+			 */
+			const outline = (node) => {
+				const edge = new Map([[node.depth, 0]])
 				const kids = node.children.slice().sort((left, right) => (left.session.createdAt || 0) - (right.session.createdAt || 0))
-				if (kids.length === 0) return
+				if (kids.length === 0) return edge
 				// ⚠️ 撤回掉的那一轮虽然也是"本会话的延续"，但它是条废弃支线，
 				//    让它占住主列的话，还活着的下一轮反而被挤到旁边去了。
 				const same = (kid) => kid.session.id === node.session.id
-				const preferred = kids.find((kid) => same(kid) && kid.rewound !== true) || kids.find(same) || kids[0]
+				const trunk = kids.find((kid) => same(kid) && kid.rewound !== true) || kids.find(same) || kids[0]
+
+				const shape = new Map()
+				for (const kid of kids) shape.set(kid, outline(kid))
+				const paste = (from, shift) => {
+					for (const [row, at] of from) edge.set(row, Math.max(edge.get(row) ?? -1, at + shift))
+				}
+
+				trunk.column = 0 // 延续那条继承本列，主干天然是直线
+				paste(shape.get(trunk), 0)
 				for (const kid of kids) {
-					kid.column = kid === preferred ? node.column : (nextColumn += 1)
-					assign(kid)
+					if (kid === trunk) continue
+					// 挪到刚好躲开已经放好的那些兄弟：它子树用到的每一行都要让开，
+					// **外加父节点那一行** —— 拐进来的那一下会占住那一格（先横后竖）。
+					let shift = (edge.get(node.depth) ?? -1) + 1
+					for (const [row] of shape.get(kid)) shift = Math.max(shift, (edge.get(row) ?? -1) + 1)
+					kid.column = Math.max(shift, 1) // 岔路只许往外长，不许压回主干那一列
+					paste(shape.get(kid), kid.column)
+					edge.set(node.depth, Math.max(edge.get(node.depth) ?? -1, kid.column)) // 拐弯那一格也占着
+				}
+				return edge
+			}
+			outline(root)
+
+			// 上面算的是**相对父亲**的列，从根往下累加成绝对列
+			root.column = 0
+			const settle = (node) => {
+				for (const kid of node.children) {
+					kid.column += node.column
+					settle(kid)
 				}
 			}
-			assign(root) // 剪边后 root 必定还在（前缀一路抄到根）
+			settle(root)
 
 			// 全局编号按时间排：每条分支各自从 1 数会撞车（父的 #3 和子的 #3 是两个节点）
 			const timed = nodes.filter((node) => node.entry !== undefined).sort((left, right) => (left.entry.time || 0) - (right.entry.time || 0))
