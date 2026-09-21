@@ -4,7 +4,7 @@
 import { isClaudeSession } from './graft.js'
 import { lineage } from './lineage.js'
 import { cache, outlineOf } from './outline.js'
-import { markRewound, rewindStateOf, statusProbe } from './rewind.js'
+import { hiddenCache, markRewound, rewindStateOf, statusProbe } from './rewind.js'
 
 /**
  * 这条分支在外部引擎那边有没有上下文。
@@ -40,7 +40,10 @@ function contextMissing(sessionId, isSeeded) {
  */
 export async function collect(ctx, cwd) {
 	const snapshots = await ctx.sessionPersistence.list()
-	const alive = new Set()
+	// ⚠️ 这个集合装的是**所有**会话，不是筛过 cwd 的那批。
+	//    它唯一的用处是末尾清理缓存 —— 要是只装本 cwd 的，那清理就成了
+	//    "每拉一次树，就把别的工作目录的大纲缓存全删掉"，切个目录回来又得整份重读。
+	const known = new Set()
 	const sessions = []
 	const status = statusProbe(ctx)
 	// 读旁车 fail-closed（认不出来就不读），拦合并 fail-open（认不出来就放行）
@@ -49,8 +52,8 @@ export async function collect(ctx, cwd) {
 	for (const snapshot of snapshots) {
 		const header = snapshot.header
 		lineage.set(header.id, header.parentSession) // 血缘表顺手刷新，graft 要顺着它往上找锚点
+		known.add(header.id)
 		if (cwd && header.cwd !== cwd) continue
-		alive.add(header.id)
 		const outline = await outlineOf(ctx, snapshot)
 		// 撤回过的轮次在日志里原样留着，得靠旁车才认得出来（rewind.js）
 		const rewind = rewindStateOf(busy, header.id)
@@ -77,8 +80,13 @@ export async function collect(ctx, cwd) {
 		})
 	}
 
-	// 顺手清理已删除会话的缓存项，别让 Map 无限长。
-	for (const id of [...cache.keys()]) if (!alive.has(id)) cache.delete(id)
+	// 顺手清理已删除会话的残留，别让这几个 Map 无限长。
+	// 按同一份名单（`known` = 这次列表里出现过的全部会话）来。
+	for (const id of [...cache.keys()]) if (!known.has(id)) cache.delete(id)
+	for (const id of [...hiddenCache.keys()]) if (!known.has(id)) hiddenCache.delete(id)
+	// `lineage` 故意不清：它是每条会话一对字符串，几乎不占地方，
+	// 而错删一条的代价不对称 —— 新分支是 `agent/created` 里先登记血缘、
+	// 之后才出现在 `list()` 里的，正好撞上这一轮清理就会被当成"已删除"抹掉。
 
 	sessions.sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))
 	return { sessions }

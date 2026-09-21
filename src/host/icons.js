@@ -6,10 +6,10 @@ import { readFileSync, readdirSync, statSync, unlinkSync, utimesSync } from 'nod
 import { join } from 'node:path'
 import { atomicWrite, iconDir } from './paths.js'
 
-/** 最多留几张自定义图片。一张 64×64 的 PNG 也就几 KB，留够用就行。 */
+/** 最多留几张自定义图片。一张 96×96 的 PNG 也就几 KB，留够用就行。 */
 export const ICON_KEEP = 32
 
-/** 一张图最多多少字节。浏览器半已经缩成 64×64，正常两三 KB —— 超一个数量级就是不对劲。 */
+/** 一张图最多多少字节。浏览器半已经缩成 96×96（`ICON_EDGE`），正常几 KB —— 超一个数量级就是不对劲。 */
 export const ICON_MAX = 256 * 1024
 
 /** PNG 的魔数。只认这个。 */
