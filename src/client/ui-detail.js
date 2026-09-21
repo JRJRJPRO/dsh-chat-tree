@@ -19,6 +19,7 @@ import { branchAction, forkBlockedWhy, isBranchHead } from './tree.js'
 import { NO_ZOOM, TAPPABLE, useHover } from './pointer.js'
 import { CUSTOM, GLYPH_MAX, PICTURE, SHAPES, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
+import { hexOf } from './settings-model.js'
 
 /**
  * 草稿和现名比，算不算"改过了"。
@@ -119,6 +120,65 @@ export function keepsCard(dirty, typing) {
 
 /** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
 export const CARD_MARK = 'data-dsh-tree-card'
+
+/**
+ * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。
+ *
+ * 为什么要它：`<input type="color">` 只给取色盘和三个十进制数字，
+ * 而人手里的颜色几乎都是从别处复制来的六位十六进制 —— 没有这个框就只能
+ * 把色值拆成 R/G/B 三个十进制自己换算一遍。
+ *
+ * 两条规矩：
+ *   · **边打边生效，但只在认得出来的时候。** 打到 `#ff` 时什么都不做，
+ *     不去猜他要的是 `#ffffff` 还是 `#ff0000`。
+ *   · **离开焦点就把草稿丢掉**，显示回真实值。否则框里会永远留着一串
+ *     没生效的半截字符，而树上是另一个颜色 —— 又一个"看到的和画的不一样"。
+ *
+ * ⚠️ 键盘事件必须逐个 stopPropagation：这个框浮在宿主的聊天界面上，
+ *    不拦住的话敲的字会漏进聊天输入框（和 NameField 同一个坑）。
+ */
+export function HexField(props) {
+	const [draft, setDraft] = react.useState(null)
+	const real = String(props.value === undefined || props.value === null ? '' : props.value).toUpperCase()
+	const shown = draft === null ? real : draft
+	const good = hexOf(shown) !== undefined
+	return h('input', {
+		type: 'text', value: shown, spellCheck: false, maxLength: 7,
+		placeholder: '#RRGGBB',
+		title: '直接填六位色值，比如 #FFD43B（# 可省、大小写不论）',
+		disabled: props.disabled === true,
+		style: {
+			width: '84px', flex: '0 0 auto', boxSizing: 'border-box',
+			padding: '0 6px', height: `${props.size || 22}px`,
+			background: C.input, color: good ? C.text : C.muted,
+			border: `1px solid ${good && draft !== null ? C.accent : C.line}`,
+			borderRadius: '6px', outline: 'none',
+			font: '11.5px/1 ui-monospace,SFMono-Regular,Consolas,monospace',
+			fontVariantNumeric: 'tabular-nums',
+			cursor: props.disabled === true ? 'not-allowed' : 'text',
+			opacity: props.disabled === true ? 0.45 : 1,
+		},
+		onChange: (event) => {
+			const next = event.target.value
+			setDraft(next)
+			const ok = hexOf(next)
+			if (ok !== undefined && typeof props.onPick === 'function') props.onPick(ok)
+		},
+		// 走开就把没打完的草稿丢掉，显示回真实值
+		onBlur: () => setDraft(null),
+		onClick: (event) => event.stopPropagation(),
+		onDoubleClick: (event) => event.stopPropagation(),
+		onKeyDown: (event) => {
+			event.stopPropagation()
+			if (event.key === 'Enter' || event.key === 'Escape') {
+				setDraft(null)
+				event.currentTarget.blur()
+			}
+		},
+		onKeyUp: (event) => event.stopPropagation(),
+		onKeyPress: (event) => event.stopPropagation(),
+	})
+}
 
 /**
  * 焦点守卫：把 `shouldRefocus` 那条规矩挂到一个真的输入框上。
@@ -473,6 +533,13 @@ export function FavIconRow(props) {
 			},
 			onClick: (event) => event.stopPropagation(),
 			onChange: (event) => { if (typeof onColor === 'function') onColor(event.target.value) },
+		}),
+		// 取色盘旁边再给一个能直接打六位色值的框
+		h(HexField, {
+			key: 'hex',
+			value: typeof props.ownColor === 'string' ? props.ownColor : color,
+			size: PICK,
+			onPick: (value) => { if (typeof onColor === 'function') onColor(value) },
 		}),
 	])
 }

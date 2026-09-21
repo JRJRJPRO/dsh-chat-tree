@@ -807,20 +807,20 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	}
 
 	// ⑤ 收藏的颜色：默认那个黄，改过的按点走
-	const gold = pure.starSkin(true, true)
-	const red = pure.starSkin(true, true, undefined, '#F85149')
+	const gold = pure.starSkin(true)
+	const red = pure.starSkin(true, undefined, '#F85149')
 	check(gold.ink === pure.STAR_COLOR, '没改过颜色的收藏，该还是那个黄')
 	check(red.ink === '#f85149', `改过颜色的收藏，该用他挑的那个（大小写要归一），实际 ${red.ink}`)
 	// ⚠️ 这个字符串直接进 CSS，认宽了就是个注入口子
 	for (const bad of ['red', '#fff', 'url(javascript:1)', '#12345g', '', undefined, null, 123]) {
-		check(pure.starSkin(true, true, undefined, bad).ink === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
+		check(pure.starSkin(true, undefined, bad).ink === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
 	}
-	// 默认色分明暗两版（和另外四个角色色一样），所以没挑过色的收藏在亮色下会深一些
-	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色下该用亮色那版默认收藏色')
-	check(pure.starSkin(true, false).ink === pure.paletteOf(false).favoriteColor, '亮色下的默认收藏色没走 PALETTE')
+	// 默认收藏色**不分明暗**，就是 PALETTE 里那一个（John：「不需要明暗不一样了，全调成一样的」）
+	check(pure.starSkin(true).ink === pure.STAR_COLOR, '默认收藏色不该被换掉')
+	check(pure.starSkin(true).ink === pure.paletteOf().favoriteColor, '默认收藏色没走 PALETTE')
 	// ⚠️ 但**用户亲手挑的色一个像素不动**，两种明暗都一样
 	for (const dark of [true, false]) {
-		check(pure.starSkin(true, dark, undefined, '#56d364').ink === '#56d364',
+		check(pure.starSkin(true, undefined, '#56d364').ink === '#56d364',
 			`${dark ? '暗' : '亮'}色下用户挑的 #56d364 被改动了`)
 	}
 	// ⚠️ **写什么就画什么。** 从"用户挑的色值"到"CSS 里那个字符串"，中间不许有任何
@@ -828,14 +828,14 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	//    图标换成五角星 / 方块 / 一个字都一样，因为它们走的是同一个 `paint`。
 	for (const want of ['#fff833', '#f85149', '#00ff00', '#123456', '#ffffff', '#000000']) {
 		for (const icon of [undefined, 'star', 'square', 'char:甲', 'char:A']) {
-			const lit = pure.starSkin(true, true, icon, want)
-			const rest = pure.starSkin(false, true, icon, want)
+			const lit = pure.starSkin(true, icon, want)
+			const rest = pure.starSkin(false, icon, want)
 			const where = `${want} / ${String(icon)}`
 			check(lit.ink === want && lit.fill === want, `${where} 实心时被改成了 ${lit.ink}/${lit.fill}`)
 			check(rest.ink === want && rest.fill === pure.fade(want, pure.FILL_ALPHA), `${where} 平时被改成了 ${rest.ink}/${rest.fill}`)
 		}
 		// 画成字时，框的描边和字色也得是同一个色号
-		const sk = pure.starSkin(false, true, 'char:甲', want)
+		const sk = pure.starSkin(false, 'char:甲', want)
 		const box = pure.glyphBoxStyle(sk.shape, 11, sk, 1.5, false)
 		check(box.borderColor === want && box.color === want, `${want} 画成字时框/字色成了 ${box.borderColor}/${box.color}`)
 	}
@@ -959,53 +959,55 @@ console.log('\n用例 15：空节点也归自己管')
 }
 
 
-console.log('用例 16：亮色 / 暗色两版')
+console.log('用例 16：调色板只有一套，不分明暗')
 {
 	// 亮度（相对亮度的简化版，够用来分辨"深色/浅色"）
 	const lum = (hex) => {
 		const value = Number.parseInt(hex.slice(1), 16)
 		return (0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255)) / 255
 	}
-	const roles = ['normalColor', 'currentColor', 'compactColor', 'emptyColor']
+	const roles = ['normalColor', 'currentColor', 'compactColor', 'emptyColor', 'favoriteColor']
 
-	for (const mode of ['light', 'dark']) {
-		for (const role of roles) {
-			const hex = pure.PALETTE[mode][role]
-			check(pure.isHex(hex), `${mode}.${role} 不是合法色值：${hex}`)
-		}
+	// ⚠️ PALETTE 以前是 `{dark: {...}, light: {...}}`，切主题整棵树换色。
+	//    John：「不需要明暗不一样了，全调成一样的」—— 现在是**扁的一层**。
+	//    这条断言就是拦"哪天有人顺手又把两版加回来"：加回来这里当场红。
+	for (const role of roles) {
+		const hex = pure.PALETTE[role]
+		check(pure.isHex(hex), `${role} 不是合法色值：${hex}`)
 	}
-	// ⚠️ 两版必须真的不一样。直接把暗色版抄一份当亮色版，是这类"支持亮色模式"
-	//    最常见的假动作 —— 编译过、跑得动、看着依然难看。
-	const same = roles.filter((role) => pure.PALETTE.light[role] === pure.PALETTE.dark[role])
-	check(same.length < roles.length, `亮色版和暗色版一模一样：${same.join(' ')}`)
+	check(pure.PALETTE.dark === undefined && pure.PALETTE.light === undefined,
+		'PALETTE 又分明暗两版了 —— 这是被明确撤掉的东西，见 paletteOf 的注释')
 
-	// 亮色版要压得住白底，暗色版要在深底上亮得起来
-	for (const role of ['currentColor', 'compactColor']) {
-		check(lum(pure.PALETTE.light[role]) < 0.62, `亮色版的 ${role} 太浅，白底上会发飘`)
-		check(lum(pure.PALETTE.dark[role]) > 0.38, `暗色版的 ${role} 太暗，深底上看不清`)
+	// 同一个色号，明暗两边画出来必须**逐字节相同**。这是这次改动的全部意义。
+	for (const role of roles) {
+		check(pure.paletteOf()[role] === pure.PALETTE[role], `${role} 没原样落到 paletteOf`)
 	}
-	// ⚠️ 压缩色在亮色下**别再往深里调**：它是个"黄"，调过头就成了烧焦的棕，
-	//    一眼看不出是同一个语义（John 报过一次 #bc4c00 太闷）。
-	check(lum(pure.PALETTE.light.compactColor) > 0.45, `亮色版的压缩色太闷（${pure.PALETTE.light.compactColor}），看着不像黄色了`)
-	console.log(`  亮暗两版都合法且确实不同；亮色压缩色 ${pure.PALETTE.light.compactColor}（亮度 ${lum(pure.PALETTE.light.compactColor).toFixed(2)}）`)
+
+	// 暗色是 John 的日常模式：这几个色在深底上得亮得起来
+	for (const role of ['currentColor', 'compactColor', 'favoriteColor']) {
+		check(lum(pure.PALETTE[role]) > 0.38, `${role} 太暗，深底上看不清`)
+	}
+	console.log(`  五个角色色一套到底；深底上都够亮（当前 ${pure.PALETTE.currentColor} / 收藏 ${pure.PALETTE.favoriteColor}）`)
 }
 
-console.log('用例 17：改过的颜色钉死，没改过的跟着明暗走')
+console.log('用例 17：改过的颜色钉死，没改过的用出厂默认；全程不看明暗')
 {
-	const dark = pure.themeFrom({}, {}, true)
-	const light = pure.themeFrom({}, {}, false)
-	check(dark.currentColor !== light.currentColor, '换明暗时当前路径色没变')
-	check(dark.currentColor === pure.paletteOf(true).currentColor, '暗色下没取到暗色版')
+	// ⚠️ 这一条是**取舍**，不是疏漏：颜色不再分明暗两版（见 paletteOf 的注释）。
+	//    浅色主题下对比度因此不再有人担保 —— John 明确要的「一个颜色就是一个颜色」。
+	const base = pure.themeFrom({}, {})
+	for (const field of ['normalColor', 'currentColor', 'compactColor', 'emptyColor', 'favoriteColor']) {
+		check(base[field] === pure.paletteOf()[field], `${field} 没取到出厂默认`)
+	}
 
-	// 用户亲手改过的那一项，换明暗都不许动
-	const pinned = pure.themeFrom({ currentColor: '#ff00ff' }, { currentColor: true }, false)
+	// 用户亲手改过的那一项，钉死
+	const pinned = pure.themeFrom({ currentColor: '#ff00ff' }, { currentColor: true })
 	check(pinned.currentColor === '#ff00ff', `改过的颜色被覆盖了：${pinned.currentColor}`)
-	check(pinned.compactColor === pure.paletteOf(false).compactColor, '没改过的那项反而没跟着明暗走')
+	check(pinned.compactColor === pure.paletteOf().compactColor, '没改过的那项没退回默认')
 
-	// 存了值但没标记成"用户改的"（比如老版本留下的默认值）→ 仍然跟着明暗走
-	const stale = pure.themeFrom({ currentColor: '#ff00ff' }, {}, true)
-	check(stale.currentColor !== '#ff00ff', '没标 user 的存量值把当前配色盖住了')
-	console.log('  换明暗立刻生效；亲手改过的那一项钉死；存量脏值兜住')
+	// 存了值但没标记成"用户改的"（比如老版本留下的默认值）→ 仍然退回默认
+	const stale = pure.themeFrom({ currentColor: '#ff00ff' }, {})
+	check(stale.currentColor !== '#ff00ff', '没标 user 的存量值把默认色盖住了')
+	console.log('  出厂默认只有一套；亲手改过的那一项钉死；存量脏值兜住')
 }
 
 console.log('用例 18：全树唯一的上色规则 —— 描边和填充永远同一个颜色')
@@ -1021,7 +1023,7 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 	// 下面每一条都在钉这句话的一个侧面。
 	const roles = [['normal', false], ['normal', true], ['compact', true], ['empty', false]]
 	for (const dark of [true, false]) {
-		const theme = pure.themeFrom({}, {}, dark)
+		const theme = pure.themeFrom({}, {})
 		const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
 		for (const [kind, active] of roles) {
 			const rest = pure.inkOf(kind, active, false, theme, dark)
@@ -1042,9 +1044,14 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 			//    画的时候再偷偷调一次，用户就会在设置里看到一个色、树上量到另一个色。
 			check(rest.ink === theme[pure.ROLES[pure.roleOf(kind, active)].color],
 				`${label} 描边被改动了：主题里是 ${theme[pure.ROLES[pure.roleOf(kind, active)].color]}，画出来是 ${rest.ink}`)
-			// ⑥ 对比度是**默认色自己**的责任，不是画的时候补救
-			check(pure.contrastRatio(rest.ink, page) >= pure.CONTRAST_MIN - 0.05,
-				`${label} 默认色对底色只有 ${pure.contrastRatio(rest.ink, page).toFixed(2)}:1 —— 默认色得自己扛住`)
+			// ⑥ 对比度是**默认色自己**的责任，不是画的时候补救。
+			//    ⚠️ 但只对**暗色**担保：调色板不再分明暗（John 明确要的），
+			//    浅色主题下这几个色只有 2~2.5:1。那是取舍，不是 bug ——
+			//    所以这条只在暗色下查，别哪天"顺手"把浅色也加回来。
+			if (dark) {
+				check(pure.contrastRatio(rest.ink, page) >= pure.CONTRAST_MIN - 0.05,
+					`${label} 默认色对深底只有 ${pure.contrastRatio(rest.ink, page).toFixed(2)}:1 —— 默认色得自己扛住`)
+			}
 		}
 	}
 
@@ -1053,9 +1060,9 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 	//    明暗自适应属于默认值那一层（上面 ⑥），不属于这一层。
 	for (const seed of ['#fff833', '#ffd43b', '#1a1a1a', '#f0f0f0']) {
 		for (const dark of [true, false]) {
-			const theme = Object.assign({}, pure.themeFrom({}, {}, dark), { normalColor: seed, favoriteColor: seed })
+			const theme = Object.assign({}, pure.themeFrom({}, {}), { normalColor: seed, favoriteColor: seed })
 			check(pure.inkOf('normal', false, true, theme).fill === seed, `${seed} 在${dark ? '暗' : '亮'}色下被改成了 ${pure.inkOf('normal', false, true, theme).fill}`)
-			check(pure.starSkin(true, dark, undefined, seed, theme).fill === seed, `${seed} 收藏在${dark ? '暗' : '亮'}色下被改动了`)
+			check(pure.starSkin(true, undefined, seed, theme).fill === seed, `${seed} 收藏在${dark ? '暗' : '亮'}色下被改动了`)
 		}
 	}
 
@@ -1063,10 +1070,10 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 	//    这就是 John 说的"色差"那条，直接钉死。
 	for (const dark of [true, false]) {
 		const seed = '#ffd43b'
-		const theme = Object.assign({}, pure.themeFrom({}, {}, dark), { normalColor: seed })
+		const theme = Object.assign({}, pure.themeFrom({}, {}), { normalColor: seed })
 		for (const focused of [false, true]) {
 			const plain = pure.inkOf('normal', false, focused, theme, dark)
-			const fav = pure.starSkin(focused, dark, undefined, seed, theme)
+			const fav = pure.starSkin(focused, undefined, seed, theme)
 			check(plain.ink === fav.ink && plain.fill === fav.fill,
 				`${dark ? '暗' : '亮'}色下同一个 ${seed}，普通节点 ${plain.ink}/${plain.fill}、收藏 ${fav.ink}/${fav.fill} —— 对不上就是色差`)
 		}
@@ -1088,7 +1095,7 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 	// 够了就一个像素不动 —— 这条防的是"顺手把所有颜色都重算一遍"
 	check(pure.readable('#58a6ff', true) === '#58a6ff', '深底上本来就够对比度的颜色不许被动')
 
-	const sample = pure.inkOf('normal', false, false, pure.themeFrom({}, {}, false), false)
+	const sample = pure.inkOf('normal', false, false, pure.themeFrom({}, {}), false)
 	console.log(`  亮色普通节点：描边 ${sample.ink}，填充 ${sample.fill}（同色，只差 ${pure.FILL_ALPHA} 透明度）`)
 }
 
@@ -1125,24 +1132,14 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 		// ② 收藏**没有自己的上色规则**，它只是换个色号走同一条路。
 		//    以前这里是"星身填亮黄 + 描边另算一个压深的同色"，于是同一个 #ffd43b，
 		//    普通节点是空心黄边、收藏是实心黄加暗黄边 —— 三个颜色，用户只设了一个。
-		for (const dark of [true, false]) {
-			const skin = pure.starSkin(false, dark)
-			const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
-			check(skin.ink === pure.paletteOf(dark).favoriteColor, `${dark ? '暗' : '亮'}色下收藏该直接取 PALETTE 里那一版，不许自己算一套`)
-			check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${dark ? '暗' : '亮'}色下填充该是描边色的半透明版`)
-			check(skin.accent === skin.ink, `${dark ? '暗' : '亮'}色下外发光该和描边同色`)
-			check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
-				`${dark ? '暗' : '亮'}色下默认色对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
-		}
-		// ③ 暗色是用户的日常模式：那个黄必须一个像素都不动
-		check(pure.starSkin(false, true).ink === gold, '暗色下那个黄被动过了 —— 它对深底 13:1，不该动')
-		// ④ 亮色那版由 readable 算出来，压到**刚好够**就停（越压越不像黄）
-		const lit = pure.starSkin(false, false).ink
-		const ratio = pure.contrastRatio(lit, pure.BACKDROP.light)
-		check(ratio >= pure.CONTRAST_MIN - 0.05 && ratio <= pure.CONTRAST_MIN + 0.15, `亮色下压过头了（${ratio.toFixed(2)}:1）`)
-		check(pure.hexToHsl(lit).l < pure.hexToHsl(gold).l, '白底上该往深里调')
-		// ⚠️ 亮色那版是**算出来的**，不是手抄的十六进制 —— 改了基色它自动跟着变
-		check(lit === pure.readable(gold, false), '亮色版收藏色该由 readable 从基色算出来')
+		const skin = pure.starSkin(false)
+		check(skin.ink === pure.paletteOf().favoriteColor, '收藏该直接取 PALETTE 里那一个，不许自己算一套')
+		check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), '填充该是描边色的半透明版')
+		check(skin.accent === skin.ink, '外发光该和描边同色')
+		// ③ 那个黄必须一个像素都不动 —— 不分明暗，也不再被对比度兜底改写
+		check(skin.ink === gold, '默认那个黄被动过了')
+		check(pure.contrastRatio(skin.ink, pure.BACKDROP.dark) >= pure.CONTRAST_MIN,
+			'默认黄对深底该远够 3:1')
 
 		// ⑤ HSL round-trip 不许跑偏，不然上面每一条都建在沙子上
 		for (const hex of ['#ffd43b', '#000000', '#ffffff', '#58a6ff', '#7f7f7f']) {
@@ -1153,24 +1150,21 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 		// ⑥ 换成任何一个颜色都得站得住：**原样用**，而且描边填充永远同色
 		for (const seed of ['#ffd43b', ...pure.FAV_COLORS.slice(1), '#1a1a1a', '#f0f0f0', '#ffffff', '#000000']) {
 			for (const dark of [true, false]) {
-				const skin = pure.starSkin(false, dark, undefined, seed)
+				const skin = pure.starSkin(false, undefined, seed)
 				check(skin.ink === seed.toLowerCase(), `${seed} 被改动成了 ${skin.ink} —— 用户挑的色不许动`)
 				check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${seed} 的填充和描边不同色了：${skin.fill}`)
 			}
 		}
 		// ⚠️ `readable` 推的方向：亮底往深里推、深底往亮里推。近黑色配深底就是后者 ——
 		//    它比底色还深，再深下去只会和底色糊在一起。
-		check(pure.relLuminance(pure.readable('#ffd43b', false)) < pure.relLuminance('#ffd43b'), '白底上该往深里推')
-		check(pure.relLuminance(pure.readable('#1a1a1a', true)) > pure.relLuminance('#1a1a1a'), '近黑色配深底该往亮里推')
-
 		console.log(`  一个色 ${gold}（亮度 ${pure.relLuminance(gold).toFixed(2)}、色相 ${hue.toFixed(0)}°）：` +
-			`深底 ${pure.starSkin(false, true).ink} 原样 / 白底 ${lit}（${ratio.toFixed(2)}:1）`)
+			`明暗两边都是 ${pure.starSkin(false).ink}，逐字节相同`)
 	}
 
 	// ⚠️ 实心**只表示"正看着这一轮"**，收藏不再自带实心。
 	//    原来收藏一律填实，于是"填实"同时背着两个含义，谁都读不出来是哪个。
-	const idle = pure.starSkin(false, true)
-	const here = pure.starSkin(true, true)
+	const idle = pure.starSkin(false)
+	const here = pure.starSkin(true)
 	check(idle.ink === here.ink, '描边色不该随"是不是当前点"变 —— 变的只有填充')
 	check(idle.fill !== here.fill && here.fill === here.ink, '收藏的当前点该填实，别的时候该是半透明')
 	// 外发光同样只在当前点挂。参数顺序：(kind, active, hover, size, focused, theme, alpha, star, dark)
@@ -1182,8 +1176,8 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 
 console.log('用例 20：收藏过的点不跟着"路径外"那一档淡下去')
 {
-	const theme = pure.themeFrom({}, {}, true)
-	const star = pure.starSkin(false, true)
+	const theme = pure.themeFrom({}, {})
+	const star = pure.starSkin(false)
 	const plain = pure.dotStyle('normal', false, false, 11, false, theme)
 	const fancy = pure.dotStyle('normal', false, false, 11, false, theme, undefined, star)
 	// 收藏的意思就是"待会儿我要回来找它"，而它多半不在当前路径上。
@@ -1351,11 +1345,13 @@ console.log('用例 25：收藏能换图标，但换不掉那个黄')
 	}
 
 	// 颜色**不跟着形状走**：换了图标还是那个黄，不然"哪个是收藏"当场失效
-	const plain = pure.starSkin(false, true)
-	const fancy = pure.starSkin(false, true, 'cross')
+	const plain = pure.starSkin(false)
+	const fancy = pure.starSkin(false, 'cross')
 	check(fancy.ink === plain.ink && fancy.fill === plain.fill, '换了图标连颜色也跟着变了 —— 收藏就不再是一眼能扫出来的记号')
 	check(fancy.shape.value === 'cross' && plain.shape.value === 'star', 'starSkin 没把挑的形状带出来')
-	check(pure.starSkin(false, false).ink !== pure.STAR_COLOR, '亮色模式下描边没压深 —— 原色对白底只有 1.95:1，看不清')
+	// ⚠️ 这里原来查的是"亮色模式下描边该被压深"。那条规矩已经被明确撤掉了
+	//    （John：「不需要明暗不一样了，全调成一样的」），现在反过来钉住：**不许压**。
+	check(pure.starSkin(false).ink === pure.STAR_COLOR, '收藏色被按主题改过了 —— 现在只有一套色')
 
 	// 画出来的点要用挑的那个形状
 	const drawn = pure.dotStyle('normal', false, false, 11, false, pure.THEME, 1, fancy)
@@ -1394,6 +1390,32 @@ console.log('用例 26：收藏图标存得住，取消收藏不把它一起抹�
 	check(pure.readFavIcons()['s9:2'] === undefined, '恢复默认之后还留在字典里')
 	check(pure.readFavIcons().root === 'hexagon', '删一个把别的也带走了')
 	console.log('  字典算术无副作用；恢复默认是删而不是存 star；取消收藏不误伤图标')
+}
+
+console.log('用例 27：手打的六位色值怎么收')
+{
+	// ① 人会那么打的三种写法，都得认
+	check(pure.hexOf('#FFD43B') === '#ffd43b', '大写没归一')
+	check(pure.hexOf('ffd43b') === '#ffd43b', '不带 # 的没认出来')
+	check(pure.hexOf('  #58A6FF  ') === '#58a6ff', '从别处复制来的两头空格没剪掉')
+
+	// ② 认不得的一律 undefined —— **不许猜**。
+	//    三位缩写尤其不能收：收了就得替用户把 #fd3 摊成 #ffdd33，
+	//    而他很可能只是打到一半，当场跳成一个他没选的颜色。
+	for (const bad of ['#fd3', 'fd3', '#12345g', '#ffd43bb', '#', '', 'red', null, undefined, 123, {}]) {
+		check(pure.hexOf(bad) === undefined, `认不得的「${String(bad)}」被收下了：${pure.hexOf(bad)}`)
+	}
+
+	// ③ 出来的东西必须能直接进 CSS —— 也就是必须过得了 isHex 这一关。
+	//    两个判据要是哪天走岔了，设置里存进去的色值画不出来。
+	for (const text of ['#FFD43B', 'ffd43b', '#58a6ff', '000000', 'FFFFFF']) {
+		check(pure.isHex(pure.hexOf(text)), `hexOf('${text}') 的结果过不了 isHex`)
+	}
+	// ④ 已经是规范写法的，转一圈必须原样回来
+	for (const hex of Object.values(pure.PALETTE)) {
+		check(pure.hexOf(hex) === hex, `${hex} 转一圈变成了 ${pure.hexOf(hex)}`)
+	}
+	console.log('  #/大小写/空格三种宽容；三位缩写与脏值一律不收；出来的都过得了 isHex')
 }
 
 report()

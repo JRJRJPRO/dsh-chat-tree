@@ -37,7 +37,7 @@ export function Rail(props) {
 	const range = visibleRange(tuned)
 	// 主题：每个字段各自回退，缺一项不影响其他项
 	// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
-	const theme = themeFrom(tuned, settings.user, dark)
+	const theme = themeFrom(tuned, settings.user)
 	const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 	const current = listState && listState.current
@@ -297,16 +297,16 @@ export function Rail(props) {
 		}
 		// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 		// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-		const star = favorites.has(node.key) ? starSkin(isFocused, dark, favIcons[node.key], favColors[node.key], theme) : undefined
+		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme) : undefined
 		// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
 		const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
-		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme, dark) : star
+		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
 		parts.push(h('span', {
 			key: `d${node.key}`,
 			style: Object.assign(
 				{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
 				TAPPABLE,
-				dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star, dark),
+				dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
 				// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 				//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 				//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
@@ -428,9 +428,9 @@ export function Rail(props) {
 				favorites, favIcons, favColors,
 				// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 				// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
-				starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+				starInk: starSkin(false, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
 				// 色板里「恢复默认」那一格画的就是它 —— 不给的话那一格是个看不出颜色的空圈
-				defaultInk: starSkin(false, dark, undefined, undefined, theme).ink,
+				defaultInk: starSkin(false, undefined, undefined, theme).ink,
 				onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 				onFavorite: (key, on) => {
 					writeFavorite(key, on)

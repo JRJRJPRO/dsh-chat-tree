@@ -6,6 +6,7 @@
 import { h, react } from './runtime.js'
 import { CUSTOM, GLYPH_MAX, ICON_EDGE, PICTURE, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
+import { HexField } from './ui-detail.js'
 import { useObservable } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { useHover } from './pointer.js'
@@ -142,7 +143,7 @@ export function SettingsCard(props) {
 		const spec = FIELDS.find((one) => one.field === field)
 		// 颜色和形状没被亲手改过时，实际画上去的是**方案色**（themeFrom 的规矩），
 		// 这里也得显示方案色 —— 否则色板上写着 A、树上画的是 B，还以为坏了
-		if (spec.kind === 'color' || spec.kind === 'shape') return themeFrom(values, user, dark)[field]
+		if (spec.kind === 'color' || spec.kind === 'shape') return themeFrom(values, user)[field]
 		return spec.accept(values[field]) ? values[field] : spec.fallback
 	}
 
@@ -342,6 +343,8 @@ export function SettingsCard(props) {
 					key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
 					onChange: (event) => put(spot.color, event.target.value),
 				}),
+				// 取色盘只给三个十进制数字，而人手里的色值都是六位十六进制
+				h(HexField, { key: 'hex', value: color, disabled: !on, onPick: (value) => put(spot.color, value) }),
 				shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true, spot.extra),
 			]),
 			h('p', { key: 'p', style: S.hint }, spot.hint),

@@ -74,6 +74,22 @@ export function scaleText(step) {
 
 export const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 
+/**
+ * 把人手敲的色值归一成 `#rrggbb`，敲不成样子就 `undefined`。
+ *
+ * 比 `isHex` 宽的地方只有三处，全是"人会那么打"：前面的 `#` 可有可无、
+ * 大小写不论、两头允许有空格（从别处复制过来几乎必带）。
+ * 位数**不放宽** —— 三位缩写（#fd3）不收：收了就得替用户猜 `#ffdd33`，
+ * 而他可能是打到一半。宁可不动，也不要自作主张填一个他没打的颜色。
+ *
+ * @param text - 输入框里的原文
+ * @returns `#rrggbb`（小写），认不得就 undefined
+ */
+export const hexOf = (text) => {
+	const raw = String(text === undefined || text === null ? '' : text).trim().replace(/^#/, '')
+	return /^[0-9a-fA-F]{6}$/.test(raw) ? `#${raw.toLowerCase()}` : undefined
+}
+
 export const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
 /**
@@ -106,7 +122,7 @@ export const ROWS = [
 		color: 'favoriteColor',
 		shape: 'favoriteShape',
 		extra: ['star'],
-		hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，不会再被自动调深调浅。',
+		hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，明暗主题下都是这个色。',
 	},
 	// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 	// 一律从 ROLES 查，不在这儿重写一遍
@@ -148,17 +164,18 @@ export const FIELDS = [
 /**
  * 这一帧该用哪套颜色和形状。
  *
- * 规矩只有一条：**没被用户亲手改过的，跟着当前明暗走；改过的就钉死。**
- * 所以宿主一切明暗树就立刻跟着换，而用户自己挑的那个色不会被悄悄改掉。
- * （卡片上按「重置」清掉 user 标记，那一项就重新跟着明暗走。）
+ * 规矩只有一条：**没被用户亲手改过的，用出厂默认；改过的就钉死。**
+ * 用户自己挑的那个色不会被悄悄改掉 —— 不换算、不按主题调、一个像素不动。
+ * （卡片上按「重置」清掉 user 标记，那一项就退回默认。）
+ *
+ * ⚠️ 默认色**不再分明暗**（见 `paletteOf`），所以这里也不再需要知道明暗。
  *
  * @param values - 设置里存的值
  * @param user - 哪些字段是用户亲手改过的（宿主快照里的 `user`）
- * @param dark - 当前是不是暗色
  * @returns 四个角色的颜色与形状
  */
-export function themeFrom(values, user, dark) {
-	const base = paletteOf(dark)
+export function themeFrom(values, user) {
+	const base = paletteOf()
 	const theme = Object.assign({}, base)
 	for (const spec of FIELDS) {
 		if (spec.kind !== 'color' && spec.kind !== 'shape') continue

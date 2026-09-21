@@ -92,7 +92,7 @@ import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout
 import { RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, rewindRetryDelay, starAnimation, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
-import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
+import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
 import { isDark } from './theme.js'
 import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 
@@ -122,7 +122,7 @@ export const __pure = {
 	// 焦点被宿主抢走时抢不抢回来
 	shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP, favSwatch,
 	// 配色与明暗
-	PALETTE, paletteOf, themeFrom, isDark, isHex,
+	PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 	// 几何
 	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 	// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了

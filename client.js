@@ -1782,10 +1782,6 @@ window.__ModuleLoader__.load({
 		 */
 		const STAR_COLOR = '#ffd43b'
 
-		// ⚠️ 这一块**必须排在 `PALETTE` 前面**：亮色版的收藏色是 `readable(STAR_COLOR, false)`
-		//    算出来的，而 `BACKDROP` / `CONTRAST_MIN` 是 const —— 排在后面就是 TDZ，
-		//    整个 bundle 在加载时 ReferenceError。（踩过，好在炸得很响。）
-
 		/**
 		 * 算对比度用的参考底色。
 		 *
@@ -1860,18 +1856,8 @@ window.__ModuleLoader__.load({
 		 * 虚线边才是它自己的记号（在 ROLES 里），不跟着颜色走。
 		 */
 		const PALETTE = {
-			// ⚠️ `favoriteColor` 的两版是**算出来的**：亮色那版由 `readable` 把同一个黄压到
-			//    白底上够 3:1。手抄一个十六进制的话，改了基色就得记得改它，而忘了不会报错。
-			dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff', favoriteColor: STAR_COLOR },
-			// 压缩色用的是宿主自己的 amber-600（`--dsw-static-amber-600`），
-			// 和界面其它"警示"语义同色；早先那个 #bc4c00 烧焦橙在白底上太闷。
-			// ⚠️ amber-600 原值在白底上只有 2.79:1，差一点点 —— 压到刚好够。
-			//    默认色必须自己扛住对比度：画的时候**不会**再有人替它兜底（见 `paint`）。
-			light: {
-				normalColor: '#8c959f', currentColor: '#1f6feb',
-				compactColor: readable('#dd8629', false), emptyColor: '#1f6feb',
-				favoriteColor: readable(STAR_COLOR, false),
-			},
+			normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657',
+			emptyColor: '#58a6ff', favoriteColor: STAR_COLOR,
 		}
 
 		/**
@@ -1889,21 +1875,27 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 当前明暗下的那一版。
-		 * @param dark - 是不是暗色
-		 * @returns 四个角色的颜色 + 形状
+		 * 出厂默认的颜色 + 形状。
+		 *
+		 * ⚠️ **不分明暗，只有这一套。** 以前是 `{dark, light}` 两版，切主题时整棵树换色。
+		 *    John 的原话："不需要明暗不一样了，全调成一样的" —— 起因是同一个收藏，暗色下量到
+		 *    #ffd43b、浅色下量到 #b88f00，他要的是"一个颜色就是一个颜色"。
+		 *    代价写明白：浅色主题下这几个色的对比度不再有人担保（当前色 #58a6ff 对白底只有
+		 *    2.4:1）。这是**他明确要的取舍**，别哪天"顺手修一下"又给改回两版。
+		 *
+		 * @returns 四个角色的颜色 + 收藏色 + 各自的形状
 		 */
-		function paletteOf(dark) {
-			return Object.assign({}, SHAPE_DEFAULTS, dark === false ? PALETTE.light : PALETTE.dark)
+		function paletteOf() {
+			return Object.assign({}, SHAPE_DEFAULTS, PALETTE)
 		}
 
 		/**
-		 * 默认主题 = 暗色版。
+		 * 默认主题。
 		 *
 		 * 留着它是因为一堆地方要一个"没有设置时也能画"的兜底（`shapeOf(kind, active)`
-		 * 不传 theme 时用的就是它）。真正画树时 Rail 会按**当前明暗**现算一份。
+		 * 不传 theme 时用的就是它）。
 		 */
-		const THEME = paletteOf(true)
+		const THEME = paletteOf()
 
 
 		// ===== 收藏：五角星 =====
@@ -2095,15 +2087,13 @@ window.__ModuleLoader__.load({
 		 *    同一个 `#ffd43b`，普通节点是"空心黄边"、收藏是"实心黄 + 暗黄边"——
 		 *    三个颜色，用户设的只有一个，哪个都对不上。
 		 * @param focused - 正看着这一轮（= 当前点）
-		 * @param dark - 是不是暗色
 		 * @param icon - 这个点自己挑的图标；空 = 跟着默认走
 		 * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
 		 * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
 		 * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
 		 */
-		function starSkin(focused, dark, icon, want, theme) {
-			// 给了 theme 就用它（它已经按明暗选好色了，见 `themeFrom`）；没给就按 dark 挑一版默认
-			const skin = theme || paletteOf(dark !== false)
+		function starSkin(focused, icon, want, theme) {
+			const skin = theme || paletteOf()
 			// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 			// 认得严一点：这个字符串要直接进 CSS。
 			const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
@@ -2305,13 +2295,11 @@ window.__ModuleLoader__.load({
 		 * @param kind - normal / compact / empty
 		 * @param active - 在当前路径上
 		 * @param focused - 正看着这一轮
-		 * @param theme - 颜色与形状；颜色本身已经按明暗选好了（见 `themeFrom`）
-		 * @param dark - 没给 theme 时按它挑一版默认色；省略按暗色算
+		 * @param theme - 颜色与形状；设置里改过的从这儿来（见 `themeFrom`）
 		 * @returns `{accent, ink, fill, solid}`
 		 */
-		function inkOf(kind, active, focused, theme, dark) {
-			// 给了 theme 就用它（颜色已经按明暗选好了，见 `themeFrom`）；没给就按 dark 挑一版默认
-			const skin = theme || paletteOf(dark !== false)
+		function inkOf(kind, active, focused, theme) {
+			const skin = theme || paletteOf()
 			return paint(skin[ROLES[roleOf(kind, active)].color], focused)
 		}
 
@@ -2334,10 +2322,9 @@ window.__ModuleLoader__.load({
 		 * @param theme - 颜色与形状，缺省用 THEME
 		 * @param alpha - 鱼眼透明度，缺省 1；乘在原有透明度上，不是覆盖
 		 * @param star - `starSkin()` 的结果；给了就整个换成五角星（收藏），不给就照角色画
-		 * @param dark - 是不是暗色主题；省略按暗色算
 		 * @returns 内联样式
 		 */
-		function dotStyle(kind, active, hover, size, focused, theme, alpha, star, dark) {
+		function dotStyle(kind, active, hover, size, focused, theme, alpha, star) {
 			const k = size / Z.dot
 			// 收藏过的点整个换成五角星：形状和颜色都由 `star` 说了算，角色那一套全部让位。
 			// 之所以传进来一个**算好的 skin** 而不是一个 `starred` 布尔，是因为星星的黄
@@ -2345,7 +2332,7 @@ window.__ModuleLoader__.load({
 			// 收藏的形状由 `starSkin` 一起带过来（用户能在详情卡里换图标）；
 			// 老调用方只传 `{accent, ink, fill}` 的话退回五角星。
 			const shape = star === undefined ? shapeOf(kind, active, theme) : star.shape || STAR
-			const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme, dark) : star
+			const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme) : star
 			// 多边形 / 字 / 图片都不靠这个 <span> 的 border+background 成形：
 			// 方框会在图形外面套一圈，所以这三类一律把方框关掉，由里面的内容自己画。
 			// 外发光也得换 —— box-shadow 画的是**方框**的光晕，套在三角外面就是个方的光。
@@ -3393,6 +3380,22 @@ window.__ModuleLoader__.load({
 
 		const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 
+		/**
+		 * 把人手敲的色值归一成 `#rrggbb`，敲不成样子就 `undefined`。
+		 *
+		 * 比 `isHex` 宽的地方只有三处，全是"人会那么打"：前面的 `#` 可有可无、
+		 * 大小写不论、两头允许有空格（从别处复制过来几乎必带）。
+		 * 位数**不放宽** —— 三位缩写（#fd3）不收：收了就得替用户猜 `#ffdd33`，
+		 * 而他可能是打到一半。宁可不动，也不要自作主张填一个他没打的颜色。
+		 *
+		 * @param text - 输入框里的原文
+		 * @returns `#rrggbb`（小写），认不得就 undefined
+		 */
+		const hexOf = (text) => {
+			const raw = String(text === undefined || text === null ? '' : text).trim().replace(/^#/, '')
+			return /^[0-9a-fA-F]{6}$/.test(raw) ? `#${raw.toLowerCase()}` : undefined
+		}
+
 		const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
 		/**
@@ -3425,7 +3428,7 @@ window.__ModuleLoader__.load({
 				color: 'favoriteColor',
 				shape: 'favoriteShape',
 				extra: ['star'],
-				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，不会再被自动调深调浅。',
+				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，明暗主题下都是这个色。',
 			},
 			// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 			// 一律从 ROLES 查，不在这儿重写一遍
@@ -3467,17 +3470,18 @@ window.__ModuleLoader__.load({
 		/**
 		 * 这一帧该用哪套颜色和形状。
 		 *
-		 * 规矩只有一条：**没被用户亲手改过的，跟着当前明暗走；改过的就钉死。**
-		 * 所以宿主一切明暗树就立刻跟着换，而用户自己挑的那个色不会被悄悄改掉。
-		 * （卡片上按「重置」清掉 user 标记，那一项就重新跟着明暗走。）
+		 * 规矩只有一条：**没被用户亲手改过的，用出厂默认；改过的就钉死。**
+		 * 用户自己挑的那个色不会被悄悄改掉 —— 不换算、不按主题调、一个像素不动。
+		 * （卡片上按「重置」清掉 user 标记，那一项就退回默认。）
+		 *
+		 * ⚠️ 默认色**不再分明暗**（见 `paletteOf`），所以这里也不再需要知道明暗。
 		 *
 		 * @param values - 设置里存的值
 		 * @param user - 哪些字段是用户亲手改过的（宿主快照里的 `user`）
-		 * @param dark - 当前是不是暗色
 		 * @returns 四个角色的颜色与形状
 		 */
-		function themeFrom(values, user, dark) {
-			const base = paletteOf(dark)
+		function themeFrom(values, user) {
+			const base = paletteOf()
 			const theme = Object.assign({}, base)
 			for (const spec of FIELDS) {
 				if (spec.kind !== 'color' && spec.kind !== 'shape') continue
@@ -3668,6 +3672,65 @@ window.__ModuleLoader__.load({
 
 		/** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
 		const CARD_MARK = 'data-dsh-tree-card'
+
+		/**
+		 * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。
+		 *
+		 * 为什么要它：`<input type="color">` 只给取色盘和三个十进制数字，
+		 * 而人手里的颜色几乎都是从别处复制来的六位十六进制 —— 没有这个框就只能
+		 * 把色值拆成 R/G/B 三个十进制自己换算一遍。
+		 *
+		 * 两条规矩：
+		 *   · **边打边生效，但只在认得出来的时候。** 打到 `#ff` 时什么都不做，
+		 *     不去猜他要的是 `#ffffff` 还是 `#ff0000`。
+		 *   · **离开焦点就把草稿丢掉**，显示回真实值。否则框里会永远留着一串
+		 *     没生效的半截字符，而树上是另一个颜色 —— 又一个"看到的和画的不一样"。
+		 *
+		 * ⚠️ 键盘事件必须逐个 stopPropagation：这个框浮在宿主的聊天界面上，
+		 *    不拦住的话敲的字会漏进聊天输入框（和 NameField 同一个坑）。
+		 */
+		function HexField(props) {
+			const [draft, setDraft] = react.useState(null)
+			const real = String(props.value === undefined || props.value === null ? '' : props.value).toUpperCase()
+			const shown = draft === null ? real : draft
+			const good = hexOf(shown) !== undefined
+			return h('input', {
+				type: 'text', value: shown, spellCheck: false, maxLength: 7,
+				placeholder: '#RRGGBB',
+				title: '直接填六位色值，比如 #FFD43B（# 可省、大小写不论）',
+				disabled: props.disabled === true,
+				style: {
+					width: '84px', flex: '0 0 auto', boxSizing: 'border-box',
+					padding: '0 6px', height: `${props.size || 22}px`,
+					background: C.input, color: good ? C.text : C.muted,
+					border: `1px solid ${good && draft !== null ? C.accent : C.line}`,
+					borderRadius: '6px', outline: 'none',
+					font: '11.5px/1 ui-monospace,SFMono-Regular,Consolas,monospace',
+					fontVariantNumeric: 'tabular-nums',
+					cursor: props.disabled === true ? 'not-allowed' : 'text',
+					opacity: props.disabled === true ? 0.45 : 1,
+				},
+				onChange: (event) => {
+					const next = event.target.value
+					setDraft(next)
+					const ok = hexOf(next)
+					if (ok !== undefined && typeof props.onPick === 'function') props.onPick(ok)
+				},
+				// 走开就把没打完的草稿丢掉，显示回真实值
+				onBlur: () => setDraft(null),
+				onClick: (event) => event.stopPropagation(),
+				onDoubleClick: (event) => event.stopPropagation(),
+				onKeyDown: (event) => {
+					event.stopPropagation()
+					if (event.key === 'Enter' || event.key === 'Escape') {
+						setDraft(null)
+						event.currentTarget.blur()
+					}
+				},
+				onKeyUp: (event) => event.stopPropagation(),
+				onKeyPress: (event) => event.stopPropagation(),
+			})
+		}
 
 		/**
 		 * 焦点守卫：把 `shouldRefocus` 那条规矩挂到一个真的输入框上。
@@ -4022,6 +4085,13 @@ window.__ModuleLoader__.load({
 					},
 					onClick: (event) => event.stopPropagation(),
 					onChange: (event) => { if (typeof onColor === 'function') onColor(event.target.value) },
+				}),
+				// 取色盘旁边再给一个能直接打六位色值的框
+				h(HexField, {
+					key: 'hex',
+					value: typeof props.ownColor === 'string' ? props.ownColor : color,
+					size: PICK,
+					onPick: (value) => { if (typeof onColor === 'function') onColor(value) },
 				}),
 			])
 		}
@@ -4488,7 +4558,7 @@ window.__ModuleLoader__.load({
 				const spec = FIELDS.find((one) => one.field === field)
 				// 颜色和形状没被亲手改过时，实际画上去的是**方案色**（themeFrom 的规矩），
 				// 这里也得显示方案色 —— 否则色板上写着 A、树上画的是 B，还以为坏了
-				if (spec.kind === 'color' || spec.kind === 'shape') return themeFrom(values, user, dark)[field]
+				if (spec.kind === 'color' || spec.kind === 'shape') return themeFrom(values, user)[field]
 				return spec.accept(values[field]) ? values[field] : spec.fallback
 			}
 
@@ -4688,6 +4758,8 @@ window.__ModuleLoader__.load({
 							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
 							onChange: (event) => put(spot.color, event.target.value),
 						}),
+						// 取色盘只给三个十进制数字，而人手里的色值都是六位十六进制
+						h(HexField, { key: 'hex', value: color, disabled: !on, onPick: (value) => put(spot.color, value) }),
 						shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true, spot.extra),
 					]),
 					h('p', { key: 'p', style: S.hint }, spot.hint),
@@ -4744,7 +4816,7 @@ window.__ModuleLoader__.load({
 			const range = visibleRange(tuned)
 			// 主题：每个字段各自回退，缺一项不影响其他项
 			// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
-			const theme = themeFrom(tuned, settings.user, dark)
+			const theme = themeFrom(tuned, settings.user)
 			const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
 			const current = listState && listState.current
@@ -5004,16 +5076,16 @@ window.__ModuleLoader__.load({
 				}
 				// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 				// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-				const star = favorites.has(node.key) ? starSkin(isFocused, dark, favIcons[node.key], favColors[node.key], theme) : undefined
+				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
 				const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
-				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme, dark) : star
+				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
 				parts.push(h('span', {
 					key: `d${node.key}`,
 					style: Object.assign(
 						{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
 						TAPPABLE,
-						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star, dark),
+						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
 						// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 						//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 						//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
@@ -5135,9 +5207,9 @@ window.__ModuleLoader__.load({
 						favorites, favIcons, favColors,
 						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
-						starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+						starInk: starSkin(false, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
 						// 色板里「恢复默认」那一格画的就是它 —— 不给的话那一格是个看不出颜色的空圈
-						defaultInk: starSkin(false, dark, undefined, undefined, theme).ink,
+						defaultInk: starSkin(false, undefined, undefined, theme).ink,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFavorite: (key, on) => {
 							writeFavorite(key, on)
@@ -5209,7 +5281,7 @@ window.__ModuleLoader__.load({
 			// 焦点被宿主抢走时抢不抢回来
 			shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP, favSwatch,
 			// 配色与明暗
-			PALETTE, paletteOf, themeFrom, isDark, isHex,
+			PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 			// 几何
 			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 			// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了

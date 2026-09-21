@@ -360,10 +360,6 @@ export function iconUrl(id) {
  */
 export const STAR_COLOR = '#ffd43b'
 
-// ⚠️ 这一块**必须排在 `PALETTE` 前面**：亮色版的收藏色是 `readable(STAR_COLOR, false)`
-//    算出来的，而 `BACKDROP` / `CONTRAST_MIN` 是 const —— 排在后面就是 TDZ，
-//    整个 bundle 在加载时 ReferenceError。（踩过，好在炸得很响。）
-
 /**
  * 算对比度用的参考底色。
  *
@@ -438,18 +434,8 @@ export function onAccent(hex) {
  * 虚线边才是它自己的记号（在 ROLES 里），不跟着颜色走。
  */
 export const PALETTE = {
-	// ⚠️ `favoriteColor` 的两版是**算出来的**：亮色那版由 `readable` 把同一个黄压到
-	//    白底上够 3:1。手抄一个十六进制的话，改了基色就得记得改它，而忘了不会报错。
-	dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff', favoriteColor: STAR_COLOR },
-	// 压缩色用的是宿主自己的 amber-600（`--dsw-static-amber-600`），
-	// 和界面其它"警示"语义同色；早先那个 #bc4c00 烧焦橙在白底上太闷。
-	// ⚠️ amber-600 原值在白底上只有 2.79:1，差一点点 —— 压到刚好够。
-	//    默认色必须自己扛住对比度：画的时候**不会**再有人替它兜底（见 `paint`）。
-	light: {
-		normalColor: '#8c959f', currentColor: '#1f6feb',
-		compactColor: readable('#dd8629', false), emptyColor: '#1f6feb',
-		favoriteColor: readable(STAR_COLOR, false),
-	},
+	normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657',
+	emptyColor: '#58a6ff', favoriteColor: STAR_COLOR,
 }
 
 /**
@@ -467,21 +453,27 @@ const SHAPE_DEFAULTS = {
 }
 
 /**
- * 当前明暗下的那一版。
- * @param dark - 是不是暗色
- * @returns 四个角色的颜色 + 形状
+ * 出厂默认的颜色 + 形状。
+ *
+ * ⚠️ **不分明暗，只有这一套。** 以前是 `{dark, light}` 两版，切主题时整棵树换色。
+ *    John 的原话："不需要明暗不一样了，全调成一样的" —— 起因是同一个收藏，暗色下量到
+ *    #ffd43b、浅色下量到 #b88f00，他要的是"一个颜色就是一个颜色"。
+ *    代价写明白：浅色主题下这几个色的对比度不再有人担保（当前色 #58a6ff 对白底只有
+ *    2.4:1）。这是**他明确要的取舍**，别哪天"顺手修一下"又给改回两版。
+ *
+ * @returns 四个角色的颜色 + 收藏色 + 各自的形状
  */
-export function paletteOf(dark) {
-	return Object.assign({}, SHAPE_DEFAULTS, dark === false ? PALETTE.light : PALETTE.dark)
+export function paletteOf() {
+	return Object.assign({}, SHAPE_DEFAULTS, PALETTE)
 }
 
 /**
- * 默认主题 = 暗色版。
+ * 默认主题。
  *
  * 留着它是因为一堆地方要一个"没有设置时也能画"的兜底（`shapeOf(kind, active)`
- * 不传 theme 时用的就是它）。真正画树时 Rail 会按**当前明暗**现算一份。
+ * 不传 theme 时用的就是它）。
  */
-export const THEME = paletteOf(true)
+export const THEME = paletteOf()
 
 
 // ===== 收藏：五角星 =====
@@ -673,15 +665,13 @@ export function fitContrast(hex, backdrop, target, dir) {
  *    同一个 `#ffd43b`，普通节点是"空心黄边"、收藏是"实心黄 + 暗黄边"——
  *    三个颜色，用户设的只有一个，哪个都对不上。
  * @param focused - 正看着这一轮（= 当前点）
- * @param dark - 是不是暗色
  * @param icon - 这个点自己挑的图标；空 = 跟着默认走
  * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
  * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
  * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
  */
-export function starSkin(focused, dark, icon, want, theme) {
-	// 给了 theme 就用它（它已经按明暗选好色了，见 `themeFrom`）；没给就按 dark 挑一版默认
-	const skin = theme || paletteOf(dark !== false)
+export function starSkin(focused, icon, want, theme) {
+	const skin = theme || paletteOf()
 	// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 	// 认得严一点：这个字符串要直接进 CSS。
 	const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
@@ -883,13 +873,11 @@ export function paint(color, focused) {
  * @param kind - normal / compact / empty
  * @param active - 在当前路径上
  * @param focused - 正看着这一轮
- * @param theme - 颜色与形状；颜色本身已经按明暗选好了（见 `themeFrom`）
- * @param dark - 没给 theme 时按它挑一版默认色；省略按暗色算
+ * @param theme - 颜色与形状；设置里改过的从这儿来（见 `themeFrom`）
  * @returns `{accent, ink, fill, solid}`
  */
-export function inkOf(kind, active, focused, theme, dark) {
-	// 给了 theme 就用它（颜色已经按明暗选好了，见 `themeFrom`）；没给就按 dark 挑一版默认
-	const skin = theme || paletteOf(dark !== false)
+export function inkOf(kind, active, focused, theme) {
+	const skin = theme || paletteOf()
 	return paint(skin[ROLES[roleOf(kind, active)].color], focused)
 }
 
@@ -912,10 +900,9 @@ export function inkOf(kind, active, focused, theme, dark) {
  * @param theme - 颜色与形状，缺省用 THEME
  * @param alpha - 鱼眼透明度，缺省 1；乘在原有透明度上，不是覆盖
  * @param star - `starSkin()` 的结果；给了就整个换成五角星（收藏），不给就照角色画
- * @param dark - 是不是暗色主题；省略按暗色算
  * @returns 内联样式
  */
-export function dotStyle(kind, active, hover, size, focused, theme, alpha, star, dark) {
+export function dotStyle(kind, active, hover, size, focused, theme, alpha, star) {
 	const k = size / Z.dot
 	// 收藏过的点整个换成五角星：形状和颜色都由 `star` 说了算，角色那一套全部让位。
 	// 之所以传进来一个**算好的 skin** 而不是一个 `starred` 布尔，是因为星星的黄
@@ -923,7 +910,7 @@ export function dotStyle(kind, active, hover, size, focused, theme, alpha, star,
 	// 收藏的形状由 `starSkin` 一起带过来（用户能在详情卡里换图标）；
 	// 老调用方只传 `{accent, ink, fill}` 的话退回五角星。
 	const shape = star === undefined ? shapeOf(kind, active, theme) : star.shape || STAR
-	const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme, dark) : star
+	const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme) : star
 	// 多边形 / 字 / 图片都不靠这个 <span> 的 border+background 成形：
 	// 方框会在图形外面套一圈，所以这三类一律把方框关掉，由里面的内容自己画。
 	// 外发光也得换 —— box-shadow 画的是**方框**的光晕，套在三角外面就是个方的光。
