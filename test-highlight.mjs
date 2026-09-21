@@ -750,13 +750,29 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	const three = pure.shapeSpec('char:甲乙丙')
 	check(pure.drawnWidth(three, 10) > pure.drawnWidth(one, 10), '三个字该比一个字宽')
 	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10), '不管几个字，高度都只有一个字高')
-	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * pure.GLYPH_SPAN,
-		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍，不然一个 5 字标签能把整棵树的列距撑开`)
+	// 封顶算的是**字本身**，外面那圈框另算（GLYPH_PAD）——
+	// 不封的话一个 5 字标签能把整棵树的列距撑开。
+	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * pure.GLYPH_SPAN * pure.GLYPH_PAD,
+		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍字宽加一圈框`)
+	// 框往外撑，字一个像素不缩 —— 默认点才 11px，把字缩进框里反而更难认
+	check(pure.shapeHeight(one, 10) > 10, '字外面那圈框得占地方，不然框和字就贴上了')
+	check(pure.glyphFont('甲', 10) === 10, '加了框之后字号不许缩')
 	// 字号跟着字数缩，好让这几个字正好填满那个封顶的宽度
 	check(pure.glyphFont('甲', 10) === 10, '一个字该用满字号')
 	check(pure.glyphFont('甲乙', 10) === 10, '两个字宽度也跟着翻倍，字号不用缩')
 	check(pure.glyphFont(full, 10) < pure.glyphFont('甲乙丙', 10), '宽度封顶之后，字数越多字号越小')
 	check(pure.glyphFont(full, 10) * [...full].length <= 10 * pure.GLYPH_SPAN + 1e-9, '五个字合起来不该超出封顶宽度')
+
+	// 自定义字外面那个框，描边 / 填充 / 线宽必须和别的形状同源 ——
+	// 不同源的话一排节点里混一个"没有边、直接浮着的字"，一眼就看得出是两拨人画的。
+	{
+		const skin = { ink: '#abc', fill: '#123', accent: '#abc' }
+		const box = pure.glyphBoxStyle(one, 10, skin, 1.5, false)
+		check(box.borderColor === skin.ink && box.background === skin.fill, '框的描边色和填充色要和别的形状同源')
+		check(box.borderWidth === '1.5px', '框的线宽要和同尺寸的方框类形状一样粗')
+		check(box.width === `${pure.drawnWidth(one, 10)}px` && box.height === `${pure.shapeHeight(one, 10)}px`,
+			'框的大小要和布局给它留的位置一致，否则不是糊出去就是空一圈')
+	}
 
 	// ⑤ 收藏的颜色：默认那个黄，改过的按点走
 	const gold = pure.starSkin(true, true)

@@ -1369,6 +1369,16 @@ window.__ModuleLoader__.load({
 		const GLYPH_SPAN = 3
 
 		/**
+		 * 字外面那个框比字本身大多少倍。
+		 *
+		 * 【为什么框要往外撑，而不是把字缩进去】默认点只有 11px。框画在原尺寸里的话，
+		 * 一圈 1.5px 的边就吃掉三成，字要缩到 8px —— 加了个框反而更难认，那就白加了。
+		 * 所以框往外撑，字一个像素不缩。撑出来的宽度走 `grow`，列距自己会让开
+		 * （放不下时 `railLayout` 会压列距，不会戳到一起）。
+		 */
+		const GLYPH_PAD = 1.3
+
+		/**
 		 * 一串字占点的几倍宽。`shapeSpec` 把它塞进 `grow`，于是列距、连线让位
 		 * 全都自动跟着走，不需要各处再认一次"这是个字"。
 		 * @param glyph - 那几个字
@@ -1571,7 +1581,9 @@ window.__ModuleLoader__.load({
 		 * @returns 竖向占高（像素）
 		 */
 		function shapeHeight(shape, size) {
-			if (shape.glyph !== undefined) return size
+			// 字是横着摊开的：`grow` 说的是横向几倍宽，竖直方向永远只有一个字那么高，
+			// 再加上外面那圈框 —— 所以是 `GLYPH_PAD`，不是 `grow`。
+			if (shape.glyph !== undefined) return size * GLYPH_PAD
 			return shapeBox(shape, size)
 		}
 
@@ -2017,7 +2029,10 @@ window.__ModuleLoader__.load({
 			if (text.startsWith(CUSTOM)) {
 				const glyph = text.slice(CUSTOM.length).trim()
 				// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
-				if (glyph !== '' && [...glyph].length <= GLYPH_MAX) return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
+				// ⚠️ `grow` 是**连框在内**的占宽（glyphGrow × GLYPH_PAD），而 `glyphFont` 算字号时
+				//    用的是不带 pad 的 `glyphGrow` —— 两个数差的那一圈就是框和字之间的空。
+				if (glyph !== '' && [...glyph].length <= GLYPH_MAX)
+					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) * GLYPH_PAD }
 			}
 			if (text.startsWith(PICTURE)) {
 				// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于
@@ -2054,7 +2069,10 @@ window.__ModuleLoader__.load({
 					color, fontSize: `${size}px`, lineHeight: `${size}px`, textAlign: 'center',
 					transform: spec.spin ? 'rotate(45deg) scale(.78)' : 'none',
 				},
-			}, dotInside(spec, size, skin, 1.5, dashed))
+				// ⚠️ 字要按 `size / GLYPH_PAD` 画：这里的外框是固定的 size×size 小方块，
+				//    而带框的字占 `size × GLYPH_PAD`，照原尺寸画会从选择器按钮里溢出来。
+				//    缩回去之后单字正好填满这颗预览，和别的形状一样齐。
+			}, dotInside(spec, spec.glyph === undefined ? size : size / GLYPH_PAD, skin, 1.5, dashed))
 		}
 
 		/**
@@ -2174,15 +2192,7 @@ window.__ModuleLoader__.load({
 			// ⚠️ 字**不能**直接当 <span> 的文本内容返回。那个 span 是 size×size 的方框，
 			//    两个字以上就会从右边糊出去（不是居中溢出）—— 这就是"超过 2 个字就不对劲"的
 			//    另一半。和多边形一样绝对居中，字号按字数自己缩，横向往两边等量溢出。
-			if (shape.glyph !== undefined) {
-				return h('span', {
-					style: {
-						position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-						whiteSpace: 'nowrap', pointerEvents: 'none',
-						fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1,
-					},
-				}, shape.glyph)
-			}
+			if (shape.glyph !== undefined) return h('span', { style: glyphBoxStyle(shape, size, skin, stroke, dashed) }, shape.glyph)
 			if (shape.poly === undefined) return null
 			const edge = shapeBox(shape, size)
 			return h(
@@ -2194,6 +2204,36 @@ window.__ModuleLoader__.load({
 				},
 				h('polygon', polyProps(shape, size, skin, stroke, dashed)),
 			)
+		}
+
+		/**
+		 * 自定义字外面那个框的内联样式。
+		 *
+		 * 单独抽出来是为了**能测**（和 `polyProps` 同一个理由）：描边色、填充色、线宽
+		 * 必须和方框类形状同源，藏在渲染函数里的话，哪天有人把边去掉或者换个颜色，
+		 * 一条断言都不会响 —— 而一排节点里混一个"没有边、直接浮着的字"，一眼就看得出
+		 * 是两拨人画的。
+		 *
+		 * ⚠️ 盒子的大小必须正好是布局给它留的那块（`drawnWidth` × `shapeHeight`）。
+		 *    画小了框和字之间空一圈，画大了就糊到隔壁列上 —— 两边都只会在真机上才看见。
+		 * @param shape - shapeSpec 的结果，要有 `glyph`
+		 * @param size - 点的直径
+		 * @param skin - `inkOf` 的结果
+		 * @param stroke - 描边宽度，和同尺寸下方框类形状的边框一样粗
+		 * @param dashed - 画成虚线（空节点的记号）
+		 * @returns 内联样式
+		 */
+		function glyphBoxStyle(shape, size, skin, stroke, dashed) {
+			return {
+				position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+				width: `${drawnWidth(shape, size)}px`, height: `${shapeHeight(shape, size)}px`,
+				display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
+				borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,
+				borderRadius: `${stroke}px`,
+				background: skin.fill,
+				whiteSpace: 'nowrap', pointerEvents: 'none',
+				fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1, color: skin.ink,
+			}
 		}
 
 		/**
@@ -4746,7 +4786,7 @@ window.__ModuleLoader__.load({
 			polyArea, growOf, regularPoly, crossPoly,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 			// 自定义字：上限、占几倍宽、该用多大字号
-			GLYPH_MAX, GLYPH_SPAN, glyphGrow, glyphFont,
+			GLYPH_MAX, GLYPH_SPAN, GLYPH_PAD, glyphGrow, glyphFont, glyphBoxStyle,
 			// 收藏：五角星的形状、配色、以及点下去那一下的动画
 			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版

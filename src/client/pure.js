@@ -58,6 +58,8 @@ import {
 	shapeHeight,
 	glyphGrow,
 	glyphFont,
+	GLYPH_PAD,
+	glyphBoxStyle,
 	GLYPH_MAX,
 	GLYPH_SPAN,
 	STAR,
@@ -99,7 +101,7 @@ export const __pure = {
 	polyArea, growOf, regularPoly, crossPoly,
 	SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 	// 自定义字：上限、占几倍宽、该用多大字号
-	GLYPH_MAX, GLYPH_SPAN, glyphGrow, glyphFont,
+	GLYPH_MAX, GLYPH_SPAN, GLYPH_PAD, glyphGrow, glyphFont, glyphBoxStyle,
 	// 收藏：五角星的形状、配色、以及点下去那一下的动画
 	STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 	// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
