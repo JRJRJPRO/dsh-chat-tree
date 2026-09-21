@@ -752,7 +752,7 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10) && pure.shapeHeight(one, 10) === 10 * pure.GLYPH_BOX,
 		'带框的字高度必须一律相同，一排看过去才齐')
 	// 封顶算的是**字本身**，外面那圈框另算 —— 不封的话一个 5 字标签能把整棵树的列距撑开
-	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * (pure.GLYPH_SPAN + 2 * pure.GLYPH_PAD),
+	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * (pure.GLYPH_SPAN + 2 * pure.GLYPH_PAD_X),
 		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍字宽外加左右各一圈框`)
 	// 框往外撑，字一个像素不缩 —— 默认点才 11px，把字缩进框里反而更难认
 	check(pure.shapeHeight(one, 10) > 10, '框得占地方，不然框和字就贴上了')
@@ -774,13 +774,13 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	for (const glyph of ['甲乙', 'AB', 'Hello', '甲乙丙', full]) {
 		const spec = pure.shapeSpec(`char:${glyph}`)
 		const gap = (pure.drawnWidth(spec, 10) - pure.glyphFont(glyph, 10) * pure.glyphEm(glyph)) / 2
-		check(Math.abs(gap - 10 * pure.GLYPH_PAD) < 1e-9, `「${glyph}」两边的空白该是定值，实际 ${gap.toFixed(2)}`)
+		check(Math.abs(gap - 10 * pure.GLYPH_PAD_X) < 1e-9, `「${glyph}」两边的空白该是定值，实际 ${gap.toFixed(2)}`)
 	}
 	// 单个窄字兜成方块：一个 `i` 只有 0.3 em，不兜底会画成一根瘦条
 	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) === pure.shapeHeight(pure.shapeSpec('char:i'), 10),
 		'单个窄字该兜成正方形，不然是根瘦条')
-	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) === pure.drawnWidth(one, 10),
-		'单个字不管宽窄，框都该一样大')
+	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) >= pure.shapeHeight(pure.shapeSpec('char:i'), 10),
+		'兜底只许把框撑宽，不许撑窄')
 
 	// 框和别的形状同源：一样的描边色、线宽。唯独**不填底**。
 	{
@@ -790,6 +790,10 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 		check(box.borderWidth === '1.5px', '框的线宽要和同尺寸的方框类形状一样粗')
 		// ⚠️ 填了底字就糊在底色里，当前那一轮（填充最实）反而最看不清
 		check(box.background === 'none', '框不许填底')
+		// ⚠️ 圆角跟着框高走，不跟描边宽度走。跟描边的话默认尺寸下只有 3px，
+		//    放在一个十几像素的框上远看就是个方框。
+		check(box.borderRadius === `${pure.shapeHeight(one, 10) * pure.GLYPH_RADIUS}px`, '圆角该按框高算')
+		check(pure.shapeHeight(one, 10) * pure.GLYPH_RADIUS > 1.5 * 2, '圆角得明显大于描边宽度那个量级，否则看不出是圆的')
 		check(box.width === `${pure.drawnWidth(one, 10)}px` && box.height === `${pure.shapeHeight(one, 10)}px`,
 			'框的大小要和布局给它留的位置一致，否则不是糊出去就是空一圈')
 	}

@@ -42,15 +42,37 @@ export const GLYPH_MAX = 5
 export const GLYPH_SPAN = 3
 
 /**
- * 字和外面那圈框之间留多少空，单位是点直径的倍数。
+ * 字左右两边各留多少空，单位是点直径的倍数（也就是一个方块字的宽）。
  *
- * ⚠️ 这是个**定值**，不是比例 —— 左右上下四边都是它。这正是"框看起来统一"
- *    的全部来源：不管框里是一个汉字、一个字母还是三个字，边上那圈空白一样宽。
+ * ⚠️ 这是个**定值**，不是比例 —— 这正是"框看起来统一"的全部来源：
+ *    不管框里是一个汉字、一个字母还是三个字，边上那圈空白一样宽。
+ *
+ * 两边加起来正好一个字符宽。**没做成"每边整整一个字符"**：高度这边被行高卡死
+ * （见 `GLYPH_PAD_Y`），横向再翻一倍的话，单字节点就成了一颗三倍宽的扁药丸，
+ * 横竖比例很难看。嫌窄就把这个数调大，别的全自动跟着走。
  */
-export const GLYPH_PAD = 0.2
+export const GLYPH_PAD_X = 0.5
+
+/**
+ * 字上下两边各留多少空。
+ *
+ * ⚠️ 比左右小，是因为竖向**被行高卡死**：一行只有 `Z.row`（24）那么高，
+ *    节点和连到下一行的那截线在里面分。给到这个数，节点连框一共 1.7 倍点直径 ——
+ *    正好和五角星（`grow` ≈ 1.67）一样高，也就是说树上早就有这么大的节点了，
+ *    行距不会被它撑到一个新的量级，只是线短了一截。
+ */
+export const GLYPH_PAD_Y = 0.35
 
 /** 带框的字竖向占点直径的几倍。所有带框的字**高度一律相同**，一排看过去才齐。 */
-export const GLYPH_BOX = 1 + 2 * GLYPH_PAD
+export const GLYPH_BOX = 1 + 2 * GLYPH_PAD_Y
+
+/**
+ * 框的圆角占框高的几分之几。
+ *
+ * ⚠️ 别跟着描边宽度走。那样算出来的圆角在默认尺寸下只有 3px，放在一个十几像素
+ *    的框上几乎看不出是圆的 —— 远看就是个方框。跟着框高走才能一直圆得明显。
+ */
+export const GLYPH_RADIUS = 0.3
 
 /**
  * 一个码点横向占几个 em。
@@ -113,7 +135,7 @@ export function glyphFont(glyph, size) {
 /**
  * 带框的字横向占点直径的几倍（`shapeSpec` 把它塞进 `grow`，列距和连线让位自动跟着走）。
  *
- * = 字本身的宽 + 左右各一圈 `GLYPH_PAD`，**并且不许比高还窄**：
+ * = 字本身的宽 + 左右各一圈 `GLYPH_PAD_X`，**并且不许比高还窄**：
  * 一个 `i` 只有 0.3 em，不兜底的话会画成一个瘦条；兜住之后它就是个圆角方块，
  * 和预设里的"圆角方"一模一样 —— 这也是统一。
  * @param glyph - 那几个字
@@ -121,7 +143,7 @@ export function glyphFont(glyph, size) {
  */
 export function glyphGrow(glyph) {
 	const em = glyphEm(glyph)
-	const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD
+	const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD_X
 	return Math.max(wide, GLYPH_BOX)
 }
 
@@ -947,7 +969,7 @@ export function glyphBoxStyle(shape, size, skin, stroke, dashed) {
 		width: `${drawnWidth(shape, size)}px`, height: `${shapeHeight(shape, size)}px`,
 		display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
 		borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,
-		borderRadius: `${2 * stroke}px`,
+		borderRadius: `${shapeHeight(shape, size) * GLYPH_RADIUS}px`,
 		// ⚠️ **不填底**。别的形状靠填充区分状态，可框里坐着字 —— 填上去字就糊在底色里，
 		//    当前那一轮（填充最实）反而最看不清。这里的状态改由描边色和字色一起表达。
 		background: 'none',
