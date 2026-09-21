@@ -2,7 +2,7 @@
  * 树本体：把 graph + elide 的结果画成一条贴着聊天区右缘的导轨。
  */
 import { h, portal, react } from './runtime.js'
-import { C, RADIUS, SCALE, Z } from './const.js'
+import { C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { branchAction, conversationOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
@@ -14,7 +14,7 @@ import { edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor
 import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
-import { themeFrom } from './settings-model.js'
+import { themeFrom, visibleRange } from './settings-model.js'
 import { Detail } from './ui-detail.js'
 
 /** ⏳ 那句解释。title 和触摸设备上戳开的浮层是同一份，别让它们各写一遍。 */
@@ -33,7 +33,8 @@ export function Rail(props) {
 	// → 换成"点一下开卡片，再点一下才跳"。判据和切换时机见 pointer.js。
 	const canHover = useHover()
 	const tuned = settings.values || {}
-	const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
+	// 画多大一片：量法（按层数 / 按步数）+ 上限，兜底也在里面，见 visibleRange
+	const range = visibleRange(tuned)
 	// 主题：每个字段各自回退，缺一项不影响其他项
 	// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
 	const theme = themeFrom(tuned, settings.user, dark)
@@ -181,9 +182,9 @@ export function Rail(props) {
 	else graph = lastGraph.current
 	if (graph === undefined) return null
 
-	// 省略太远的节点。radius=0 时 elide 全留，下面这一整套退化成原来的画法。
+	// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 	// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
-	const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), radius)
+	const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), range.limit, range.mode)
 	const rowOfNode = (node) => view.rowOf.get(node.depth)
 
 	// 自诊断钩子：症状出现时在浏览器控制台敲 __dshTree() 就能把当时的真实状态倒出来。
@@ -191,7 +192,7 @@ export function Rail(props) {
 	// 而每猜错一轮都要 John 重启一次。
 	installDiagnostics({
 		current, cwd, activeTurn, view, scale, tuned, settings, picked, archived,
-		radiusText: radius === RADIUS.off ? '不省略' : radius,
+		radiusText: `${range.text}（${range.spec.label}）`,
 		nodes: graph.nodes,
 		sessionCount: (listState.ids || []).length,
 	})

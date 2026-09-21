@@ -22,11 +22,11 @@ export function installDiagnostics(facts) {
 			当前会话: current,
 			工作目录: cwd,
 			滑到第几轮: activeTurn,
-			省略半径: radiusText,
+			显示范围: radiusText,
 			省掉几个: view.hidden,
 			淡出几个: [...view.shown].filter((node) => view.dimOf.get(node) > 0).length,
 			缩放: `${scale}%`,
-			设置: `半径=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
+			设置: `量法=${tuned.visibleMode} 层=${tuned.visibleDepth} 步=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
 			分支: picked.map(
 				(item) =>
 					`${shortId(item.id)} ← ${item.parentId ? shortId(item.parentId) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || [])

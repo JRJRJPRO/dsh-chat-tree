@@ -4,12 +4,15 @@
  * **加一项设置只动三个地方**：host 的 SETTINGS_SCHEMA、这里的 FIELDS、以及（外观类的）ROWS。
  * 卡片和 store 都是按表渲染的，不用改。
  */
-import { RADIUS, SCALE, SETTINGS_NS } from './const.js'
+import { DEPTH, RADIUS, SCALE, SETTINGS_NS } from './const.js'
 import { warn } from './net.js'
 import { ROLES, THEME, favShape, paletteOf, shapeSpec } from './shapes.js'
 
-/** 省略半径的档位：5..30，最后一格是"不省略"。 */
+/** 「按步数」的档位：5..30，最后一格是"不省略"。 */
 export const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
+
+/** 「按层数」的档位：1..30，最后一格是"不省略"。 */
+export const LAYERS = Array.from({ length: DEPTH.max - DEPTH.min + 1 }, (_, i) => DEPTH.min + i).concat([DEPTH.off])
 
 /** 缩放的档位：50%..250%，每档 10。 */
 export const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step + 1 }, (_, i) => SCALE.min + i * SCALE.step)
@@ -20,6 +23,45 @@ export const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step 
  */
 export function stepText(step) {
 	return step === RADIUS.off ? '不省略' : `${step} 步`
+}
+
+/**
+ * 「按层数」一档的人话。
+ * @param step - 档位值
+ */
+export function layerText(step) {
+	return step === DEPTH.off ? '不省略' : `${step} 层`
+}
+
+/**
+ * 显示范围的两种量法。**二选一**，`visibleMode` 说了算，两边各记各的档位，
+ * 来回切换不会把对方的值冲掉。设置卡里左右各画一半（左 = 默认的按层数）。
+ */
+export const VISIBLE = [
+	{
+		mode: 'depth', field: 'visibleDepth', label: '按层数', steps: LAYERS, text: layerText, fallback: DEPTH.fallback,
+		hint: '和你正在看的那一轮**差几层**以内的节点才画出来。同一层要么整排都在、要么整排都不在，看着最齐整。',
+	},
+	{
+		mode: 'step', field: 'visibleRadius', label: '按步数', steps: STEPS, text: stepText, fallback: RADIUS.fallback,
+		hint: '离你正在看的那一轮**多少步**以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步 —— 于是隔壁分支上和你同层的节点可能差很多步，并排却不显示。',
+	},
+]
+
+/** `visibleMode` 认的值。 */
+export const isMode = (value) => VISIBLE.some((one) => one.mode === value)
+
+/**
+ * 这一帧到底画多大一片：量法 + 上限 + 读数。**rail 和设置卡共用这一个出口**，
+ * 免得两边各自兜底、各兜各的。
+ * @param values - 设置里存的值
+ * @returns `{mode, limit, text, spec}`
+ */
+export function visibleRange(values) {
+	const tuned = values || {}
+	const spec = VISIBLE.find((one) => one.mode === tuned.visibleMode) || VISIBLE[0]
+	const limit = Number.isFinite(tuned[spec.field]) ? tuned[spec.field] : spec.fallback
+	return { mode: spec.mode, limit, text: spec.text(limit), spec }
 }
 
 /**
@@ -83,8 +125,14 @@ export const ROWS = [
  * `kind` 决定用哪种控件；`accept` 决定什么样的值算数（host 那边存的是任意 JSON）。
  */
 export const FIELDS = [
-	{ field: 'visibleRadius', kind: 'range', label: '显示范围', steps: STEPS, text: stepText, fallback: RADIUS.fallback, accept: Number.isFinite,
-		hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
+	// 显示范围是**一项设置、三个字段**：一个量法 + 两个各自的上限。
+	// `group: 'visible'` 让设置卡把它们收进同一个方框里左右排开，别一项一行 ——
+	// 二选一的东西分成三行，看着就像三项互不相干的设置。
+	{ field: 'visibleMode', kind: 'mode', group: 'visible', label: '显示范围', fallback: VISIBLE[0].mode, accept: isMode, hint: '' },
+	...VISIBLE.map((one) => ({
+		field: one.field, kind: 'range', group: 'visible', label: `显示范围（${one.label}）`,
+		steps: one.steps, text: one.text, fallback: one.fallback, accept: Number.isFinite, hint: one.hint,
+	})),
 	{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 		hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
 	// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。

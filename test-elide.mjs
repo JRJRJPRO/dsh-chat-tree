@@ -372,4 +372,107 @@ console.log('用例 9：档位文案')
 	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}；默认 ${pure.stepText(pure.RADIUS.fallback)}`)
 }
 
+console.log('用例 11：按层数 —— 同一层整排都在，按步数会漏掉隔壁分支')
+{
+	// A 有 1..12；B 从 A 的第 2 轮岔出，自有 3'..12'。
+	// 站在 A 的第 12 轮时，B:12 和它**同一层**，但在树上要先爬回岔路口再下来 —— 差 20 步。
+	const sessions = [
+		branch('A', undefined, undefined, Array.from({ length: 12 }, (_, i) => i + 1)),
+		branch('B', 'A', 2, Array.from({ length: 10 }, (_, i) => i + 3)),
+	]
+	const graph = graphOf(sessions, 'A')
+	const anchor = pure.anchorNode(graph.nodes, 12)
+	const twin = graph.nodes.find((node) => node.key === 'B:12')
+	check(twin !== undefined && twin.depth === anchor.depth, `B:12 该和基准点同层，实际 ${twin && twin.depth} vs ${anchor.depth}`)
+
+	const steps = distOf(graph, anchor).get(twin)
+	check(steps > 10, `这个用例要的就是"同层但很远"，实际只差 ${steps} 步`)
+
+	const byStep = pure.elide(graph.nodes, anchor, 10, 'step')
+	check(!byStep.shown.has(twin), `按步数 10：同层的 B:12 差 ${steps} 步，不该出现`)
+
+	const byLayer = pure.elide(graph.nodes, anchor, 10, 'depth')
+	check(byLayer.shown.has(twin), '按层数 10：同层的 B:12 必须出现 —— 这正是换量法要解决的事')
+	check(byLayer.dimOf.get(twin) === 0, `同层就是 0 层差，不该淡，实际第 ${byLayer.dimOf.get(twin)} 圈`)
+
+	// 按层数就该是"整排一起去留"：留下来的每一层，该层的节点一个都不能少
+	const kept = [...byLayer.shown]
+	for (const depth of new Set(kept.map((node) => node.depth))) {
+		const all = graph.nodes.filter((node) => node.depth === depth)
+		const got = kept.filter((node) => node.depth === depth)
+		check(all.length === got.length, `第 ${depth} 层该整排都在（共 ${all.length} 个），实际只留了 ${got.length} 个`)
+	}
+	console.log(`  B:12 与基准点同层、差 ${steps} 步：按步数漏掉，按层数留下；留下 ${byLayer.shown.size} 个节点整层不缺`)
+}
+
+console.log('用例 12：按层数的窗口与淡出 —— |Δdepth| ≤ N，最外圈同样吃自己的边')
+{
+	const sessions = [
+		branch('A', undefined, undefined, Array.from({ length: 30 }, (_, i) => i + 1)),
+		branch('B', 'A', 20, [21, 22, 23]),
+	]
+	const graph = graphOf(sessions, 'A')
+	const rings = pure.FADE.rings
+	for (const limit of [1, 2, 5, 10, 30]) {
+		const anchor = pure.anchorNode(graph.nodes, 15)
+		const view = pure.elide(graph.nodes, anchor, limit, 'depth')
+		// 独立重算一遍，不复用被测代码
+		const want = graph.nodes.filter((node) => Math.abs(node.depth - anchor.depth) <= limit)
+		check(want.length === view.shown.size && want.every((node) => view.shown.has(node)),
+			`层高差 ${limit}：期望 ${want.length} 个，实际 ${view.shown.size} 个`)
+		for (const node of view.shown) {
+			const away = Math.abs(node.depth - anchor.depth)
+			check(view.dimOf.get(node) === Math.min(away, Math.max(0, rings - (limit - away))),
+				`层高差 ${limit}：${node.key} 差 ${away} 层的档位不对（${view.dimOf.get(node)}）`)
+		}
+		check(view.dimOf.get(anchor) === 0, `层高差 ${limit}：你正看着的那一轮必须是实的`)
+	}
+	// 0 = 不省略，两种量法都一样
+	for (const mode of ['depth', 'step']) {
+		const view = pure.elide(graph.nodes, pure.anchorNode(graph.nodes, 15), 0, mode)
+		check(view.shown.size === graph.nodes.length && view.hidden === 0, `${mode} 的 0 档该是"不省略"`)
+	}
+	console.log(`  层高差 1/2/5/10/30 与独立重算一致；两种量法的 0 档都是不省略`)
+}
+
+console.log('用例 13：两种量法二选一 —— 各记各的档位，切换不冲掉对方')
+{
+	check(pure.VISIBLE[0].mode === 'depth', '左边那半该是默认的"按层数"')
+	check(pure.VISIBLE.map((one) => one.field).join() === 'visibleDepth,visibleRadius', `字段名变了：${pure.VISIBLE.map((one) => one.field).join()}`)
+
+	// 默认：按层数 10
+	const fresh = pure.visibleRange({})
+	check(fresh.mode === 'depth' && fresh.limit === 10, `默认该是按层数 10，实际 ${fresh.mode} ${fresh.limit}`)
+	check(fresh.text === '10 层', `默认读数该是"10 层"，实际 ${fresh.text}`)
+
+	// 两个上限同时存着，谁生效只看 visibleMode
+	const both = { visibleMode: 'step', visibleDepth: 6, visibleRadius: 25 }
+	check(pure.visibleRange(both).limit === 25, '按步数时该读 visibleRadius')
+	check(pure.visibleRange(Object.assign({}, both, { visibleMode: 'depth' })).limit === 6,
+		'切回按层数该读回 visibleDepth —— 两边各记各的，切换不许把对方冲掉')
+
+	// 配置文件里手改出个认不得的量法，退回默认，别把树搞崩
+	for (const bad of ['', 'steps', 'DEPTH', 0, undefined, null, {}]) {
+		const got = pure.visibleRange({ visibleMode: bad, visibleDepth: 4 })
+		check(got.mode === 'depth' && got.limit === 4, `量法 ${JSON.stringify(bad)} 该退回默认，实际 ${got.mode}`)
+	}
+	check(!pure.isMode('steps') && pure.isMode('step') && pure.isMode('depth'), 'isMode 认的值不对')
+	// 上限存了个认不得的值也退回这一档自己的默认
+	check(pure.visibleRange({ visibleMode: 'step', visibleRadius: 'x' }).limit === pure.RADIUS.fallback, '认不得的步数该退回 12')
+	check(pure.visibleRange({ visibleMode: 'depth', visibleDepth: null }).limit === pure.DEPTH.fallback, '认不得的层数该退回 10')
+
+	// 档位表：1..30 再加一格"不省略"，默认那一档必须在表里，否则滑杆会跳到第 0 格
+	const layers = pure.LAYERS
+	check(layers[0] === 1 && layers[layers.length - 2] === 30 && layers[layers.length - 1] === pure.DEPTH.off,
+		`层数档位表不对：${layers[0]}..${layers[layers.length - 2]} + ${layers[layers.length - 1]}`)
+	check(layers.includes(pure.DEPTH.fallback), `默认档 ${pure.DEPTH.fallback} 不在档位表里，滑杆会跳掉`)
+	check(pure.layerText(0) === '不省略' && pure.layerText(10) === '10 层', `层数读数不对：${pure.layerText(10)}`)
+
+	// 三个字段都得在 FIELDS 里（store 是按表取值的），且都归在同一组里左右排开
+	const grouped = pure.FIELDS.filter((spec) => spec.group === 'visible').map((spec) => spec.field)
+	check(grouped.join() === 'visibleMode,visibleDepth,visibleRadius', `显示范围那一组不对：${grouped.join()}`)
+	console.log(`  默认 ${fresh.text}；${JSON.stringify(both)} → 按步数 25，切回层数还是 6`)
+}
+
+
 report()

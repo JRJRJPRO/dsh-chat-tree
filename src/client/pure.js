@@ -11,7 +11,7 @@
  * 【什么东西不该进这张表】碰 DOM / react / fetch 的。那些在 node 里跑不起来，
  * 要测就得先把"算"从"画"里拆出来 —— 拆出来的那半才进这里。
  */
-import { RADIUS, SCALE, Z, scaleZ } from './const.js'
+import { DEPTH, RADIUS, SCALE, Z, scaleZ } from './const.js'
 import {
 	branchAction,
 	blockedWhy,
@@ -33,7 +33,7 @@ import {
 	ROOT_KEY,
 } from './tree.js'
 import { buildGraph } from './graph.js'
-import { FADE, anchorNode, elide, fisheye } from './elide.js'
+import { FADE, anchorNode, elide, fisheye, layersAway, stepsAway } from './elide.js'
 import {
 	CUSTOM,
 	ICON_EDGE,
@@ -92,7 +92,7 @@ import { MIN_RUN, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom,
 import { RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, rewindRetryDelay, starAnimation, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
-import { FIELDS, ROWS, SCALES, STEPS, isHex, scaleText, settingsStore, stepText, themeFrom } from './settings-model.js'
+import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
 import { isDark } from './theme.js'
 import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 
@@ -132,5 +132,6 @@ export const __pure = {
 	// 撤回的重拉节奏
 	isRewindPending, rewindRetryDelay,
 	// 设置
-	settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, ROWS, Z,
+	settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+	VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 }

@@ -7,10 +7,15 @@ import Schema from 'schemastery'
 export const SETTINGS_NS = 'dsh-tree'
 
 /**
- * 只有一个字段：省略半径。0 = 不省略，否则 5..30。
+ * 显示范围是**三个字段**：量法 + 两种量法各自的上限。
+ * 两个上限各记各的，来回切换量法不会把对方的值冲掉。
  * 前端滑杆只给这几档，但设置文件是人可以手改的，所以边界还是写在 schema 里。
  */
 export const SETTINGS_SCHEMA = Schema.object({
+	// 合法值由浏览器半的 FIELDS.accept 把关（和下面那几个 *Shape 一个道理）：
+	// 手改进来一个认不得的量法不该把树搞崩，退回默认就行。
+	visibleMode: Schema.string().default('depth').description('显示范围怎么量：depth = 按层高差，step = 按树上的无向步数'),
+	visibleDepth: Schema.natural().max(30).default(10).description('和当前这一轮差几层以内的节点才画出来；0 = 不省略'),
 	visibleRadius: Schema.natural().max(30).default(12).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
 	// ⚠️ 下面这几个 *Color 的 default 只是"存进配置文件时的样子"。

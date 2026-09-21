@@ -9,7 +9,7 @@ import { upload } from './icon-upload.js'
 import { useObservable } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { useHover } from './pointer.js'
-import { FIELDS, ROWS, themeFrom } from './settings-model.js'
+import { FIELDS, ROWS, VISIBLE, themeFrom, visibleRange } from './settings-model.js'
 
 /**
  * 宿主设置卡片的设计令牌，照抄 ui-settings-plugins 的 PluginCard / fields。
@@ -39,6 +39,27 @@ export const S = {
 	tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
 	reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
 	range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+	// 显示范围那一排：两种量法各占一半，左右并排。**二选一**要一眼看得出来 ——
+	// 选中的那半有亮边框，没选中的那半整体压暗；滑杆两边都能拖，拖谁就选谁。
+	two: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+	half: (picked) => ({
+		display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 8px 2px', minWidth: 0,
+		borderWidth: '.5px', borderStyle: 'solid', borderRadius: '10px',
+		borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
+		background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
+		opacity: picked ? 1 : 0.62, transition: 'opacity .16s, border-color .16s, background .16s',
+	}),
+	mode: (on) => ({
+		appearance: 'none', font: 'inherit', fontSize: '12px', lineHeight: 1.5, textAlign: 'left',
+		display: 'flex', alignItems: 'center', gap: '6px', padding: 0, border: 0, background: 'none',
+		color: 'var(--dsw-alias-label-primary)', cursor: on ? 'pointer' : 'default',
+	}),
+	tick: (picked) => ({
+		flex: 'none', width: '10px', height: '10px', borderRadius: '50%', boxSizing: 'border-box',
+		borderWidth: picked ? '3px' : '1px', borderStyle: 'solid',
+		borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-dimmed)',
+	}),
+	read: { marginLeft: 'auto', color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums' },
 	pair: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
 	swatch: (on) => ({ flex: '0 0 56px', height: '26px', padding: 0, border: 'none', background: 'none', cursor: on ? 'pointer' : 'default' }),
 	picks: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
@@ -173,7 +194,48 @@ export function SettingsCard(props) {
 		])
 	}
 
-	/** 滑杆那两项（显示范围 / 节点大小），仍然一项一行。 */
+	/**
+	 * 显示范围：一个方框里左右两半，左边按层数（默认）右边按步数，**只有一个生效**。
+	 *
+	 * 两半各记各的档位，来回切不会把对方的值冲掉。没选中那半的滑杆**照样能拖** ——
+	 * 禁用掉的话，想改另一种量法就得先点标题再回来拖，白多一步；拖谁就顺手选谁。
+	 */
+	const visible = () => {
+		const now = visibleRange({
+			visibleMode: valueOf('visibleMode'),
+			visibleDepth: valueOf('visibleDepth'),
+			visibleRadius: valueOf('visibleRadius'),
+		})
+		const fields = ['visibleMode', ...VISIBLE.map((one) => one.field)]
+		return h('div', { key: 'visible', style: S.field }, [
+			head('显示范围', now.text, fields),
+			h('div', { key: 'tw', style: S.two }, VISIBLE.map((one) => {
+				const picked = one.mode === now.mode
+				const at = Math.max(0, one.steps.indexOf(valueOf(one.field)))
+				return h('div', { key: one.mode, style: S.half(picked) }, [
+					h('button', {
+						key: 'm', type: 'button', disabled: !on, style: S.mode(on),
+						onClick: () => put('visibleMode', one.mode),
+					}, [
+						h('span', { key: 't', style: S.tick(picked) }),
+						h('span', { key: 'l' }, one.label),
+						h('span', { key: 'v', style: S.read }, one.text(one.steps[at])),
+					]),
+					h('input', {
+						key: 'i', type: 'range', min: 0, max: one.steps.length - 1, step: 1, value: at,
+						disabled: !on, style: S.range(on),
+						onChange: (event) => {
+							put(one.field, one.steps[Number(event.target.value)])
+							if (!picked) put('visibleMode', one.mode)
+						},
+					}),
+				])
+			})),
+			h('p', { key: 'p', style: S.hint }, now.spec.hint),
+		])
+	}
+
+	/** 剩下的滑杆项（节点大小），仍然一项一行。 */
 	const row = (spec) => {
 		const now = valueOf(spec.field)
 		const at = Math.max(0, spec.steps.indexOf(now))
@@ -300,7 +362,8 @@ export function SettingsCard(props) {
 		]),
 		open
 			? h('div', { key: 'b', style: S.body }, [
-					...FIELDS.filter((spec) => spec.kind === 'range').map(row),
+					visible(),
+					...FIELDS.filter((spec) => spec.kind === 'range' && spec.group !== 'visible').map(row),
 					...ROWS.map(pair),
 					failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 					on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),

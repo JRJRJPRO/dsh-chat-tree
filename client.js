@@ -36,8 +36,17 @@ window.__ModuleLoader__.load({
 		/** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
 		const SETTINGS_NS = 'dsh-tree'
 
-		/** 省略半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
+		/** 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
 		const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
+
+		/**
+		 * 「按层数」那一档的层高差。0 = 不省略；滑杆位置就是 [1..30, 0]。
+		 *
+		 * 为什么要有第二种量法：步数是树上的**无向**距离，兄弟分支要"上去再下来"。
+		 * 于是同一层的两个节点可能差 20 步，看着明明并排却一个在一个不在 —— 观感很怪。
+		 * 按层数量的话，一横排要么整排都在，要么整排都不在，眼睛好受得多。
+		 */
+		const DEPTH = { min: 1, max: 30, fallback: 10, off: 0 }
 
 		/** 节点缩放，百分比。 */
 		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
@@ -1287,7 +1296,12 @@ window.__ModuleLoader__.load({
 		// ===== elide.js ================================================
 
 		/**
-		 * 省略：只画离你正在看的那一轮若干步以内的节点，最外两圈鱼眼淡出。
+		 * 省略：只画离你正在看的那一轮足够近的节点，最外两圈鱼眼淡出。
+		 *
+		 * 「足够近」有两种量法，二选一（设置里那一排左右两半）：
+		 *   · `'depth'` 按**层高差**：|自己的 depth − 基准点的 depth| ≤ N。一横排要么整排都在，
+		 *     要么整排都不在。这是默认。
+		 *   · `'step'`  按**树上无向步数**：父节点 1 步，父节点的另一个孩子 2 步。
 		 */
 
 		/**
@@ -1318,46 +1332,74 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 量法一：树上的无向步数，BFS 到 `limit` 为止。
+		 * @param nodes - 全部节点（只用来兜底，真正走的是 parent/children）
+		 * @param anchor - 起点
+		 * @param limit - 最远走几步
+		 * @returns Map<node, 步数>
+		 */
+		function stepsAway(nodes, anchor, limit) {
+			const step = new Map([[anchor, 0]])
+			const queue = [anchor]
+			for (let head = 0; head < queue.length; head += 1) {
+				const node = queue[head]
+				const walked = step.get(node)
+				if (walked >= limit) continue
+				for (const near of [node.parent].concat(node.children)) {
+					if (near === undefined || step.has(near)) continue
+					step.set(near, walked + 1)
+					queue.push(near)
+				}
+			}
+			return step
+		}
+
+		/**
+		 * 量法二：层高差。不看连通性 —— 同一层的节点整排一起去留，这正是这一档的意义。
+		 * @param nodes - 全部节点
+		 * @param anchor - 起点
+		 * @param limit - 最多差几层
+		 * @returns Map<node, 层高差>
+		 */
+		function layersAway(nodes, anchor, limit) {
+			const out = new Map()
+			for (const node of nodes) {
+				const away = Math.abs(node.depth - anchor.depth)
+				if (away <= limit) out.set(node, away)
+			}
+			return out
+		}
+
+		/**
 		 * 按「离你正在看的那一轮多远」把太远的节点省略掉。
 		 *
-		 * 距离是树上的无向步数：父节点 1 步，父节点的另一个孩子 2 步（上一步再下一步）。
 		 * 藏掉的行不留空档 —— depth 重新压实成连续的 row，否则省略了也腾不出地方。
 		 *
-		 * 小例子（线性 1..20，站在 10，半径 5）：
+		 * 小例子（线性 1..20，站在 10，limit 5）：两种量法在**一条直线**上是一样的 ——
 		 *   留下 5..15；其中 7..13 正常画，6 和 14 缩到 74%、淡到 66%，5 和 15 缩到 52%、淡到 40%。
+		 *   有岔路时才分家：B 分支上和你同层的那个节点，按层数算 0 层差（在），按步数可能差 20 步（不在）。
 		 *
 		 * @param nodes - buildGraph 出来的全部节点
 		 * @param anchor - 从哪个节点量距离
-		 * @param radius - 保留半径；<=0 表示不省略
+		 * @param limit - 上限（步数 / 层高差）；<=0 表示不省略
+		 * @param mode - `'depth'` 按层高差，其余（含省略不传）按步数
 		 * @returns {shown, rowOf, dimOf, rows, hidden}
 		 */
-		function elide(nodes, anchor, radius) {
+		function elide(nodes, anchor, limit, mode) {
 			const shown = new Set()
 			// 每个留下来的节点在第几圈淡出。0 = 正常画
 			const dimOf = new Map()
-			if (!(radius > 0) || anchor === undefined) {
+			if (!(limit > 0) || anchor === undefined) {
 				for (const node of nodes) {
 					shown.add(node)
 					dimOf.set(node, 0)
 				}
 			} else {
-				const step = new Map([[anchor, 0]])
-				const queue = [anchor]
-				for (let head = 0; head < queue.length; head += 1) {
-					const node = queue[head]
-					const walked = step.get(node)
-					if (walked >= radius) continue
-					for (const near of [node.parent].concat(node.children)) {
-						if (near === undefined || step.has(near)) continue
-						step.set(near, walked + 1)
-						queue.push(near)
-					}
-				}
-				for (const [node, walked] of step) {
+				for (const [node, away] of (mode === 'depth' ? layersAway(nodes, anchor, limit) : stepsAway(nodes, anchor, limit))) {
 					shown.add(node)
-					// 再套一层 min(walked, …)：半径比 rings 还小时（配置文件里手改出来的），
+					// 再套一层 min(away, …)：上限比 rings 还小时（配置文件里手改出来的），
 					// 不加这层连基准点自己都会被淡掉 —— 你正看着的那一轮必须永远是实的。
-					dimOf.set(node, Math.min(walked, Math.max(0, FADE.rings - (radius - walked))))
+					dimOf.set(node, Math.min(away, Math.max(0, FADE.rings - (limit - away))))
 				}
 			}
 
@@ -2818,11 +2860,11 @@ window.__ModuleLoader__.load({
 					当前会话: current,
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
-					省略半径: radiusText,
+					显示范围: radiusText,
 					省掉几个: view.hidden,
 					淡出几个: [...view.shown].filter((node) => view.dimOf.get(node) > 0).length,
 					缩放: `${scale}%`,
-					设置: `半径=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
+					设置: `量法=${tuned.visibleMode} 层=${tuned.visibleDepth} 步=${tuned.visibleRadius} 缩放=${tuned.nodeScale} 可写=${settings.writable} 状态=${settings.status} 模式=${settings.mode}`,
 					分支: picked.map(
 						(item) =>
 							`${shortId(item.id)} ← ${item.parentId ? shortId(item.parentId) : '根'} 岔路点=${item.forkTurn} 自有轮=${(item.turns || [])
@@ -3231,8 +3273,11 @@ window.__ModuleLoader__.load({
 		 * 卡片和 store 都是按表渲染的，不用改。
 		 */
 
-		/** 省略半径的档位：5..30，最后一格是"不省略"。 */
+		/** 「按步数」的档位：5..30，最后一格是"不省略"。 */
 		const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
+
+		/** 「按层数」的档位：1..30，最后一格是"不省略"。 */
+		const LAYERS = Array.from({ length: DEPTH.max - DEPTH.min + 1 }, (_, i) => DEPTH.min + i).concat([DEPTH.off])
 
 		/** 缩放的档位：50%..250%，每档 10。 */
 		const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step + 1 }, (_, i) => SCALE.min + i * SCALE.step)
@@ -3243,6 +3288,45 @@ window.__ModuleLoader__.load({
 		 */
 		function stepText(step) {
 			return step === RADIUS.off ? '不省略' : `${step} 步`
+		}
+
+		/**
+		 * 「按层数」一档的人话。
+		 * @param step - 档位值
+		 */
+		function layerText(step) {
+			return step === DEPTH.off ? '不省略' : `${step} 层`
+		}
+
+		/**
+		 * 显示范围的两种量法。**二选一**，`visibleMode` 说了算，两边各记各的档位，
+		 * 来回切换不会把对方的值冲掉。设置卡里左右各画一半（左 = 默认的按层数）。
+		 */
+		const VISIBLE = [
+			{
+				mode: 'depth', field: 'visibleDepth', label: '按层数', steps: LAYERS, text: layerText, fallback: DEPTH.fallback,
+				hint: '和你正在看的那一轮**差几层**以内的节点才画出来。同一层要么整排都在、要么整排都不在，看着最齐整。',
+			},
+			{
+				mode: 'step', field: 'visibleRadius', label: '按步数', steps: STEPS, text: stepText, fallback: RADIUS.fallback,
+				hint: '离你正在看的那一轮**多少步**以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步 —— 于是隔壁分支上和你同层的节点可能差很多步，并排却不显示。',
+			},
+		]
+
+		/** `visibleMode` 认的值。 */
+		const isMode = (value) => VISIBLE.some((one) => one.mode === value)
+
+		/**
+		 * 这一帧到底画多大一片：量法 + 上限 + 读数。**rail 和设置卡共用这一个出口**，
+		 * 免得两边各自兜底、各兜各的。
+		 * @param values - 设置里存的值
+		 * @returns `{mode, limit, text, spec}`
+		 */
+		function visibleRange(values) {
+			const tuned = values || {}
+			const spec = VISIBLE.find((one) => one.mode === tuned.visibleMode) || VISIBLE[0]
+			const limit = Number.isFinite(tuned[spec.field]) ? tuned[spec.field] : spec.fallback
+			return { mode: spec.mode, limit, text: spec.text(limit), spec }
 		}
 
 		/**
@@ -3306,8 +3390,14 @@ window.__ModuleLoader__.load({
 		 * `kind` 决定用哪种控件；`accept` 决定什么样的值算数（host 那边存的是任意 JSON）。
 		 */
 		const FIELDS = [
-			{ field: 'visibleRadius', kind: 'range', label: '显示范围', steps: STEPS, text: stepText, fallback: RADIUS.fallback, accept: Number.isFinite,
-				hint: '离你正在看的那一轮多少步以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步。' },
+			// 显示范围是**一项设置、三个字段**：一个量法 + 两个各自的上限。
+			// `group: 'visible'` 让设置卡把它们收进同一个方框里左右排开，别一项一行 ——
+			// 二选一的东西分成三行，看着就像三项互不相干的设置。
+			{ field: 'visibleMode', kind: 'mode', group: 'visible', label: '显示范围', fallback: VISIBLE[0].mode, accept: isMode, hint: '' },
+			...VISIBLE.map((one) => ({
+				field: one.field, kind: 'range', group: 'visible', label: `显示范围（${one.label}）`,
+				steps: one.steps, text: one.text, fallback: one.fallback, accept: Number.isFinite, hint: one.hint,
+			})),
 			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
 			// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
@@ -4205,6 +4295,27 @@ window.__ModuleLoader__.load({
 			tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
 			reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
 			range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+			// 显示范围那一排：两种量法各占一半，左右并排。**二选一**要一眼看得出来 ——
+			// 选中的那半有亮边框，没选中的那半整体压暗；滑杆两边都能拖，拖谁就选谁。
+			two: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+			half: (picked) => ({
+				display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 8px 2px', minWidth: 0,
+				borderWidth: '.5px', borderStyle: 'solid', borderRadius: '10px',
+				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-border-l4)',
+				background: picked ? 'var(--dsw-alias-bg-layer-2)' : 'none',
+				opacity: picked ? 1 : 0.62, transition: 'opacity .16s, border-color .16s, background .16s',
+			}),
+			mode: (on) => ({
+				appearance: 'none', font: 'inherit', fontSize: '12px', lineHeight: 1.5, textAlign: 'left',
+				display: 'flex', alignItems: 'center', gap: '6px', padding: 0, border: 0, background: 'none',
+				color: 'var(--dsw-alias-label-primary)', cursor: on ? 'pointer' : 'default',
+			}),
+			tick: (picked) => ({
+				flex: 'none', width: '10px', height: '10px', borderRadius: '50%', boxSizing: 'border-box',
+				borderWidth: picked ? '3px' : '1px', borderStyle: 'solid',
+				borderColor: picked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-dimmed)',
+			}),
+			read: { marginLeft: 'auto', color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums' },
 			pair: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
 			swatch: (on) => ({ flex: '0 0 56px', height: '26px', padding: 0, border: 'none', background: 'none', cursor: on ? 'pointer' : 'default' }),
 			picks: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
@@ -4339,7 +4450,48 @@ window.__ModuleLoader__.load({
 				])
 			}
 
-			/** 滑杆那两项（显示范围 / 节点大小），仍然一项一行。 */
+			/**
+			 * 显示范围：一个方框里左右两半，左边按层数（默认）右边按步数，**只有一个生效**。
+			 *
+			 * 两半各记各的档位，来回切不会把对方的值冲掉。没选中那半的滑杆**照样能拖** ——
+			 * 禁用掉的话，想改另一种量法就得先点标题再回来拖，白多一步；拖谁就顺手选谁。
+			 */
+			const visible = () => {
+				const now = visibleRange({
+					visibleMode: valueOf('visibleMode'),
+					visibleDepth: valueOf('visibleDepth'),
+					visibleRadius: valueOf('visibleRadius'),
+				})
+				const fields = ['visibleMode', ...VISIBLE.map((one) => one.field)]
+				return h('div', { key: 'visible', style: S.field }, [
+					head('显示范围', now.text, fields),
+					h('div', { key: 'tw', style: S.two }, VISIBLE.map((one) => {
+						const picked = one.mode === now.mode
+						const at = Math.max(0, one.steps.indexOf(valueOf(one.field)))
+						return h('div', { key: one.mode, style: S.half(picked) }, [
+							h('button', {
+								key: 'm', type: 'button', disabled: !on, style: S.mode(on),
+								onClick: () => put('visibleMode', one.mode),
+							}, [
+								h('span', { key: 't', style: S.tick(picked) }),
+								h('span', { key: 'l' }, one.label),
+								h('span', { key: 'v', style: S.read }, one.text(one.steps[at])),
+							]),
+							h('input', {
+								key: 'i', type: 'range', min: 0, max: one.steps.length - 1, step: 1, value: at,
+								disabled: !on, style: S.range(on),
+								onChange: (event) => {
+									put(one.field, one.steps[Number(event.target.value)])
+									if (!picked) put('visibleMode', one.mode)
+								},
+							}),
+						])
+					})),
+					h('p', { key: 'p', style: S.hint }, now.spec.hint),
+				])
+			}
+
+			/** 剩下的滑杆项（节点大小），仍然一项一行。 */
 			const row = (spec) => {
 				const now = valueOf(spec.field)
 				const at = Math.max(0, spec.steps.indexOf(now))
@@ -4466,7 +4618,8 @@ window.__ModuleLoader__.load({
 				]),
 				open
 					? h('div', { key: 'b', style: S.body }, [
-							...FIELDS.filter((spec) => spec.kind === 'range').map(row),
+							visible(),
+							...FIELDS.filter((spec) => spec.kind === 'range' && spec.group !== 'visible').map(row),
 							...ROWS.map(pair),
 							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),
@@ -4497,7 +4650,8 @@ window.__ModuleLoader__.load({
 			// → 换成"点一下开卡片，再点一下才跳"。判据和切换时机见 pointer.js。
 			const canHover = useHover()
 			const tuned = settings.values || {}
-			const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
+			// 画多大一片：量法（按层数 / 按步数）+ 上限，兜底也在里面，见 visibleRange
+			const range = visibleRange(tuned)
 			// 主题：每个字段各自回退，缺一项不影响其他项
 			// 没改过的颜色跟着配色方案 + 明暗走，改过的钉死（见 themeFrom）
 			const theme = themeFrom(tuned, settings.user, dark)
@@ -4645,9 +4799,9 @@ window.__ModuleLoader__.load({
 			else graph = lastGraph.current
 			if (graph === undefined) return null
 
-			// 省略太远的节点。radius=0 时 elide 全留，下面这一整套退化成原来的画法。
+			// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 			// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
-			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), radius)
+			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), range.limit, range.mode)
 			const rowOfNode = (node) => view.rowOf.get(node.depth)
 
 			// 自诊断钩子：症状出现时在浏览器控制台敲 __dshTree() 就能把当时的真实状态倒出来。
@@ -4655,7 +4809,7 @@ window.__ModuleLoader__.load({
 			// 而每猜错一轮都要 John 重启一次。
 			installDiagnostics({
 				current, cwd, activeTurn, view, scale, tuned, settings, picked, archived,
-				radiusText: radius === RADIUS.off ? '不省略' : radius,
+				radiusText: `${range.text}（${range.spec.label}）`,
 				nodes: graph.nodes,
 				sessionCount: (listState.ids || []).length,
 			})
@@ -4960,7 +5114,8 @@ window.__ModuleLoader__.load({
 			// 撤回的重拉节奏
 			isRewindPending, rewindRetryDelay,
 			// 设置
-			settingsStore, stepText, scaleText, scaleZ, STEPS, SCALES, RADIUS, SCALE, FIELDS, ROWS, Z,
+			settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+			VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 		}
 
 		// ===== apply.js ================================================

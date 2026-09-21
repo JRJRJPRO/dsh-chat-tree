@@ -1,5 +1,10 @@
 /**
- * 省略：只画离你正在看的那一轮若干步以内的节点，最外两圈鱼眼淡出。
+ * 省略：只画离你正在看的那一轮足够近的节点，最外两圈鱼眼淡出。
+ *
+ * 「足够近」有两种量法，二选一（设置里那一排左右两半）：
+ *   · `'depth'` 按**层高差**：|自己的 depth − 基准点的 depth| ≤ N。一横排要么整排都在，
+ *     要么整排都不在。这是默认。
+ *   · `'step'`  按**树上无向步数**：父节点 1 步，父节点的另一个孩子 2 步。
  */
 import { isFocusedNode } from './tree.js'
 
@@ -31,46 +36,74 @@ export function fisheye(level) {
 }
 
 /**
+ * 量法一：树上的无向步数，BFS 到 `limit` 为止。
+ * @param nodes - 全部节点（只用来兜底，真正走的是 parent/children）
+ * @param anchor - 起点
+ * @param limit - 最远走几步
+ * @returns Map<node, 步数>
+ */
+export function stepsAway(nodes, anchor, limit) {
+	const step = new Map([[anchor, 0]])
+	const queue = [anchor]
+	for (let head = 0; head < queue.length; head += 1) {
+		const node = queue[head]
+		const walked = step.get(node)
+		if (walked >= limit) continue
+		for (const near of [node.parent].concat(node.children)) {
+			if (near === undefined || step.has(near)) continue
+			step.set(near, walked + 1)
+			queue.push(near)
+		}
+	}
+	return step
+}
+
+/**
+ * 量法二：层高差。不看连通性 —— 同一层的节点整排一起去留，这正是这一档的意义。
+ * @param nodes - 全部节点
+ * @param anchor - 起点
+ * @param limit - 最多差几层
+ * @returns Map<node, 层高差>
+ */
+export function layersAway(nodes, anchor, limit) {
+	const out = new Map()
+	for (const node of nodes) {
+		const away = Math.abs(node.depth - anchor.depth)
+		if (away <= limit) out.set(node, away)
+	}
+	return out
+}
+
+/**
  * 按「离你正在看的那一轮多远」把太远的节点省略掉。
  *
- * 距离是树上的无向步数：父节点 1 步，父节点的另一个孩子 2 步（上一步再下一步）。
  * 藏掉的行不留空档 —— depth 重新压实成连续的 row，否则省略了也腾不出地方。
  *
- * 小例子（线性 1..20，站在 10，半径 5）：
+ * 小例子（线性 1..20，站在 10，limit 5）：两种量法在**一条直线**上是一样的 ——
  *   留下 5..15；其中 7..13 正常画，6 和 14 缩到 74%、淡到 66%，5 和 15 缩到 52%、淡到 40%。
+ *   有岔路时才分家：B 分支上和你同层的那个节点，按层数算 0 层差（在），按步数可能差 20 步（不在）。
  *
  * @param nodes - buildGraph 出来的全部节点
  * @param anchor - 从哪个节点量距离
- * @param radius - 保留半径；<=0 表示不省略
+ * @param limit - 上限（步数 / 层高差）；<=0 表示不省略
+ * @param mode - `'depth'` 按层高差，其余（含省略不传）按步数
  * @returns {shown, rowOf, dimOf, rows, hidden}
  */
-export function elide(nodes, anchor, radius) {
+export function elide(nodes, anchor, limit, mode) {
 	const shown = new Set()
 	// 每个留下来的节点在第几圈淡出。0 = 正常画
 	const dimOf = new Map()
-	if (!(radius > 0) || anchor === undefined) {
+	if (!(limit > 0) || anchor === undefined) {
 		for (const node of nodes) {
 			shown.add(node)
 			dimOf.set(node, 0)
 		}
 	} else {
-		const step = new Map([[anchor, 0]])
-		const queue = [anchor]
-		for (let head = 0; head < queue.length; head += 1) {
-			const node = queue[head]
-			const walked = step.get(node)
-			if (walked >= radius) continue
-			for (const near of [node.parent].concat(node.children)) {
-				if (near === undefined || step.has(near)) continue
-				step.set(near, walked + 1)
-				queue.push(near)
-			}
-		}
-		for (const [node, walked] of step) {
+		for (const [node, away] of (mode === 'depth' ? layersAway(nodes, anchor, limit) : stepsAway(nodes, anchor, limit))) {
 			shown.add(node)
-			// 再套一层 min(walked, …)：半径比 rings 还小时（配置文件里手改出来的），
+			// 再套一层 min(away, …)：上限比 rings 还小时（配置文件里手改出来的），
 			// 不加这层连基准点自己都会被淡掉 —— 你正看着的那一轮必须永远是实的。
-			dimOf.set(node, Math.min(walked, Math.max(0, FADE.rings - (radius - walked))))
+			dimOf.set(node, Math.min(away, Math.max(0, FADE.rings - (limit - away))))
 		}
 	}
 
