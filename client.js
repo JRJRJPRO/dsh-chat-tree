@@ -3801,6 +3801,28 @@ window.__ModuleLoader__.load({
 		 */
 		const FAV_COLORS = ['', '#f85149', '#ffa657', '#56d364', '#58a6ff', '#bc8cff', '#ff7bb0']
 
+		/**
+		 * 色板上一格该画成什么样。
+		 *
+		 * 单独抽出来是为了**能测**（和 `polyProps` / `glyphBoxStyle` 同一个理由）：
+		 * 第一格是「恢复默认」，它必须把**默认那个色本身**画出来。以前它是个空心虚线圈
+		 * 加个 ×，于是一排七个格子里看不到默认的黄 —— John 报的"颜色选项里竟然没有默认
+		 * 收藏的那个黄色"。藏在渲染函数里的话，改回去一条断言都不会响。
+		 * @param hex - 这一格的值；空串 = 恢复默认
+		 * @param defaultInk - 当前默认的收藏色
+		 * @param ownColor - 这个点自己挑过的色；没挑过是 undefined
+		 * @returns `{shown, picked, reset}`
+		 */
+		function favSwatch(hex, defaultInk, ownColor) {
+			const reset = hex === ''
+			return {
+				// 恢复默认那格画默认色；给不出默认色时宁可画成透明，也别画一个骗人的颜色
+				shown: reset ? defaultInk || 'none' : hex,
+				picked: reset ? ownColor === undefined : ownColor === hex,
+				reset,
+			}
+		}
+
 		/** 收藏选择器里每一格多大、格与格之间留多少。全在一行里挤，所以比设置卡那排小一圈。 */
 		const PICK = 18
 		const GAP = 3
@@ -3966,25 +3988,29 @@ window.__ModuleLoader__.load({
 				//    所以**默认还是黄的**，这里改的只是这一个点。真要按点分色（红=待办、
 				//    绿=已验证）给得出，但一屏里七八种颜色之后，"哪个是收藏"就得靠形状认了。
 				// 不写"收藏颜色"四个字，也不另起一行：圆的是颜色、方的是形状，一眼就分得开。
-				...FAV_COLORS.map((hex) =>
-					h('span', {
+				...FAV_COLORS.map((hex) => {
+					// ⚠️ 第一格是「恢复默认」，但它**必须把默认那个色本身画出来**。
+					//    以前它是个空心虚线圈加个 ×，于是一排七个格子里**看不到默认的黄**——
+					//    John 报的"颜色选项里竟然没有默认收藏的那个黄色"就是这条。
+					//    虚线边继续留着当"这格是恢复默认"的记号，颜色照画。
+					const { shown, picked, reset } = favSwatch(hex, props.defaultInk || color, props.ownColor)
+					return h('span', {
 						key: 'c' + hex,
-						title: hex === '' ? '恢复默认颜色' : hex,
+						title: reset ? `恢复默认颜色（${shown}）` : hex,
 						style: Object.assign({
 							display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
 							width: PICK + 'px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
-							background: hex === '' ? 'none' : hex,
-							borderWidth: hex === '' ? '1px' : '2px', borderStyle: hex === '' ? 'dashed' : 'solid',
+							background: shown,
+							borderWidth: '2px', borderStyle: reset ? 'dashed' : 'solid',
 							// 选中的那颗描一圈亮边；没选中的用中性描边，免得每颗都在抢注意力
-							borderColor: (hex === '' ? props.ownColor === undefined : props.ownColor === hex) ? C.text : C.line,
+							borderColor: picked ? C.text : C.line,
 							// ⚠️ 颜色一律画成**圆**、形状一律画成**方**。两组挤在同一行里，
 							//    不靠外框区分的话，"这一格是选形状还是选颜色"得逐个试。
 							borderRadius: '50%', cursor: 'pointer',
-							fontSize: '9px', lineHeight: 1, color: C.muted,
 						}, TAPPABLE),
 						onClick: (event) => { event.stopPropagation(); if (typeof onColor === 'function') onColor(hex) },
-					}, hex === '' ? '×' : null),
-				),
+					})
+				}),
 				// 取色盘：预设不够时自己挑。`type=color` 原生就给 `#rrggbb`，正好是我们收的格式。
 				h('input', {
 					key: 'pick', type: 'color',
@@ -4183,6 +4209,8 @@ window.__ModuleLoader__.load({
 				key: 'favicon',
 				value: favIcons[key],
 				color: props.starInk || C.muted,
+				// 「恢复默认」那一格要画出默认色本身，而 starInk 已经是"这个点自己的色"了
+				defaultInk: props.defaultInk,
 				ownColor: (props.favColors || {})[key],
 				onColor: (want) => props.onFavColor(key, want),
 				onHold: () => setTyping(true),
@@ -5091,6 +5119,8 @@ window.__ModuleLoader__.load({
 						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
 						starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+						// 色板里「恢复默认」那一格画的就是它 —— 不给的话那一格是个看不出颜色的空圈
+						defaultInk: starSkin(false, dark, undefined, undefined, theme).ink,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFavorite: (key, on) => {
 							writeFavorite(key, on)
@@ -5160,11 +5190,11 @@ window.__ModuleLoader__.load({
 			// 详情卡里能离线测的那两件事：改没改过、这一下是不是输入法在拼字
 			isDirty, isComposingKey, keepsCard, clampGlyph,
 			// 焦点被宿主抢走时抢不抢回来
-			shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP,
+			shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP, favSwatch,
 			// 配色与明暗
 			PALETTE, paletteOf, themeFrom, isDark, isHex,
 			// 几何
-			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN,
+			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 			// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
 			contentRightOf, isCovered, RAIL_MARK,
 			// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式

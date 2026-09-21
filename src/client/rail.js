@@ -417,6 +417,8 @@ export function Rail(props) {
 				// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 				// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
 				starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+				// 色板里「恢复默认」那一格画的就是它 —— 不给的话那一格是个看不出颜色的空圈
+				defaultInk: starSkin(false, dark, undefined, undefined, theme).ink,
 				onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 				onFavorite: (key, on) => {
 					writeFavorite(key, on)

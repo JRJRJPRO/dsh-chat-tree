@@ -823,6 +823,33 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 		check(pure.starSkin(true, dark, undefined, '#56d364').ink === '#56d364',
 			`${dark ? '暗' : '亮'}色下用户挑的 #56d364 被改动了`)
 	}
+	// ⚠️ **写什么就画什么。** 从"用户挑的色值"到"CSS 里那个字符串"，中间不许有任何
+	//    加工 —— John 拿取色器一格一格量过，设置卡里写的和树上画的必须是同一个色号。
+	//    图标换成五角星 / 方块 / 一个字都一样，因为它们走的是同一个 `paint`。
+	for (const want of ['#fff833', '#f85149', '#00ff00', '#123456', '#ffffff', '#000000']) {
+		for (const icon of [undefined, 'star', 'square', 'char:甲', 'char:A']) {
+			const lit = pure.starSkin(true, true, icon, want)
+			const rest = pure.starSkin(false, true, icon, want)
+			const where = `${want} / ${String(icon)}`
+			check(lit.ink === want && lit.fill === want, `${where} 实心时被改成了 ${lit.ink}/${lit.fill}`)
+			check(rest.ink === want && rest.fill === pure.fade(want, pure.FILL_ALPHA), `${where} 平时被改成了 ${rest.ink}/${rest.fill}`)
+		}
+		// 画成字时，框的描边和字色也得是同一个色号
+		const sk = pure.starSkin(false, true, 'char:甲', want)
+		const box = pure.glyphBoxStyle(sk.shape, 11, sk, 1.5, false)
+		check(box.borderColor === want && box.color === want, `${want} 画成字时框/字色成了 ${box.borderColor}/${box.color}`)
+	}
+
+	// ⚠️ 色板第一格是「恢复默认」，它必须把**默认那个色本身**画出来。
+	//    以前是个空心虚线圈加个 ×，于是一排七格里看不到默认的黄。
+	check(pure.FAV_COLORS[0] === '', '色板第一格该是恢复默认（空串）')
+	const reset = pure.favSwatch('', '#ffd43b', undefined)
+	check(reset.shown === '#ffd43b', `恢复默认那一格该画出默认色，实际画的是 ${reset.shown}`)
+	check(reset.reset === true && reset.picked === true, '没单独挑过色时，该是「恢复默认」那格被选中')
+	check(pure.favSwatch('', '#ffd43b', '#f85149').picked === false, '单独挑过色之后，选中的不该还是「恢复默认」')
+	check(pure.favSwatch('#f85149', '#ffd43b', '#f85149').shown === '#f85149', '普通那几格该画自己那个色')
+	check(pure.favSwatch('', undefined, undefined).shown === 'none', '给不出默认色时宁可空着，也别画一个骗人的颜色')
+
 	// 存盘那一层：改过的才进字典，恢复默认是**删掉**而不是存一个黄
 	check(pure.nextFavColors({}, 'a:1', '#58A6FF')['a:1'] === '#58a6ff', '存进去该归一成小写')
 	check(pure.nextFavColors({ 'a:1': '#58a6ff' }, 'a:1', '')['a:1'] === undefined, '恢复默认该把这一条删掉，而不是存一个默认色')

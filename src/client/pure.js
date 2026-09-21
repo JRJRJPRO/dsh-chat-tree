@@ -88,10 +88,10 @@ import {
 	starPoly,
 	starSkin,
 } from './shapes.js'
-import { MIN_RUN, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
+import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
 import { RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, rewindRetryDelay, starAnimation, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
+import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
 import { isDark } from './theme.js'
 import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
@@ -120,11 +120,11 @@ export const __pure = {
 	// 详情卡里能离线测的那两件事：改没改过、这一下是不是输入法在拼字
 	isDirty, isComposingKey, keepsCard, clampGlyph,
 	// 焦点被宿主抢走时抢不抢回来
-	shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP,
+	shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP, favSwatch,
 	// 配色与明暗
 	PALETTE, paletteOf, themeFrom, isDark, isHex,
 	// 几何
-	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN,
+	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 	// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
 	contentRightOf, isCovered, RAIL_MARK,
 	// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
