@@ -26,4 +26,9 @@ export const SETTINGS_SCHEMA = Schema.object({
 	compactShape: Schema.string().default('triangle').description('压缩节点形状；也可以填 char:<字> 用任意字符当节点'),
 	emptyColor: Schema.string().default('#58a6ff').description('树根那个"新对话"空节点的颜色'),
 	emptyShape: Schema.string().default('circle').description('空节点形状；边框恒为虚线'),
+	// 收藏不是第五个角色，但它的默认样子同样该能调。
+	// ⚠️ 这两项**不分明暗**：描边色是从 favoriteColor 自动算出来的（压深到在当前底色上
+	// 看得清），所以一个色值就够，不需要亮色/暗色两版。
+	favoriteColor: Schema.string().default('#ffd43b').description('收藏节点的默认颜色；描边色从它自动算出来'),
+	favoriteShape: Schema.string().default('star').description('收藏节点的默认图标；star = 五角星，也可以填预设形状 / char:<字> / img:<哈希>'),
 })

@@ -70,7 +70,15 @@ export async function loadClient() {
 			},
 		},
 	}
-	globalThis.localStorage = { getItem: () => '{}', setItem: () => {} }
+	// 真的存得住的 localStorage。以前是个"读永远给 {}、写永远丢掉"的假货，
+	// 于是改名和收藏那一整套**存进去再读出来**的逻辑，一条断言都写不出来。
+	const cells = new Map()
+	globalThis.localStorage = {
+		getItem: (key) => (cells.has(key) ? cells.get(key) : null),
+		setItem: (key, value) => cells.set(key, String(value)),
+		removeItem: (key) => cells.delete(key),
+		clear: () => cells.clear(),
+	}
 	globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
 	await import('./client.js')
 	if (exported === undefined || exported.__pure === undefined) throw new Error('client.js 没有导出 __pure，测试无法进行')

@@ -41,6 +41,7 @@ const PARTS = [
 	'runtime.js',
 	'net.js',
 	'theme.js',
+	'pointer.js',
 	'labels.js',
 	'tree.js',
 	'graph.js',

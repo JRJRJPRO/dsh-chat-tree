@@ -6,7 +6,7 @@
  */
 import { RADIUS, SCALE, SETTINGS_NS } from './const.js'
 import { warn } from './net.js'
-import { ROLES, THEME, paletteOf, shapeSpec } from './shapes.js'
+import { ROLES, THEME, favShape, paletteOf, shapeSpec } from './shapes.js'
 
 /** 省略半径的档位：5..30，最后一格是"不省略"。 */
 export const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
@@ -35,6 +35,15 @@ export const isHex = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/
 export const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
 /**
+ * 收藏图标认的值比节点形状多一个 `'star'`。
+ *
+ * ⚠️ 别图省事用 `isShape`：`shapeSpec('star')` 认不得五角星（它**故意**不在 SHAPES 里，
+ *    免得五角星出现在四个角色的形状选择器里，"哪个是收藏"当场失效），会退回圆 ——
+ *    于是"收藏默认形状"存成 star 之后读出来不合法，设置里改了跟没改一样。
+ */
+export const isFavShape = (value) => typeof value === 'string' && favShape(value).value === value
+
+/**
  * 卡片上的外观分组：一个角色一行，**左边颜色右边形状**，不再一项占一行。
  * 颜色和形状是同一个角色的两面，拆成两行既浪费竖直空间又要来回对照。
  */
@@ -47,14 +56,26 @@ export const ROWS = [
 		label: '空节点',
 		hint: '树根那个"新对话"占位，在它上面按 ＋ 可以在同一棵树里再开一条。边框永远是虚线 —— 那是"还没说话"的记号，不跟着配置走。',
 	},
-	// `key` 就是 shapes.js 里的角色名，所以改哪两个设置字段、要不要画虚线，
+	// 收藏**不是第五个角色**（它是盖在任何一种节点上的一层记号，所以不在 ROLES 里），
+	// 但它确实有一对"颜色 + 形状"要给用户调，所以字段名直接写出来。
+	{
+		key: 'favorite',
+		label: '收藏',
+		color: 'favoriteColor',
+		shape: 'favoriteShape',
+		extra: ['star'],
+		hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边色是从这个颜色自动算出来的（压深到在当前底色上看得清），不用也不能单独配。',
+	},
+	// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 	// 一律从 ROLES 查，不在这儿重写一遍
 ].map((row) =>
-	Object.assign({}, row, {
-		color: ROLES[row.key].color,
-		shape: ROLES[row.key].shape,
-		dashed: ROLES[row.key].dashed === true,
-	}),
+	Object.assign(
+		{},
+		ROLES[row.key] === undefined
+			? {}
+			: { color: ROLES[row.key].color, shape: ROLES[row.key].shape, dashed: ROLES[row.key].dashed === true },
+		row,
+	),
 )
 
 /**
@@ -71,7 +92,8 @@ export const FIELDS = [
 	// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。
 	...ROWS.flatMap((row) => [
 		{ field: row.color, kind: 'color', label: `${row.label}颜色`, fallback: THEME[row.color], accept: isHex, hint: '' },
-		{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: isShape, hint: '' },
+		// 收藏那一行的形状多认一个 'star'，见 isFavShape
+		{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: row.key === 'favorite' ? isFavShape : isShape, hint: '' },
 	]),
 ]
 

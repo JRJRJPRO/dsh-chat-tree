@@ -14,8 +14,13 @@ export const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
 /** 节点缩放，百分比。 */
 export const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
 
-// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的宽度（圆心在 hit/2 处）。
+// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的**下限**（圆心在这条宽度的一半处）。
 // 以前 18 和 9 是散在渲染里的魔数，收进来才能跟着缩放一起动。
+//
+// laneGap = 相邻两列的图形之间**至少**要留多少空白。
+// ⚠️ `lane` 只是列距的下限，不是列距本身。列距真正由「这棵树上画得最宽的那个形状」
+//    说了算（见 geometry.js 的 railLayout）：收藏的五角星是 1.67 倍，11px 的点画出来
+//    18.4px，塞进 17px 的列里左右两个点就贴上了 —— John 报的就是这条。
 /**
  * 基准尺寸。滑杆上的 100% 指的就是这张表。
  *
@@ -24,7 +29,7 @@ export const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
  * 代价是各项相对老基准差 ±2% 以内。
  * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
  */
-export const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
+export const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
 
 /**
  * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -39,7 +44,7 @@ export const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, 
 export function scaleZ(percent) {
 	const k = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1
 	const out = Object.assign({}, Z)
-	for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit']) out[key] = Z[key] * k
+	for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'laneGap']) out[key] = Z[key] * k
 	return out
 }
 

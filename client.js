@@ -42,8 +42,13 @@ window.__ModuleLoader__.load({
 		/** 节点缩放，百分比。 */
 		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
 
-		// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的宽度（圆心在 hit/2 处）。
+		// hit = 命中区宽度，同时也是导轨右侧留给第 0 列的**下限**（圆心在这条宽度的一半处）。
 		// 以前 18 和 9 是散在渲染里的魔数，收进来才能跟着缩放一起动。
+		//
+		// laneGap = 相邻两列的图形之间**至少**要留多少空白。
+		// ⚠️ `lane` 只是列距的下限，不是列距本身。列距真正由「这棵树上画得最宽的那个形状」
+		//    说了算（见 geometry.js 的 railLayout）：收藏的五角星是 1.67 倍，11px 的点画出来
+		//    18.4px，塞进 17px 的列里左右两个点就贴上了 —— John 报的就是这条。
 		/**
 		 * 基准尺寸。滑杆上的 100% 指的就是这张表。
 		 *
@@ -52,7 +57,7 @@ window.__ModuleLoader__.load({
 		 * 代价是各项相对老基准差 ±2% 以内。
 		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
 		 */
-		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -67,7 +72,7 @@ window.__ModuleLoader__.load({
 		function scaleZ(percent) {
 			const k = Number.isFinite(percent) && percent > 0 ? percent / 100 : 1
 			const out = Object.assign({}, Z)
-			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit']) out[key] = Z[key] * k
+			for (const key of ['row', 'rowMin', 'dot', 'dotMin', 'dotPad', 'lane', 'hit', 'laneGap']) out[key] = Z[key] * k
 			return out
 		}
 
@@ -170,6 +175,85 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 走不走 `remote-web-ui` 的 `/remote` 通道。
+		 *
+		 * 【为什么需要这个】host 半的三条路由现在问宿主的 `connection` 要判决，
+		 * 那道闸是 **loopback-only** 的：Host 不是 127.0.0.1 / localhost 就直接 403。
+		 * 手机在局域网里开的页面，Host 是局域网 IP —— 直连必然被拒。
+		 *
+		 * 宿主给这种情况留的路是 `remote-web-ui` 的 `/remote` 前缀：它做完配对校验，
+		 * 再以 127.0.0.1 把请求重发进来，于是围栏自然过。那是个**通用前缀转发**
+		 * （`/remote/<任意路径>`），不限于它自己那几条路由，我们直接借用即可 ——
+		 * 不碰它任何内部 API。
+		 *
+		 * ⚠️ 不能改成"一上来就走 /remote"：桌面端（127.0.0.1）压根没装 remote-web-ui 时
+		 *    那个前缀是 404。所以是**先直连，被拒了才换路，换成了就记住**。
+		 */
+		const REMOTE_PREFIX = '/remote'
+
+		/** 已经确认要走 /remote 了吗。一旦为真就不再试直连。 */
+		let viaRemote = false
+
+		/**
+		 * 现在该用哪个前缀。
+		 *
+		 * 给**不走 fetch 的东西**用 —— CSS `url(...)` 里的节点图片就是（`shapes.js` 的 `iconUrl`）。
+		 * 那类请求没有重试的机会，只能沿用 `send()` 已经试出来的结论。
+		 * 时序上够用：图片是在 `/outlines` 回来之后才画的，那时 `viaRemote` 已经定了。
+		 * @returns '' 或 '/remote'
+		 */
+		function apiPrefix() {
+			return viaRemote ? REMOTE_PREFIX : ''
+		}
+
+		/**
+		 * `remote-web-ui` 的免 cookie 设备凭据。
+		 *
+		 * 它自己的 fetch 补丁只给**被它改写过**的请求加这个头，而 `/plugins/...` 不在它的
+		 * 改写名单里 —— 我们自己拼的 `/remote/...` 因此拿不到。cookie 那条路通常够用
+		 * （同源请求自带），这里是补上无痕模式/跨标签页那种只有 sessionStorage 的情形。
+		 * 取不到就算了，配对校验自会说话。
+		 * @returns 设备 id，没有就是 undefined
+		 */
+		function deviceId() {
+			try {
+				return globalThis.sessionStorage?.getItem('dsh-remote-device') || undefined
+			} catch {
+				return undefined
+			}
+		}
+
+		/**
+		 * 发一次请求；直连被围栏拒掉就改走 `/remote` 再试一次。
+		 *
+		 * 只对 401 / 403 重试 —— 那两个码才是"围栏说不行"。404 / 500 是别的毛病，
+		 * 换条路也一样。重试只发生一次，成了就把 `viaRemote` 钉住，之后不再多跑一个来回。
+		 * @param path - `API` 之后那一段
+		 * @param init - fetch 的第二个参数
+		 * @returns fetch 的答复
+		 */
+		async function send(path, init) {
+			const device = deviceId()
+			const go = (prefix) =>
+				fetch(`${prefix}${API}${path}`, {
+					...init,
+					credentials: 'same-origin',
+					headers: {
+						...(init && init.headers),
+						...(prefix !== '' && device !== undefined ? { 'x-dsh-remote-device': device } : {}),
+					},
+				})
+			if (viaRemote) return go(REMOTE_PREFIX)
+			const direct = await go('')
+			if (direct.status !== 401 && direct.status !== 403) return direct
+			const relayed = await go(REMOTE_PREFIX)
+			if (relayed.ok) viaRemote = true
+			// 换路也不行：把**直连**那份答复还回去。它的错误信息说的是真正的原因
+			// （"没有登录凭据"），而 /remote 的 404 只会让人以为是路由写错了。
+			return relayed.ok ? relayed : direct
+		}
+
+		/**
 		 * GET 一个 JSON。
 		 * @param path - `API` 之后那一段，比如 `/outlines`
 		 * @param params - 查询串，值会自己 encode
@@ -177,7 +261,7 @@ window.__ModuleLoader__.load({
 		 */
 		async function getJson(path, params) {
 			const query = new URLSearchParams(params || {}).toString()
-			return unwrap(await fetch(`${API}${path}${query === '' ? '' : `?${query}`}`, { credentials: 'same-origin' }))
+			return unwrap(await send(`${path}${query === '' ? '' : `?${query}`}`))
 		}
 
 		/**
@@ -188,9 +272,8 @@ window.__ModuleLoader__.load({
 		 */
 		async function postJson(path, body) {
 			return unwrap(
-				await fetch(`${API}${path}`, {
+				await send(path, {
 					method: 'POST',
-					credentials: 'same-origin',
 					headers: { 'content-type': 'application/json' },
 					body: JSON.stringify(body),
 				}),
@@ -242,17 +325,180 @@ window.__ModuleLoader__.load({
 			return dark
 		}
 
+		// ===== pointer.js ==============================================
+
+		/**
+		 * 这台设备**怎么指**：有没有悬停、点一下算什么、以及 WebKit 上那几条必须补的样式。
+		 *
+		 * 【为什么要有这个文件】整条导轨的交互原本只建立在 `mousemove` 上 ——
+		 * 鼠标滑到点上出卡片，卡片上再按 ＋ / ☆ / ⇥。这套在 Windows + Chrome 和
+		 * macOS + 触控板上都成立（触控板照样发 mousemove），但在 **iPad / iPhone
+		 * 以及带触摸屏的 Windows 本**上完全不成立：手指没有"滑过"这个状态，
+		 * 于是点一下节点＝直接跳走，卡片永远开不出来 —— 分支、收藏、改名、合并、
+		 * 分离这五件事一件也够不着，插件退化成一张只能点的静态图。
+		 *
+		 * 【思路】不去猜"是不是 iOS"（UA 嗅探在 iPad 上本来就分不清），
+		 * 而是问浏览器**这块屏能不能悬停**：`(hover: hover)`。
+		 * 能悬停 → 原样走 hover intent，一个字节的行为都不变；
+		 * 不能悬停 → 换成"点一下开卡片，再点一下才跳"（就是 iOS 自己对 :hover 的那套语义）。
+		 *
+		 * ⚠️ 别改成 `'ontouchstart' in window`：现在的 Chrome 桌面版也有这个属性，
+		 *    而 Surface 这类设备是**两种指针都有**，需要跟着用户当下用哪只手实时切换 ——
+		 *    matchMedia 会在切换时发 change 事件，这正是我们要的。
+		 */
+
+		/** 判据：这块屏的主指针能不能悬停。 */
+		const HOVER_QUERY = '(hover: hover)'
+
+		/**
+		 * 此刻能不能悬停。
+		 *
+		 * 查不出来（老浏览器、node 里跑测试）一律当**能** —— 宁可退回原来那套鼠标交互，
+		 * 也不要在桌面上误判成触摸，把"滑过出卡片"改成"要点两下"。
+		 * @returns 能悬停返回 true
+		 */
+		function hasHover() {
+			if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true
+			try {
+				return window.matchMedia(HOVER_QUERY).matches
+			} catch {
+				return true
+			}
+		}
+
+		/**
+		 * 跟着设备走的"能不能悬停"。二合一本子上插拔键盘、iPad 接妙控板都会实时切换。
+		 * @returns 能悬停返回 true
+		 */
+		function useHover() {
+			const [able, setAble] = react.useState(hasHover)
+			react.useEffect(() => {
+				if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+				let media
+				try {
+					media = window.matchMedia(HOVER_QUERY)
+				} catch {
+					return undefined
+				}
+				const check = () => setAble((was) => (was === media.matches ? was : media.matches))
+				check()
+				// ⚠️ Safari 13 及更早只有 addListener，没有 addEventListener。
+				//    直接调 addEventListener 会抛，整个 Rail 跟着白屏。
+				if (typeof media.addEventListener === 'function') {
+					media.addEventListener('change', check)
+					return () => media.removeEventListener('change', check)
+				}
+				if (typeof media.addListener === 'function') {
+					media.addListener(check)
+					return () => media.removeListener(check)
+				}
+				return undefined
+			}, [])
+			return able
+		}
+
+		/**
+		 * 触摸设备上，点一下某个节点该干嘛。
+		 *
+		 * 这是 `hoverNext` 的触摸版孪生：那边回答"鼠标压着谁的时候换不换卡片"，
+		 * 这边回答"手指戳下去是开卡片还是真跳过去"。
+		 *
+		 * ⚠️ 必须是**两下**。一下就跳的话卡片没有任何机会出现（原来的毛病）；
+		 *    而一下只开卡片、永远不跳，又会让"点节点＝滚到那一轮"这个最常用的动作
+		 *    平白多一步。所以：第一下把卡片开在这个点上（顺便把 ＋ ☆ 送到手边），
+		 *    第二下**戳同一个点**才跳 —— 和 iOS 自己处理 :hover 菜单的规矩一致，
+		 *    不用教。
+		 * @param hovered - 卡片现在停在哪个点；null = 卡片没开
+		 * @param node - 手指戳的那个点
+		 * @returns 'go' 真的跳过去 / 'open' 先把卡片开出来
+		 */
+		function tapNext(hovered, node) {
+			return hovered === node && hovered !== null && hovered !== undefined ? 'go' : 'open'
+		}
+
+		/**
+		 * 任何能点的东西都该带上这两条 —— **连带文字一起的面板也能用**。
+		 *
+		 * · `touchAction: 'manipulation'` —— 关掉双击缩放。**重点不是缩放**：
+		 *   Safari 为了等"你是不是还要点第二下"，会把 click 压后约 300ms 才派发，
+		 *   于是每个按钮手感都发黏。顺带它让卡片上的"双击展开"真的能用 ——
+		 *   否则那两下被浏览器当成缩放手势吃掉，`dblclick` 根本不发。
+		 * · `WebkitTapHighlightColor` —— iOS 默认给可点元素盖一层灰方块，
+		 *   盖在 11px 的小圆点上就是糊的一坨。
+		 */
+		const NO_ZOOM = {
+			touchAction: 'manipulation',
+			WebkitTapHighlightColor: 'transparent',
+		}
+
+		/**
+		 * 纯按钮／纯图形用这一套：`NO_ZOOM` 再加上"别让手指选中它"。
+		 *
+		 * ⚠️ **别往含 `<input>` 的容器上招呼**。iOS 上祖先的 `-webkit-user-select: none`
+		 *    会连输入框里的文字一起变得选不中，改名框就没法放光标、没法全选重打了。
+		 *    所以卡片外壳只用 `NO_ZOOM`，这一套只给按钮和节点本身。
+		 *
+		 * · `WebkitTouchCallout` —— 长按不再弹"拷贝 / 共享"那张系统菜单。
+		 *   导轨上手指难免多停一会儿，弹一次就把卡片挤没了。
+		 * · `WebkitUserSelect` —— Safari 16.4 之前不认不带前缀的 `userSelect`，
+		 *   而 **React 的内联样式不会自动补前缀**。不补的话，手指在导轨上一划
+		 *   就选中一片文字，还会弹出两个选择手柄。
+		 */
+		const TAPPABLE = Object.assign({
+			WebkitTouchCallout: 'none',
+			WebkitUserSelect: 'none',
+			userSelect: 'none',
+		}, NO_ZOOM)
+
+		/**
+		 * 鼠标此刻到底在不在导轨（含浮在旁边的详情卡）上面。
+		 *
+		 * 【为什么不能只信 mouseleave】卡片里点一下会改版式 —— 收藏图标那排消失、导轨变宽变窄、
+		 * 卡片竖直居中所以变矮就等于内容在鼠标底下挪走。鼠标一动没动，浏览器照样派一个
+		 * `mouseleave` 过来。只信它的话，点一下"取消收藏"卡片就自己收了（John 报的）。
+		 *
+		 * 判法是**回到现场问一句**：这个坐标上最上面的那个元素，还是不是导轨的子孙。
+		 * 用 DOM 包含关系而不是矩形：卡片浮在导轨框的左边、几何上在框外，但它是导轨的子孙。
+		 *
+		 * ⚠️ 还没收到过 mousemove（`at` 是 null）时返回 `false` —— 也就是"该关就关"。
+		 *    反过来会让卡片在鼠标从没进过页面时永远关不掉。
+		 * @param shell - 导轨最外层元素
+		 * @param at - 最近一次鼠标位置 `{x, y}`，没有就是 null
+		 * @param probe - `(x, y) => 那个位置最上面的元素`，缺省用 document.elementFromPoint
+		 * @returns 鼠标还在导轨上吗
+		 */
+		function overRail(shell, at, probe) {
+			if (shell === null || shell === undefined) return false
+			if (at === null || at === undefined) return false
+			const pick = typeof probe === 'function'
+				? probe
+				: typeof document !== 'undefined' && typeof document.elementFromPoint === 'function'
+					? (x, y) => document.elementFromPoint(x, y)
+					: undefined
+			if (pick === undefined) return false
+			const hit = pick(at.x, at.y)
+			if (hit === null || hit === undefined) return false
+			return typeof shell.contains === 'function' && shell.contains(hit)
+		}
+
 		// ===== labels.js ===============================================
 
 		/**
-		 * 节点改名：存 localStorage。
+		 * 节点上的用户标注：**改名**和**收藏**。两件事都存 localStorage。
 		 *
 		 * ⚠️ **这是个半成品**：换浏览器就没了，也进不了手机。真正的落点应该是 host 半的
 		 * `shape.json` 旁边（那儿已经有 `$DSH_HOME/plugins/dsh-tree/`），接口保持成
-		 * `readLabels()/writeLabel()` 两个函数就是为了那天只改这一个文件。
+		 * `readLabels()/writeLabel()` + `readFavorites()/writeFavorite()` 这几个函数，
+		 * 就是为了那天只改这一个文件。
+		 *
+		 * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root`，见 tree.js），
+		 * 所以改名和收藏天然对齐到同一个点上。
 		 */
 
 		const LS_KEY = 'dsh-tree.labels'
+
+		/** 收藏清单存哪。和改名分开存：改名是一张字典，收藏是一个集合，混在一起迟早要判类型。 */
+		const FAVORITES_KEY = 'dsh-tree.favorites'
 
 		/** @returns {Record<string,string>} */
 		function readLabels() {
@@ -276,6 +522,187 @@ window.__ModuleLoader__.load({
 			} catch {
 				/* 存不下就算了 */
 			}
+		}
+
+		// ===== 收藏 =====
+		//
+		// 存盘格式是个**字符串数组**（不是 `{key: true}`）：它本来就是个集合，
+		// 存成字典的话早晚有人写出 `favorites[key] === false` 这种"取消收藏"的假动作，
+		// 于是清单里躺满了取消过的键。数组里没有就是没有。
+
+		/**
+		 * 收藏清单。
+		 * @returns 节点 key 的集合
+		 */
+		function readFavorites() {
+			try {
+				const raw = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]')
+				return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && item.length > 0) : [])
+			} catch {
+				return new Set()
+			}
+		}
+
+		/**
+		 * 加一个 / 去一个之后的清单。**纯函数**，不碰 localStorage ——
+		 * 存盘那一下没法在 node 里测，集合算术可以。
+		 * @param current - 现在的集合
+		 * @param key - 节点 key
+		 * @param on - true 收藏、false 取消
+		 * @returns 新集合（不改原来那个）
+		 */
+		function nextFavorites(current, key, on) {
+			const next = new Set(current || [])
+			if (typeof key !== 'string' || key.length === 0) return next
+			if (on) next.add(key)
+			else next.delete(key)
+			return next
+		}
+
+		/**
+		 * 收藏 / 取消收藏并存盘。
+		 * @param key - 节点 key
+		 * @param on - true 收藏、false 取消
+		 * @returns 新集合
+		 */
+		function writeFavorite(key, on) {
+			const next = nextFavorites(readFavorites(), key, on)
+			try {
+				localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]))
+			} catch {
+				/* 存不下就算了 */
+			}
+			return next
+		}
+
+		// ===== 收藏用哪个图标 =====
+		//
+		// 和收藏清单**分开存**，理由和当初把收藏从 labels 里拆出来一样：
+		// 清单是个集合，图标是张字典，混在一起迟早要判类型。
+		// 而且取消收藏时**故意不删图标** —— 取消再收藏回来，还是上次那个图标，
+		// 不用重挑一遍。一个字符串的代价，换掉一次"我刚才选的呢"。
+
+		/** 收藏图标存哪。值是形状值：预设 id / `char:<字>` / `img:<id>`。 */
+		const FAVICONS_KEY = 'dsh-tree.favicons'
+
+		/**
+		 * 每个收藏点自己挑的图标。
+		 * @returns {Record<string,string>} 节点 key → 形状值；没挑过的不在里面
+		 */
+		function readFavIcons() {
+			try {
+				const raw = JSON.parse(localStorage.getItem(FAVICONS_KEY) || '{}')
+				if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+				const out = {}
+				for (const [key, value] of Object.entries(raw)) {
+					if (typeof value === 'string' && value.length > 0) out[key] = value
+				}
+				return out
+			} catch {
+				return {}
+			}
+		}
+
+		/**
+		 * 挑一个 / 恢复默认之后的字典。**纯函数**，不碰 localStorage。
+		 * @param current - 现在的字典
+		 * @param key - 节点 key
+		 * @param value - 形状值；空串 / `star` = 恢复默认，直接把这一条删掉
+		 * @returns 新字典（不改原来那个）
+		 */
+		function nextFavIcons(current, key, value) {
+			const next = Object.assign({}, current || {})
+			if (typeof key !== 'string' || key.length === 0) return next
+			const want = typeof value === 'string' ? value.trim() : ''
+			// ⚠️ 恢复默认是**删掉这一条**，不是存一个 'star'。存进去的话，哪天默认记号
+			//    换了样子，所有"没改过"的点会被这条陈年记录钉在旧样子上。
+			if (want === '' || want === 'star') delete next[key]
+			else next[key] = want
+			return next
+		}
+
+		/**
+		 * 挑图标并存盘。
+		 * @param key - 节点 key
+		 * @param value - 形状值；空串 = 恢复默认
+		 * @returns 新字典
+		 */
+		function writeFavIcon(key, value) {
+			const next = nextFavIcons(readFavIcons(), key, value)
+			try {
+				localStorage.setItem(FAVICONS_KEY, JSON.stringify(next))
+			} catch {
+				/* 存不下就算了 */
+			}
+			return next
+		}
+
+		// ===== 收藏用什么颜色 =====
+		//
+		// ⚠️ 这条推翻了原来"收藏恒为那个黄"的硬规矩。当初的理由是"颜色一旦可配，
+		//    '哪个是收藏'这件一眼能扫出来的事就失效了"，现在仍然成立 —— 所以
+		//    **默认还是那个黄**，这里存的只是用户显式改过的那几个。没改过的不在字典里。
+		//
+		// 和图标分开存，理由和图标当初从收藏清单里拆出来一样：一张字典存一件事。
+		// 取消收藏同样**不删颜色**，收藏回来还是上次那个。
+
+		/** 收藏颜色存哪。值是 `#rrggbb`。 */
+		const FAVCOLORS_KEY = 'dsh-tree.favcolors'
+
+		/** 认不认这个颜色。只收六位十六进制 —— 它要直接进 CSS，认宽了等于开个注入口子。 */
+		function isColor(value) {
+			return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+		}
+
+		/**
+		 * 每个收藏点自己挑的颜色。
+		 * @returns {Record<string,string>} 节点 key → `#rrggbb`；没改过的不在里面
+		 */
+		function readFavColors() {
+			try {
+				const raw = JSON.parse(localStorage.getItem(FAVCOLORS_KEY) || '{}')
+				if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+				const out = {}
+				for (const [key, value] of Object.entries(raw)) {
+					if (isColor(value)) out[key] = value.toLowerCase()
+				}
+				return out
+			} catch {
+				return {}
+			}
+		}
+
+		/**
+		 * 改一个 / 恢复默认之后的字典。**纯函数**，不碰 localStorage。
+		 * @param current - 现在的字典
+		 * @param key - 节点 key
+		 * @param value - `#rrggbb`；空串 / 认不得的值 = 恢复默认，把这一条删掉
+		 * @returns 新字典（不改原来那个）
+		 */
+		function nextFavColors(current, key, value) {
+			const next = Object.assign({}, current || {})
+			if (typeof key !== 'string' || key.length === 0) return next
+			// ⚠️ 恢复默认是**删掉这一条**，不是存一个黄色。存进去的话，哪天默认色换了，
+			//    所有"没改过"的点会被这条陈年记录钉在旧颜色上（和 nextFavIcons 同一条）。
+			if (!isColor(value)) delete next[key]
+			else next[key] = value.toLowerCase()
+			return next
+		}
+
+		/**
+		 * 挑颜色并存盘。
+		 * @param key - 节点 key
+		 * @param value - `#rrggbb`；空串 = 恢复默认
+		 * @returns 新字典
+		 */
+		function writeFavColor(key, value) {
+			const next = nextFavColors(readFavColors(), key, value)
+			try {
+				localStorage.setItem(FAVCOLORS_KEY, JSON.stringify(next))
+			} catch {
+				/* 存不下就算了 */
+			}
+			return next
 		}
 
 		// ===== tree.js =================================================
@@ -912,7 +1339,7 @@ window.__ModuleLoader__.load({
 		const CUSTOM = 'char:'
 		const PICTURE = 'img:'
 
-		/** 上传的图落在 host 半，这是取它的地址。 */
+		/** 上传的图落在 host 半，这是取它的路径（前缀另算，见 `iconUrl`）。 */
 		const ICON_URL = `${API}/icon`
 
 		/**
@@ -923,6 +1350,51 @@ window.__ModuleLoader__.load({
 		 * （基准尺寸上调前这里是 64。改 Z.dot 时记得回来看一眼。）
 		 */
 		const ICON_EDGE = 96
+
+		/**
+		 * 自定义字最多几个字符（按**码点**数，emoji 算一个）。
+		 *
+		 * ⚠️ 这个数是**输入框和渲染共用**的唯一一份。以前输入框写 `maxLength: 4`、
+		 *    `shapeSpec` 只认 2 个，于是打到第 3 个字时框里明明有字、树上的图标却悄悄
+		 *    退回了默认 —— "能输入，但不生效"是最难查的那种（John 报的就是这条）。
+		 */
+		const GLYPH_MAX = 5
+
+		/**
+		 * 字最多摊到点的几倍宽。
+		 *
+		 * 封顶是因为列距按画出来最宽的形状留（见 geometry.js 的 railLayout）：
+		 * 不封的话，某一个节点挂个 5 字标签，**整棵树**的列距都会被它撑开。
+		 */
+		const GLYPH_SPAN = 3
+
+		/**
+		 * 一串字占点的几倍宽。`shapeSpec` 把它塞进 `grow`，于是列距、连线让位
+		 * 全都自动跟着走，不需要各处再认一次"这是个字"。
+		 * @param glyph - 那几个字
+		 * @returns 倍数，1..GLYPH_SPAN
+		 */
+		function glyphGrow(glyph) {
+			return Math.min(Math.max(1, [...String(glyph)].length), GLYPH_SPAN)
+		}
+
+		/**
+		 * 这几个字该用多大的字号。
+		 *
+		 * 按**汉字**算（一个字占一个 em）—— 拉丁字母比这窄，算宽一点只会显得小一号，
+		 * 反过来算窄了就会糊出框外。
+		 *
+		 * 小例子（点直径 11）：
+		 *   1 个字 → 宽 11，字号 11；2 个字 → 宽 22，字号 11；3 个字 → 宽 33，字号 11；
+		 *   4 个字 → 宽封顶在 33，字号 8.25；5 个字 → 宽 33，字号 6.6（小，但塞得下）。
+		 * @param glyph - 那几个字
+		 * @param size - 点的直径
+		 * @returns 字号（像素）
+		 */
+		function glyphFont(glyph, size) {
+			const count = Math.max(1, [...String(glyph)].length)
+			return (size * glyphGrow(glyph)) / count
+		}
 
 		/**
 		 * 预设形状。三种画法：
@@ -943,8 +1415,109 @@ window.__ModuleLoader__.load({
 			{ value: 'rounded', radius: '30%', spin: false },
 			{ value: 'square', radius: 'px', spin: false },
 			{ value: 'diamond', radius: 'px', spin: true },
-			{ value: 'triangle', radius: 'px', spin: false, grow: 1.34, poly: [[0, 0.1], [1, 0.1], [0.5, 0.97]] },
+			poly('triangle', [[0, 0.1], [1, 0.1], [0.5, 0.97]]),
+			// 倒三角：和三角共用一套坐标上下翻过来。至今为止"压缩"用正三角，
+			// 倒三角留给用户自己指派 —— 一正一倒在 11px 上也分得清，这是小尺寸下
+			// 少数几对真的看得出区别的形状。
+			poly('triangle-down', [[0, 0.9], [1, 0.9], [0.5, 0.03]]),
+			poly('chevron', [[0.08, 0.05], [0.95, 0.5], [0.08, 0.95], [0.32, 0.5]]),
+			poly('pentagon', regularPoly(5)),
+			// 六边形取**平顶**那一版（转 30°）。尖顶六边形在 11px 上和圆几乎一样，
+			// 平顶那条横边才是它在小尺寸下唯一的辨识点。
+			poly('hexagon', regularPoly(6, Math.PI / 6)),
+			poly('cross', crossPoly(0.4)),
+			// 四角星。五角星留给"收藏"那层记号，这里用四角的，免得两件事撞脸。
+			poly('sparkle', starPoly(4, 0.34)),
+			// 沙漏。⚠️ 别写成"左上→右下→左下→右上"那个自交四边形：画出来是对的，
+			// 但鞋带公式对自交图形给的是**带符号面积的净值**，上下两个三角朝向相反、
+			// 正好抵成 0，`growOf` 于是除出一个天文数字（实测 2.4 亿倍）。
+			// 老老实实带个腰画成简单多边形。
+			poly('bowtie', [[0, 0.02], [1, 0.02], [0.58, 0.5], [1, 0.98], [0, 0.98], [0.42, 0.5]]),
 		]
+
+		/**
+		 * 一个多边形形状的条目。`grow` 一律**算出来**，不手抄小数。
+		 *
+		 * ⚠️ 以前 `grow` 是注释里算一遍、代码里抄一个两位小数（三角 1.34、星星 1.67）。
+		 *    加一个新形状就得再手算一次面积比，而算错的那个"看着小一圈"没有任何断言会响。
+		 * @param value - 形状 id（存进设置里的就是它）
+		 * @param points - 单位框（0..1）里的顶点
+		 * @returns SHAPES 的一条
+		 */
+		function poly(value, points) {
+			return { value, radius: 'px', spin: false, grow: growOf(points), poly: points }
+		}
+
+		/**
+		 * 多边形面积（鞋带公式）。
+		 *
+		 * ⚠️ **只对简单多边形有效**。自交图形给的是带符号面积的**净值** —— 朝向相反的两块
+		 *    会互相抵消。沙漏画成"左上→右下→左下→右上"的自交四边形时，这里算出来是 0
+		 *    （浮点残渣 1.6e-17），`growOf` 除一下就是 2.4 亿倍。所以 SHAPES 里的顶点
+		 *    必须首尾不交叉，test-highlight 用例 24 有一条专门盯着"每个形状面积都 > 0"。
+		 * @param points - 单位框里的顶点
+		 * @returns 面积，恒非负
+		 */
+		function polyArea(points) {
+			let sum = 0
+			for (let i = 0; i < points.length; i += 1) {
+				const [x1, y1] = points[i]
+				const [x2, y2] = points[(i + 1) % points.length]
+				sum += x1 * y2 - x2 * y1
+			}
+			return Math.abs(sum) / 2
+		}
+
+		/**
+		 * 这个多边形要放大多少，才和同边长的正圆**看着一样大**。
+		 *
+		 * ⚠️ 配的是**面积**不是边长。底 1 高 0.87 的三角只占单位框的 0.435，
+		 *    正圆占 π/4 ≈ 0.785 —— 同边长画出来，三角明显小一号。
+		 * @param points - 单位框里的顶点
+		 * @returns 放大倍数，恒 >= 1（面积算不出来时退回 1）
+		 */
+		function growOf(points) {
+			const area = polyArea(points)
+			// ⚠️ 判的是"小到不像话"，不是 `<= 0`。自交图形抵消之后剩的是 1.6e-17 这种
+			//    浮点残渣，它**大于 0** —— 放行的话 grow 会变成两亿多，那个点会占满整块屏。
+			//    单位框里任何画得出来的形状面积都远大于 1e-6。
+			return area <= 1e-6 ? 1 : Math.sqrt(Math.PI / 4 / area)
+		}
+
+		/**
+		 * 正 n 边形的顶点，外接圆半径 0.5（顶格）。
+		 *
+		 * 和 `starPoly` 一个道理：算出来而不是抄一串小数，改边数只要改一个整数。
+		 * @param sides - 几条边，至少 3
+		 * @param turn - 整体再转多少弧度（六边形要转 30° 才是平顶）
+		 * @returns 单位框（0..1）里的顶点
+		 */
+		function regularPoly(sides, turn) {
+			const n = Math.max(3, Math.round(sides))
+			const spin = turn === undefined ? 0 : turn
+			const out = []
+			for (let i = 0; i < n; i += 1) {
+				// 从正上方开始（-90°），顺时针排
+				const angle = (2 * Math.PI * i) / n - Math.PI / 2 + spin
+				out.push([0.5 + 0.5 * Math.cos(angle), 0.5 + 0.5 * Math.sin(angle)])
+			}
+			return out
+		}
+
+		/**
+		 * 十字（加号）的十二个顶点。
+		 * @param thick - 横竖两臂占单位框的比例，0..1
+		 * @returns 单位框（0..1）里的顶点
+		 */
+		function crossPoly(thick) {
+			const t = Math.min(0.98, Math.max(0.02, thick === undefined ? 0.4 : thick))
+			const lo = (1 - t) / 2
+			const hi = 1 - lo
+			return [
+				[lo, 0], [hi, 0], [hi, lo], [1, lo], [1, hi], [hi, hi],
+				[hi, 1], [lo, 1], [lo, hi], [0, hi], [0, lo], [lo, lo],
+			]
+		}
 
 		/**
 		 * 多边形顶点换算成 SVG 的 `points`。
@@ -972,13 +1545,71 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 一个形状在**屏幕上横向实际占多宽**。列距要按它来留，不能按 `shapeBox`。
+		 *
+		 * ⚠️ 和 `shapeBox` 的差别在菱形这类 `spin` 形状上：它是个正方形转了 45°，
+		 *    边长还是 `shapeBox`，但**外接宽度是对角线**，多出 41%。
+		 *    按边长留列距的话，两列菱形的尖角会正好戳到一起。
+		 *    （`reachFor` 里那个 `size * 0.71` 就是这条的一半，两处是同一个事实。）
+		 * @param shape - shapeSpec 的结果
+		 * @param size - 点的直径
+		 * @returns 横向占宽（像素）
+		 */
+		function drawnWidth(shape, size) {
+			const edge = shapeBox(shape, size)
+			return shape.spin ? edge * Math.SQRT2 : edge
+		}
+
+		/**
+		 * 一个形状在**屏幕上竖向实际占多高**。连线在两端让位要按它来留。
+		 *
+		 * ⚠️ 只有自定义字和 `drawnWidth` 不对称：字是**横着摊开**的，`grow` 描述的是
+		 *    它横向占几倍宽，竖直方向永远只有一个字那么高。按 `shapeBox` 让位的话，
+		 *    挂了个 3 字标签的点上下会凭空空出两倍的缝。
+		 * @param shape - shapeSpec 的结果
+		 * @param size - 点的直径
+		 * @returns 竖向占高（像素）
+		 */
+		function shapeHeight(shape, size) {
+			if (shape.glyph !== undefined) return size
+			return shapeBox(shape, size)
+		}
+
+		/**
 		 * 上传的图的地址。
 		 * @param id - 图片 id（内容哈希）
 		 * @returns URL
 		 */
 		function iconUrl(id) {
-			return `${ICON_URL}?id=${encodeURIComponent(id)}`
+			// ⚠️ 要带上 net.js 试出来的前缀：局域网页面走的是 /remote 通道，
+			//    而这是 CSS background 里的 url()，被围栏拒了不会重试，图就那么空着了。
+			return `${apiPrefix()}${ICON_URL}?id=${encodeURIComponent(id)}`
 		}
+
+		/**
+		 * 收藏的黄。**全局只有这一个色值**，明暗两边都从它算出来。
+		 *
+		 * 【为什么不再手写两版】原来是 `{dark:'#e3b341', light:'#b8860b'}`。亮色那版是把
+		 * 同一个黄压深到能在白底上读出来（对白底 3.25:1），代价是它**已经不像黄了** ——
+		 * 深金 `#b8860b` 的相对亮度只有 0.27，摆在白底上眼睛读成的是"一圈黑线"
+		 * （John 报的"浅色模式下特别黑"）。
+		 *
+		 * 【为什么是这个值】这是 Open Color 的 yellow-4。挑它的判据是可以量的：
+		 *   · 亮度 0.69 —— 够亮，深底上 13.3:1，一眼是黄的
+		 *   · 色相 47°  —— 暖金，不是 58° 那种发酸的柠檬黄
+		 *   · 由它算出的描边 `#b88f00` 在白底上 3.01:1，对星身 2.11:1，两头都描得出边
+		 * （老的 `#e3b341` 亮度只有 0.49，算出来的描边对星身才 1.54:1，边几乎看不见。）
+		 *
+		 * 【现在怎么办】换一条路：**颜色只有一个，分工有两层**。
+		 *   · 星身（`fill`）—— 一律用这个亮黄本身，负责"这是黄的"
+		 *   · 描边（`ink`）—— 从它算出来的一个更深的同色，负责"看得见"（见 `starInkOf`）
+		 * 于是白底上是"深橄榄描边 + 亮黄星身"，一眼是颗黄星；深底上星身自己就够亮。
+		 *
+		 * ⚠️ 这个值**亮得几乎没法直接当描边用**（对白底只有 1.16:1）—— 这是故意的。
+		 *    它只负责填充，对比度整个交给描边扛。想换基色的话记住这条分工，
+		 *    别挑一个"描边也凑合能用"的中间调：那正好两头都不讨好。
+		 */
+		const STAR_COLOR = '#ffd43b'
 
 		// ===== 配色：一套，亮色和暗色各一版 =====
 		//
@@ -1005,12 +1636,19 @@ window.__ModuleLoader__.load({
 			light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#dd8629', emptyColor: '#1f6feb' },
 		}
 
-		/** 四个角色各自的形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。 */
+		/**
+		 * 形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。
+		 *
+		 * `favoriteShape` 在这儿而不在 PALETTE 里，是因为收藏的默认色**不分明暗**
+		 * （就一个 `STAR_COLOR`，明暗差别整个交给 `starInkOf` 算描边）。
+		 */
 		const SHAPE_DEFAULTS = {
 			normalShape: 'circle',
 			currentShape: 'circle',
 			compactShape: 'triangle',
 			emptyShape: 'circle',
+			favoriteShape: 'star',
+			favoriteColor: STAR_COLOR,
 		}
 
 		/**
@@ -1030,6 +1668,255 @@ window.__ModuleLoader__.load({
 		 */
 		const THEME = paletteOf(true)
 
+
+		// ===== 收藏：五角星 =====
+		//
+		// 收藏和「角色」（普通/当前/压缩/空）**正交** —— 它不是第五种节点，而是盖在任何一种
+		// 节点上的一层记号，所以它既不进 ROLES，也不进 THEME / 设置卡。
+		// （进了 THEME 就得在设置里给它配颜色和形状，而"收藏"的意思本来就钉死在
+		//  "黄色五角星"这四个字上，可配等于可改坏。test-highlight 用例 15 那条
+		//  「THEME 的每个键都要在设置里露面」的不变式也就自然保住了。）
+
+		/**
+		 * 五角星的顶点。外接圆半径 0.5（顶格），内角半径按正五角星的 1/φ² ≈ 0.382 收进去。
+		 *
+		 * 算出来而不是抄一串小数：改成六角星只要把 `points` 换成 6，
+		 * 而一串手抄的坐标改错一个小数点是看不出来的。
+		 * @param points - 几个角
+		 * @param inner - 内角半径占外角的比例
+		 * @returns 单位框（0..1）里的顶点，可直接交给 polyPoints
+		 */
+		function starPoly(points, inner) {
+			const tips = points === undefined ? 5 : points
+			const ratio = inner === undefined ? 0.382 : inner
+			const out = []
+			for (let i = 0; i < tips * 2; i += 1) {
+				// 从正上方开始（-90°），外角内角交替
+				const angle = (Math.PI / tips) * i - Math.PI / 2
+				const r = 0.5 * (i % 2 === 0 ? 1 : ratio)
+				out.push([0.5 + r * Math.cos(angle), 0.5 + r * Math.sin(angle)])
+			}
+			return out
+		}
+
+		/**
+		 * 收藏节点的**默认**形状。
+		 *
+		 * `grow` 和别的多边形一样交给 `growOf` 算：正五角星（R=0.5, r=0.191）占单位框
+		 * 约 0.281，正圆占 π/4 ≈ 0.785，所以放大 √(0.785/0.281) ≈ 1.67 倍看着才一样大。
+		 * 直接和圆同边长的话，星星的五个角把面积摊开，看着会小一圈。
+		 *
+		 * ⚠️ 它**不在 `SHAPES` 里**，所以 `shapeSpec('star')` 认不得它（会退回圆）。
+		 *    这是故意的：五角星是"收藏"这层记号的专属，进了 SHAPES 就会出现在四个角色的
+		 *    形状选择器里，于是"哪个是收藏"当场失效。收藏自己那条路走 `favShape`。
+		 */
+		const STAR = poly('star', starPoly())
+
+		/**
+		 * 一个收藏节点该用哪个形状。
+		 *
+		 * 收藏**可以换图标**（详情卡里那一排）。颜色**默认**恒为那个黄 ——
+		 * 那是"一眼能扫出来"的全部依据，所以不改的话谁都是黄的；
+		 * 真要按点分色（比如红=待办、绿=已验证）也给得出，见 `want`。
+		 * @param want - 用户挑的形状值：预设 id / `char:<字>` / `img:<id>`；空 = 默认
+		 * @returns 画法；空或认不得一律退回五角星
+		 */
+		function favShape(want) {
+			const text = typeof want === 'string' ? want.trim() : ''
+			if (text === '' || text === STAR.value) return STAR
+			const spec = shapeSpec(text)
+			// ⚠️ `shapeSpec` 认不得的东西退回的是**圆**，而收藏的默认不是圆是星。
+			//    不拦这一下的话，手改配置写错一个字，一屏收藏全变成普通圆点。
+			return spec.value === text ? spec : STAR
+		}
+
+
+		/**
+		 * 算对比度用的参考底色。
+		 *
+		 * ⚠️ 真实底色是宿主的 CSS 变量（`--dsw-alias-bg-layer-1`），JS 读不到也算不了，
+		 *    所以拿这两个当代表。偏一点无所谓：`fitContrast` 只用它定"往亮调还是往暗调、调到哪"。
+		 */
+		const BACKDROP = { dark: '#0d1117', light: '#ffffff' }
+
+		/** 图形类元素的对比度下限（WCAG 1.4.11 非文本对比度就是 3:1）。 */
+		const CONTRAST_MIN = 3
+
+		/**
+		 * 描边至少要比星身深多少倍，边才描得出来。
+		 *
+		 * 深底上星身本来就够亮（`#fbf431` 对深底 16:1），光按"对底色 3:1"算的话描边 = 星身，
+		 * 那颗星就成了一块没有轮廓的黄斑。所以还要单独跟**星身自己**比一次。
+		 */
+		const STAR_EDGE = 1.6
+
+		/**
+		 * WCAG 相对亮度。
+		 * @param hex - `#rrggbb`
+		 * @returns 0..1；认不出来的返回 0
+		 */
+		function relLuminance(hex) {
+			const matched = /^#([0-9a-fA-F]{6})$/.exec(String(hex || ''))
+			if (matched === null) return 0
+			const parts = [0, 2, 4].map((at) => {
+				const channel = Number.parseInt(matched[1].slice(at, at + 2), 16) / 255
+				return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+			})
+			return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+		}
+
+		/**
+		 * 两个颜色的对比度，1..21。
+		 * @param one - `#rrggbb`
+		 * @param other - `#rrggbb`
+		 * @returns 比值，恒 >= 1
+		 */
+		function contrastRatio(one, other) {
+			const a = relLuminance(one)
+			const b = relLuminance(other)
+			return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+		}
+
+		/**
+		 * `#rrggbb` → HSL（h 0..360，s/l 0..1）。
+		 * @param hex - `#rrggbb`
+		 * @returns `{h, s, l}`
+		 */
+		function hexToHsl(hex) {
+			const matched = /^#([0-9a-fA-F]{6})$/.exec(String(hex || ''))
+			if (matched === null) return { h: 0, s: 0, l: 0 }
+			const [r, g, b] = [0, 2, 4].map((at) => Number.parseInt(matched[1].slice(at, at + 2), 16) / 255)
+			const high = Math.max(r, g, b)
+			const low = Math.min(r, g, b)
+			const span = high - low
+			const l = (high + low) / 2
+			if (span === 0) return { h: 0, s: 0, l }
+			const s = span / (1 - Math.abs(2 * l - 1))
+			const h = high === r
+				? ((g - b) / span + (g < b ? 6 : 0))
+				: high === g
+					? (b - r) / span + 2
+					: (r - g) / span + 4
+			return { h: h * 60, s, l }
+		}
+
+		/**
+		 * HSL → `#rrggbb`。
+		 * @param hsl - `{h, s, l}`
+		 * @returns `#rrggbb`
+		 */
+		function hslToHex(hsl) {
+			const h = ((hsl.h % 360) + 360) % 360
+			const s = Math.min(1, Math.max(0, hsl.s))
+			const l = Math.min(1, Math.max(0, hsl.l))
+			const c = (1 - Math.abs(2 * l - 1)) * s
+			const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+			const m = l - c / 2
+			const slot = Math.floor(h / 60) % 6
+			const rgb = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][slot]
+			return `#${rgb.map((one) => Math.round((one + m) * 255).toString(16).padStart(2, '0')).join('')}`
+		}
+
+		/**
+		 * 把一个颜色**只调明度**，直到它对指定底色够 `target` 倍对比度。
+		 *
+		 * 色相和饱和度一个都不动 —— 所以调出来的还是"同一个颜色"，只是深浅换了。
+		 * 已经够了就原样返回（暗色模式下那个黄走的就是这条：对深底 9.7:1，一个像素不变）。
+		 * 那个提前返回只是**省一次二分**，不是行为保证 —— 二分本来也会收敛回原色。
+		 *
+		 * 往哪边调：缺省由底色决定（底色亮就往深里调，底色深就往亮里调）。
+		 * `dir` 给 `'darker'` / `'lighter'` 可以钉死方向 —— 描边就要钉死往深里调，
+		 * 因为**浅一档的描边读起来像光晕，不像边**（见 `starInkOf`）。
+		 * 调到 0 或 1 还够不着就交回能拿到的最好的那个 —— 纯黑纯白都够不着的目标不存在，
+		 * 但传进来一个奇怪的 target 时不该死循环。
+		 *
+		 * 小例子（`#e3b341` 对白底，目标 3）：
+		 *   原色亮度 0.49，对白底才 1.95:1 → 往深里二分，明度从 0.57 一路压到约 0.42，
+		 *   得到一个更深的金色，对白底 3.0:1；色相仍是 42°、饱和度仍是 73%。
+		 * @param hex - `#rrggbb`
+		 * @param backdrop - 底色 `#rrggbb`
+		 * @param target - 对比度目标，缺省 `CONTRAST_MIN`
+		 * @param dir - `'darker'` / `'lighter'` 钉死方向；缺省看底色
+		 * @returns `#rrggbb`；认不出来的原样返回
+		 */
+		function fitContrast(hex, backdrop, target, dir) {
+			const want = Number.isFinite(target) && target > 1 ? target : CONTRAST_MIN
+			if (!/^#[0-9a-fA-F]{6}$/.test(String(hex || ''))) return hex
+			if (contrastRatio(hex, backdrop) >= want) return hex
+			const hsl = hexToHsl(hex)
+			// 缺省：底色亮 → 往深里调；底色深 → 往亮里调
+			const down = dir === 'darker' ? true : dir === 'lighter' ? false : relLuminance(backdrop) > 0.5
+			let lo = down ? 0 : hsl.l
+			let hi = down ? hsl.l : 1
+			let best = down ? hslToHex({ h: hsl.h, s: hsl.s, l: 0 }) : hslToHex({ h: hsl.h, s: hsl.s, l: 1 })
+			// 二分 24 次，明度精度到 1e-7 —— 远超 8 位色深分得出的粒度
+			for (let step = 0; step < 24; step += 1) {
+				const mid = (lo + hi) / 2
+				const tried = hslToHex({ h: hsl.h, s: hsl.s, l: mid })
+				if (contrastRatio(tried, backdrop) >= want) {
+					// 够了就往回收一点，取**刚好够**的那个（调过头只会更暗/更白，更不像原色）
+					best = tried
+					if (down) lo = mid
+					else hi = mid
+				} else if (down) hi = mid
+				else lo = mid
+			}
+			return best
+		}
+
+		/**
+		 * 收藏那颗星的描边色。
+		 * @param seed - 星身那个颜色 `#rrggbb`
+		 * @param dark - 是不是暗色
+		 * @returns `#rrggbb`
+		 */
+		function starInkOf(seed, dark) {
+			// 描边要**同时**满足两条，不是二选一：
+			//   · 对**页面底色**够 3:1 —— 白底上那条说了算（亮黄自己才 1.4:1）
+			//   · 对**星身**够 STAR_EDGE —— 深底上那条说了算（星身已经很亮，描边得压下去才看得见边）
+			const page = dark === false ? BACKDROP.light : BACKDROP.dark
+			const ok = (hex) => contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9 && contrastRatio(hex, seed) >= STAR_EDGE - 1e-9
+			// 两步都往**同一个方向**推，所以第二步只会让第一条更宽松，不会把它推回去。
+			const push = (way) => fitContrast(fitContrast(seed, seed, STAR_EDGE, way), page, CONTRAST_MIN, way)
+			// ⚠️ 先往深里试。浅一档的描边读起来像**光晕**，不像边 —— 只有深的才描得出轮廓。
+			const darker = push('darker')
+			if (ok(darker)) return darker
+			// 深到黑了还够不着（底色本来就比它深，比如用户挑了个近黑色）—— 那只能往亮里让
+			const lighter = push('lighter')
+			return ok(lighter) ? lighter : darker
+		}
+
+		/**
+		 * 收藏节点的描边色和填充色。
+		 *
+		 * 分工：**星身填那个亮黄，描边扛对比度**（见 STAR_COLOR 和 starInkOf）。
+		 *
+		 * ⚠️ "平时空心、走到那一轮才填实"这条**取消了**。原来靠空心/实心区分当前点，
+		 *    可空心意味着只剩一圈描边，而描边为了对比度必须压深 —— 白底上看到的就是
+		 *    "一圈黑线"（John 报的"浅色模式下特别黑"）。现在一律填实，
+		 *    "正看着这一轮"改由**外发光**表示（`dotStyle` 里那条 drop-shadow 本来就只在 focused 时挂）。
+		 * @param focused - 正看着这一轮（= 当前点）
+		 * @param dark - 是不是暗色
+		 * @param icon - 这个点自己挑的图标；空 = 跟着默认走
+		 * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
+		 * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
+		 * @returns `{accent, ink, fill, shape}` —— 前三项和 inkOf 的返回值一致，好喂给同一套画法
+		 */
+		function starSkin(focused, dark, icon, want, theme) {
+			const skin = theme || THEME
+			// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
+			// 认得严一点：这个字符串要直接进 CSS。
+			const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+			const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
+			const ink = starInkOf(seed, dark)
+			// 外发光用**星身那个亮色**，不用压深过的描边色 —— 深色的光晕看着像脏了一圈
+			return {
+				accent: seed,
+				ink,
+				fill: seed,
+				shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
+			}
+		}
 		// ===== 角色表：一个节点长什么样，全从这里查 =====
 		//
 		// 四个角色，**不是**四种 kind：`normal` 这一种 kind 站在当前路径上时算 `current`。
@@ -1129,7 +2016,8 @@ window.__ModuleLoader__.load({
 			const text = typeof want === 'string' ? want : ''
 			if (text.startsWith(CUSTOM)) {
 				const glyph = text.slice(CUSTOM.length).trim()
-				if (glyph !== '' && [...glyph].length <= 2) return { value: text, radius: 'px', spin: false, glyph }
+				// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
+				if (glyph !== '' && [...glyph].length <= GLYPH_MAX) return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
 			}
 			if (text.startsWith(PICTURE)) {
 				// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于
@@ -1147,10 +2035,13 @@ window.__ModuleLoader__.load({
 		 * @param color - 用什么颜色画
 		 * @param size - 边长
 		 * @param dashed - 画成虚线（空节点那一行用）
+		 * @param override - 已经解析好的画法。收藏那排要用 `favShape` 解（`'star'` 在
+		 *                   `shapeSpec` 眼里是认不得的，会退回圆），所以给个口子让调用方
+		 *                   把解析权拿走 —— 而不是在这里再塞一个"是不是收藏"的开关。
 		 * @returns 一个 <span>
 		 */
-		function preview(want, color, size, dashed) {
-			const spec = shapeSpec(want)
+		function preview(want, color, size, dashed, override) {
+			const spec = override === undefined || override === null ? shapeSpec(want) : override
 			const skin = { ink: color, fill: fade(color, 0.3), accent: color }
 			const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
 			return h('span', {
@@ -1226,12 +2117,18 @@ window.__ModuleLoader__.load({
 		 * @param focused - 正看着这一轮
 		 * @param theme - 颜色与形状，缺省用 THEME
 		 * @param alpha - 鱼眼透明度，缺省 1；乘在原有透明度上，不是覆盖
+		 * @param star - `starSkin()` 的结果；给了就整个换成五角星（收藏），不给就照角色画
 		 * @returns 内联样式
 		 */
-		function dotStyle(kind, active, hover, size, focused, theme, alpha) {
+		function dotStyle(kind, active, hover, size, focused, theme, alpha, star) {
 			const k = size / Z.dot
-			const shape = shapeOf(kind, active, theme)
-			const { accent, ink, fill } = inkOf(kind, active, focused, theme)
+			// 收藏过的点整个换成五角星：形状和颜色都由 `star` 说了算，角色那一套全部让位。
+			// 之所以传进来一个**算好的 skin** 而不是一个 `starred` 布尔，是因为星星的黄
+			// 要分明暗两版，而 dotStyle 手里只有 theme、不知道现在是明是暗。
+			// 收藏的形状由 `starSkin` 一起带过来（用户能在详情卡里换图标）；
+			// 老调用方只传 `{accent, ink, fill}` 的话退回五角星。
+			const shape = star === undefined ? shapeOf(kind, active, theme) : star.shape || STAR
+			const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme) : star
 			// 多边形 / 字 / 图片都不靠这个 <span> 的 border+background 成形：
 			// 方框会在图形外面套一圈，所以这三类一律把方框关掉，由里面的内容自己画。
 			// 外发光也得换 —— box-shadow 画的是**方框**的光晕，套在三角外面就是个方的光。
@@ -1240,7 +2137,8 @@ window.__ModuleLoader__.load({
 				width: `${size}px`, height: `${size}px`,
 				borderRadius: shape.radius === 'px' ? `${1.5 * k}px` : shape.radius,
 				borderWidth: drawn ? '0px' : `${1.5 * k}px`,
-				borderStyle: dashedOf(kind) ? 'dashed' : 'solid',
+				// 星星不画虚线：它自己就是记号了，再虚一圈只会看不清那五个角
+				borderStyle: star === undefined && dashedOf(kind) ? 'dashed' : 'solid',
 				borderColor: ink,
 				background: shape.image !== undefined ? `center center / contain no-repeat url("${iconUrl(shape.image)}")` : drawn ? 'none' : fill,
 				color: ink,
@@ -1252,7 +2150,9 @@ window.__ModuleLoader__.load({
 				boxSizing: 'border-box',
 				// 鱼眼的淡是**乘**上去的：路径外的点本来就只有 0.4，再乘一次才是"更远更淡"。
 				// 直接赋值的话最外圈反而比路径外的普通点更亮，越远越显眼，正好反了。
-				opacity: (focused || active ? 1 : 0.4) * (alpha === undefined ? 1 : alpha),
+				// 收藏过的点**不跟着路径外那一档淡**（0.4 → 0.85）：收藏的意思就是"待会儿
+				// 我要回来找它"，而它多半不在当前路径上 —— 淡到看不见就白收藏了。
+				opacity: (focused || active ? 1 : star === undefined ? 0.4 : 0.85) * (alpha === undefined ? 1 : alpha),
 				transition: 'transform .12s ease, opacity .12s ease',
 				transform: `${hover ? 'scale(1.4)' : 'scale(1)'}${shape.spin ? ' rotate(45deg)' : ''}`,
 			}
@@ -1271,7 +2171,18 @@ window.__ModuleLoader__.load({
 		 * @returns 子节点，或 null
 		 */
 		function dotInside(shape, size, skin, stroke, dashed) {
-			if (shape.glyph !== undefined) return shape.glyph
+			// ⚠️ 字**不能**直接当 <span> 的文本内容返回。那个 span 是 size×size 的方框，
+			//    两个字以上就会从右边糊出去（不是居中溢出）—— 这就是"超过 2 个字就不对劲"的
+			//    另一半。和多边形一样绝对居中，字号按字数自己缩，横向往两边等量溢出。
+			if (shape.glyph !== undefined) {
+				return h('span', {
+					style: {
+						position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+						whiteSpace: 'nowrap', pointerEvents: 'none',
+						fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1,
+					},
+				}, shape.glyph)
+			}
 			if (shape.poly === undefined) return null
 			const edge = shapeBox(shape, size)
 			return h(
@@ -1324,35 +2235,121 @@ window.__ModuleLoader__.load({
 		 * 从渲染里抽出来是因为它**全是纯算术**，却是最容易出"差半个像素"那类毛病的地方；
 		 * 留在组件里的话，只能靠人眼在浏览器里比对。
 		 *
-		 * 小例子（聊天区高 600、缩放 100%、12 行、最宽 2 列）：
+		 * 小例子（聊天区高 600、缩放 100%、12 行、最宽 2 列、全是圆点）：
 		 *   available = 600 - 16×2 = 568；rowH = min(24, 568/12) = 24；树高 288；
+		 *   dotSize = min(11, 24-6) = 11；最宽形状就是圆点本身 11，
+		 *   lane = max(17, 11+5) = 17（下限说了算）；edge = max(22, 16) = 22；
 		 *   railWidth = 22 + 2×17 = 56；第 0 列的圆心 x = 56 - 11 = 45。
+		 *
+		 * 同一棵树，把其中一个点收藏成五角星（1.67 倍）之后：
+		 *   最宽形状 = 11 × 1.67 = 18.4；lane = max(17, 23.4) = 23.4；edge = max(22, 23.4) = 23.4；
+		 *   railWidth = 23.4 + 2×23.4 = 70.2 —— 列自己撑开了，星星不再和隔壁贴脸。
+		 *
+		 * 横向也有"放不下就压"这一档，和行高一个道理（见下面的 `room`）。
 		 *
 		 * @param box - 聊天区的位置和大小
 		 * @param scale - 节点缩放百分比
 		 * @param rows - 省略之后实际要画几行
 		 * @param maxColumn - 图上最宽到第几列（**不是可见列** —— 省略随滚动变，导轨宽度不该跟着跳）
+		 * @param widestOf - `(dotSize) => 这棵树上画得最宽的那个形状占多少像素`；
+		 *                   省略就按"最宽的就是点本身"算（退回老几何）
+		 * @param room - 横向最多能占多宽（`railRoom` 算的）。省略 = 不设限
 		 * @returns 尺寸表 + 两个换算函数
 		 */
-		function railLayout(box, scale, rows, maxColumn) {
+		function railLayout(box, scale, rows, maxColumn, widestOf, room) {
 			const z = scaleZ(scale)
 			const available = box.height - z.pad * 2
 			// 放不下就压行高（下限 rowMin）。鱼眼不额外占行：淡出的那两圈本来就在半径里面，
 			// 顶底不再留"放省略号"的空行。
 			const rowH = Math.max(z.rowMin, Math.min(z.row, available / Math.max(1, rows)))
-			const railWidth = z.hit + maxColumn * z.lane
+			const dotSize = Math.max(z.dotMin, Math.min(z.dot, rowH - z.dotPad))
+			// ⚠️ 列距按**这棵树上真画出来最宽的那个形状**留，不能按点的直径留。
+			//    `Z.lane` 是圆点时代定的，只够放下 11px 的圆；收藏的五角星要 18.4px，
+			//    四角星（sparkle）更要 19.9px —— 硬塞进 17px 的列里，相邻两列就贴在一起。
+			//    这里只认"画多宽"，所以以后再加什么形状、用户传什么图标都自动跟着让。
+			const widest = Math.max(dotSize, typeof widestOf === 'function' ? widestOf(dotSize) : 0)
+			// 第 0 列靠着导轨右缘，留的宽度同理要够它自己画完，否则星星的右半边会探到导轨外面
+			let edge = Math.max(z.hit, widest + z.laneGap)
+			let lane = Math.max(z.lane, widest + z.laneGap)
+			let railWidth = edge + maxColumn * lane
+			// ⚠️ 横向也得有"放不下就压"这一档，和上面的行高一模一样的道理。
+			//    列距现在跟着最宽的形状长，岔路一多、再挂几个宽图标，整棵树能一路长到
+			//    盖住聊天正文、甚至从屏幕左边出去。`room` 是量出来的剩余空间（见 railRoom）。
+			//
+			//    压到底为止：`floor` 是"两个点还分得开"的最小列距，比这更窄就是叠在一起，
+			//    压了也白压。真到了连 floor 都塞不下的地步（屏幕特别窄 + 树特别宽），
+			//    那就让它超出去 —— 这时候把树画糊比画到界外更糟。
+			const floor = Math.min(lane, Math.max(z.rowMin, dotSize + 2))
+			if (Number.isFinite(room) && room > 0 && railWidth > room) {
+				if (maxColumn > 0) {
+					lane = Math.max(floor, (room - edge) / maxColumn)
+					railWidth = edge + maxColumn * lane
+				}
+				// 列压到底还超，就只能动第 0 列那格（下限是命中区宽度，再窄就点不中了）
+				if (railWidth > room) {
+					edge = Math.max(z.hit, edge - (railWidth - room))
+					railWidth = edge + maxColumn * lane
+				}
+			}
 			return {
 				z,
 				available,
 				rowH,
 				treeHeight: rows * rowH,
 				railWidth,
-				dotSize: Math.max(z.dotMin, Math.min(z.dot, rowH - z.dotPad)),
+				lane,
+				edge,
+				dotSize,
 				/** 第 column 列的圆心 x。列号从右往左长，所以是减。 */
-				xOf: (column) => railWidth - z.hit / 2 - column * z.lane,
+				xOf: (column) => railWidth - edge / 2 - column * lane,
 				/** 第 row 行的圆心 y。 */
 				yOf: (row) => row * rowH + rowH / 2,
 			}
+		}
+
+		/**
+		 * 导轨离视口右缘多远（CSS 的 `right`，**值越大越靠左**）。
+		 *
+		 * **就是贴着聊天区右缘**，一个像素都不挪。
+		 *
+		 * ⚠️ 中间试过"在空当里居中"，John 试完说还是靠右好，撤回了。别再改回去：
+		 *    居中会让树的横坐标随树宽（岔路数、有没有宽图标）浮动，眼睛得重新找一遍它在哪；
+		 *    靠右则是钉死的，扫一眼就知道往哪看。空间不够是**压列距**解决的（见 railRoom），
+		 *    不是靠挪位置解决。
+		 *
+		 * 参数留着 `railWidth` 没用上，是为了调用方不用记"这个函数现在不需要宽度了"——
+		 * 将来真要按宽度调整位置，签名不用再动一次。
+		 *
+		 * @param box - 聊天区的位置和大小
+		 * @param railWidth - 导轨宽度（当前不参与计算）
+		 * @param viewWidth - 视口宽度
+		 * @param gap - 树和聊天区右缘之间留多少，缺省 `Z.gap`
+		 * @returns CSS 的 `right`，像素
+		 */
+		function railRight(box, railWidth, viewWidth, gap) {
+			const pad = Number.isFinite(gap) ? gap : Z.gap
+			return Math.max(0, viewWidth - box.right) + pad
+		}
+
+		/**
+		 * 导轨横向最多能占多宽。
+		 *
+		 * 就是「聊天正文右缘 ～ 聊天区右缘」那条空当，两头各让 `gap`。
+		 * 树贴着聊天区右缘往左长，长到这个数就该开始压列距了（见 railLayout 的 `room`）。
+		 *
+		 * ⚠️ 量不到正文右缘时**不能当作"随便长"**，要退回"到聊天区左缘为止"
+		 *    （`content = 0`）—— 那至少挡住了"从屏幕左边长出去"这一半。
+		 *
+		 * 小例子（聊天区右缘 1600、正文右缘 1100、gap 20）：
+		 *   room = 1600 - 20 - 1100 - 20 = 460，树最宽长到 460 就开始压。
+		 * @param box - 聊天区的位置和大小，`contentRight` = 正文栏右缘
+		 * @param gap - 两头各让多少，缺省 `Z.gap`
+		 * @returns 像素，恒非负
+		 */
+		function railRoom(box, gap) {
+			const pad = Number.isFinite(gap) ? gap : Z.gap
+			const content = Number.isFinite(box.contentRight) ? box.contentRight : 0
+			return Math.max(0, box.right - pad - content - pad)
 		}
 
 		/**
@@ -1366,13 +2363,22 @@ window.__ModuleLoader__.load({
 		 * @param dotSize - 当前点的直径
 		 * @param theme - 主题（形状会影响让开量）
 		 * @param grow - 鱼眼缩放，缺省 1；淡出圈的点画得小，线就得多连一截过去
+		 * @param starred - 这个点被收藏了。`true` = 默认的五角星；也可以直接给一个算好的
+		 *                  shapeSpec（用户在详情卡里换过收藏图标）
 		 * @returns 像素，恒大于 0
 		 */
-		function reachFor(kind, active, dotSize, theme, grow) {
+		function reachFor(kind, active, dotSize, theme, grow, starred) {
 			const size = dotSizeOf(kind, dotSize, grow)
-			const shape = shapeOf(kind, active, theme)
-			// 多边形按它实际画多大让（三角放大了 1.34 倍），不然尖角会戳到线上
-			return (shape.spin ? size * 0.71 : shapeBox(shape, size) / 2) + 1
+			// ⚠️ 收藏的点也得按**它实际画多大**让，不然收藏一个点，连线立刻戳进它下面那两个角里。
+			//    收藏图标可换，所以这里认两种写法：true（默认星）和一个具体的 shapeSpec。
+			const shape = starred === true
+				? STAR
+				: starred !== undefined && starred !== null && starred !== false && starred.value !== undefined
+					? starred
+					: shapeOf(kind, active, theme)
+			// 多边形按它实际画多大让（三角放大了 1.34 倍），不然尖角会戳到线上。
+			// 走 shapeHeight 而不是 shapeBox：自定义字横着摊开，竖直方向还是一个字高。
+			return (shape.spin ? size * 0.71 : shapeHeight(shape, size) / 2) + 1
 		}
 
 		/**
@@ -1413,13 +2419,76 @@ window.__ModuleLoader__.load({
 			return out
 		}
 
+		/** 短到这个地步的残段直接丢掉：浮点减法留下的渣，画出来只是一个更黑的像素。 */
+		const MIN_RUN = 0.5
+
 		/**
-		 * 连线的绘制顺序。
+		 * 同一行上重复画的横段，**一像素只许画一次**。
 		 *
-		 * ⚠️ 蓝线必须最后画。同一个父节点的几个孩子，横段都贴在父节点那一行，越远的
-		 *    孩子横段越长 —— 短的会整段盖住长的右半截。谁后画谁赢（都没设 z-index，
-		 *    DOM 顺序说了算），所以灰的先来，蓝的压在最上面。
-		 *    别改成给蓝线加 z-index：那会连节点圆点一起盖住。
+		 * 【症状】一个父节点有好几个孩子时，横线一会儿粗一会儿细、还上下起伏（John 报的）。
+		 *
+		 * 【为什么】走法是先横后竖，于是同一个父节点的每个孩子**各画一条横段**，
+		 * 它们都贴在父节点那一行、右端都停在父节点边上，只是往左伸的长度不同 ——
+		 * 换句话说是一组**同心嵌套**的线段。靠父节点那一截于是被画了 N 遍：
+		 *   · 每条 span 带着自己的 `opacity`（鱼眼淡出用的），叠 N 层就比别处黑一截 → 忽粗忽细
+		 *   · `top` 是 `yFrom - 0.5`，通常是小数，浏览器把这 1px 抹到**两行**物理像素上；
+		 *     叠几层之后那两行都被填实 → 看着就是上下起伏
+		 *
+		 * 【怎么修】不靠"谁后画谁赢"，直接让这些横段**互不重叠**：
+		 * 按优先级挨个来，每条只画还没被占掉的那截，画完把自己占的区间记下。
+		 * 嵌套的那几条里，第一条占完，剩下的整条都被盖住，自然一条都不画。
+		 *
+		 * 优先级：**蓝的（当前路径）先占**，同色里**长的先占**。
+		 * 蓝的先占 = 靠父节点那一截归蓝线，和原来"蓝线压在最上面"看到的是同一个结果；
+		 * 区别是现在每个像素只被画一次，所以既不依赖 DOM 顺序，也不会叠出更黑的一段。
+		 *
+		 * @param runs - 横段，形如 `{left, top, width, active, ...}`，其余字段原样带过去
+		 * @returns 互不重叠的横段；被完全盖住的那些不出现。多出一个 `part` 字段用来配 key
+		 */
+		function trimRuns(runs) {
+			const claimed = new Map()
+			const out = []
+			// 稳定排序：优先级一样时保持原来的先后，免得同一棵树每次重画挑中的是不同那条
+			const ranked = runs.map((run, seat) => ({ run, seat })).sort((a, b) => {
+				if (a.run.active !== b.run.active) return a.run.active === true ? -1 : 1
+				if (b.run.width !== a.run.width) return b.run.width - a.run.width
+				return a.seat - b.seat
+			})
+			for (const { run } of ranked) {
+				// 同一行（= 同一个树深度）的横段才会撞上。父节点不同也照样撞，所以按 top 分组，
+				// 不是按父节点分组。
+				const lane = run.top.toFixed(2)
+				const taken = claimed.get(lane) || []
+				let pieces = [[run.left, run.left + run.width]]
+				for (const [from, to] of taken) {
+					const next = []
+					for (const [a, b] of pieces) {
+						if (to <= a || from >= b) { next.push([a, b]); continue } // 不相交
+						if (a < from) next.push([a, from]) // 左边露出来的一截
+						if (to < b) next.push([to, b]) // 右边露出来的一截
+					}
+					pieces = next
+				}
+				let part = 0
+				for (const [a, b] of pieces) {
+					if (b - a < MIN_RUN) continue
+					out.push(Object.assign({}, run, { left: a, width: b - a, part }))
+					part += 1
+				}
+				// ⚠️ 记下的是**原来那整条**，不是画出来的那几截。被当成残渣丢掉的那点宽度
+				//    也得算占过，否则后面每一条都会在同一个位置再补一根发丝线。
+				taken.push([run.left, run.left + run.width])
+				claimed.set(lane, taken)
+			}
+			return out
+		}
+
+		/**
+		 * 连线的绘制顺序：灰的在前，蓝的在后。
+		 *
+		 * 横段的压盖关系现在归 `trimRuns` 管（它让那些线压根不重叠），这里只剩两件事：
+		 * 给 `trimRuns` 一个稳定的输入顺序，以及决定竖段的 DOM 先后 —— 竖段各在各的列上，
+		 * 本来就不会互相盖，所以先后无所谓。
 		 * @param nodes - 图上全部节点
 		 * @returns 有父节点的那些，灰的在前蓝的在后
 		 */
@@ -1433,7 +2502,7 @@ window.__ModuleLoader__.load({
 		 *
 		 * ⚠️ 这是 ＋ 够不够得着的**唯一**关键。卡片开着时换目标一律返回 'rest'
 		 *    （= 等鼠标停下来），绝不能图省事返回 'now'：从点走到卡片上的 ＋ 要横穿
-		 *    左边每一列（列距 17px < 命中区 22px），沿途每个点都会抢走卡片，
+		 *    左边每一列（列挨着列，命中区还互相重叠），沿途每个点都会抢走卡片，
 		 *    ＋ 就永远够不着。改成 'now' 等于退回挂 onMouseEnter 的老做法。
 		 * @param hover - 当前停着的点，null = 还没开卡片
 		 * @param at - 鼠标正压着的点，undefined = 没压着
@@ -1621,7 +2690,100 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** 量聊天区滚动容器；量不到退回视口右缘。 */
+		/**
+		 * 视口变了就重量一次 —— 但盯的是**视觉视口**，不是 `window.resize`。
+		 *
+		 * ⚠️ 这条只在 iOS / iPadOS 上看得出来，而那正是我们够不着的机器：
+		 *    Safari 的地址栏会随滚动收起/展开，双指还能把页面整个放大。这两下都只动
+		 *    **visual viewport**，`window` 的 `resize` 一声不吭，`innerWidth` 也纹丝不动。
+		 *    导轨是 `position: fixed` + 按 `getBoundingClientRect()` 算出来的坐标，
+		 *    于是它会悬在原地不动，直到 800ms / 400ms 那个轮询兜底才跟上来 ——
+		 *    表现就是"手一松，树晚半拍才挪过去"。订上 visualViewport 就跟手了。
+		 *
+		 * 桌面浏览器上这两个事件基本不发，所以**对 Windows / macOS 没有任何影响**，
+		 * 纯粹是给触摸设备补的一条。老浏览器没有 visualViewport，返回空函数即可。
+		 * @param schedule - 重量一次（已经是 rAF 节流过的）
+		 * @returns 退订函数
+		 */
+		function watchViewport(schedule) {
+			const port = typeof window === 'undefined' ? undefined : window.visualViewport
+			if (port === undefined || port === null || typeof port.addEventListener !== 'function') return () => {}
+			port.addEventListener('resize', schedule)
+			port.addEventListener('scroll', schedule)
+			return () => {
+				port.removeEventListener('resize', schedule)
+				port.removeEventListener('scroll', schedule)
+			}
+		}
+
+		/**
+		 * 聊天**正文栏**的右缘在哪儿。
+		 *
+		 * 宿主把正文排成一根定宽的居中栏（`.column{max-width:var(--dsh-chat-content-width);margin:0 auto}`），
+		 * 所以聊天区右缘和正文右缘之间有一条空当 —— 屏幕越宽越宽。导轨要落在那条空当里，
+		 * 就得先知道正文到哪儿为止，光有滚动容器的 `right` 是不够的。
+		 *
+		 * 量法是取所有聊天行里**最靠右的那条**：行本身是正文栏的 flex 子元素，
+		 * 撑满栏宽；万一有个宽代码块溢出去了，取 max 也能跟着让。
+		 *
+		 * ⚠️ 一行都量不到（空会话 / 刚切过去还没挂上）就返回 `undefined`，让调用方退回
+		 *    "贴着聊天区右缘"的老位置。**别返回 0 或者容器左缘** —— 那会让树一头扎进正文里。
+		 * @param el - 聊天区滚动容器
+		 * @returns 正文右缘的视口坐标；量不到就 undefined
+		 */
+		function contentRightOf(el) {
+			let most
+			for (const row of el.querySelectorAll('[data-chat-turn]')) {
+				const rect = row.getBoundingClientRect()
+				if (rect.width < 1) continue
+				if (most === undefined || rect.right > most) most = rect.right
+			}
+			return most
+		}
+
+		/** 导轨最外层那个 div 身上的记号。`isCovered` 靠它认出"这是我自己"。 */
+		const RAIL_MARK = 'data-dsh-tree-rail'
+
+		/**
+		 * 聊天区是不是被别的东西整个盖住了。
+		 *
+		 * 【为什么要有这条】导轨是 `position: fixed` 的全局浮层，它只认聊天容器的
+		 * `getBoundingClientRect()`。别的插件（`better-sidebar` 这类）把侧栏**盖**在聊天上面时，
+		 * 聊天容器还老老实实待在原地、尺寸一点没变 —— 于是屏幕上已经看不见一句对话了，
+		 * 却还有一棵树孤零零挂在那儿（John 报的就是这个）。
+		 *
+		 * 判法不认任何具体插件，只问一句"**这块地方现在谁在最上面**"：
+		 * 在聊天区里打几个点，`elementFromPoint` 回来的要么是聊天区自己（或它的子孙），
+		 * 要么是它的祖先（= 点落在空白处，上面没人）。**两样都不是**就说明有个兄弟子树压在上面。
+		 *
+		 * ⚠️ 必须**每个点都被盖住**才算盖住。只挑一个点的话，一个气泡提示、一个下拉菜单
+		 *    飘过去就会把整棵树闪掉。
+		 * @param el - 聊天区滚动容器
+		 * @param probe - `(x, y) => 那个位置最上面的元素`，一般就是 document.elementFromPoint
+		 * @returns 是否被盖住
+		 */
+		function isCovered(el, probe) {
+			const rect = el.getBoundingClientRect()
+			if (rect.width < 1 || rect.height < 1) return true
+			for (const fx of [0.35, 0.65]) {
+				for (const fy of [0.3, 0.7]) {
+					const hit = probe(rect.left + rect.width * fx, rect.top + rect.height * fy)
+					if (hit === null || hit === undefined) continue // 点落到视口外了，这一枪不算数
+					// 自己人不算遮挡：导轨可能正好压在探针上，那会来回闪
+					if (typeof hit.closest === 'function' && hit.closest(`[${RAIL_MARK}]`) !== null) return false
+					if (el.contains(hit) || hit.contains(el)) return false
+				}
+			}
+			return true
+		}
+
+		/**
+		 * 量聊天区滚动容器；量不到退回视口右缘。
+		 *
+		 * 返回 `{top, height, right, contentRight}`。`contentRight` 是**正文栏**的右缘，
+		 * 导轨靠它算自己该落在空当的哪儿（见 geometry.js 的 railRight）。
+		 * 返回 `undefined` 表示"现在不该露面"：不在会话界面，或者聊天被别的插件整个盖住了。
+		 */
 		function useChatBox() {
 			const [box, setBox] = react.useState(undefined)
 			react.useEffect(() => {
@@ -1651,11 +2813,24 @@ window.__ModuleLoader__.load({
 						observer.observe(el)
 						observed = el
 					}
+					// 聊天被别的插件的浮层整个盖住了（侧栏全屏那种）→ 这时候树该收起来，
+					// 不然屏幕上一句对话都没有，却还挂着一棵树。判法见 isCovered，不认任何具体插件。
+					if (typeof document.elementFromPoint === 'function' && isCovered(el, (x, y) => document.elementFromPoint(x, y))) {
+						return setBox(undefined)
+					}
 					const rect = el.getBoundingClientRect()
+					const content = contentRightOf(el)
 					setBox((prev) =>
-						prev && Math.abs(prev.top - rect.top) < 1 && Math.abs(prev.height - rect.height) < 1 && Math.abs(prev.right - rect.right) < 1
+						prev &&
+						Math.abs(prev.top - rect.top) < 1 &&
+						Math.abs(prev.height - rect.height) < 1 &&
+						Math.abs(prev.right - rect.right) < 1 &&
+						// ⚠️ 正文右缘用 4px 的迟滞，不是 1px。聊天行的宽度会被滚动条、
+						//    一张图加载完这类事顶来顶去差个一两像素 —— 按 1px 比的话，
+						//    整棵树会跟着做肉眼可见的左右微抖。
+						Math.abs((prev.contentRight === undefined ? -1e9 : prev.contentRight) - (content === undefined ? -1e9 : content)) < 4
 							? prev
-							: { top: rect.top, height: rect.height, right: rect.right },
+							: { top: rect.top, height: rect.height, right: rect.right, contentRight: content },
 					)
 				}
 				const schedule = () => {
@@ -1665,12 +2840,14 @@ window.__ModuleLoader__.load({
 				observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
 				measure()
 				window.addEventListener('resize', schedule)
+				const offViewport = watchViewport(schedule)
 				const timer = setInterval(measure, 800)
 				return () => {
 					cancelAnimationFrame(raf)
 					clearTimeout(graceTimer)
 					if (observer) observer.disconnect()
 					window.removeEventListener('resize', schedule)
+					offViewport()
 					clearInterval(timer)
 				}
 			}, [])
@@ -1715,10 +2892,12 @@ window.__ModuleLoader__.load({
 				}
 				measure()
 				document.addEventListener('scroll', schedule, true)
+				const offViewport = watchViewport(schedule)
 				const timer = setInterval(measure, 400)
 				return () => {
 					cancelAnimationFrame(raf)
 					document.removeEventListener('scroll', schedule, true)
+					offViewport()
 					clearInterval(timer)
 				}
 			}, [])
@@ -1802,6 +2981,61 @@ window.__ModuleLoader__.load({
 			return isRewindPending(outlines) ? Z.rewindMs : 0
 		}
 
+		// ===== 收藏那一下的动画 =====
+		//
+		// 为什么非得用 `@keyframes` 而不是 transition：收藏会把这个点**整个换一种形状**
+		//（圆 → 五角星），而 transition 只能在同一个属性的两个值之间过渡，换形状那一下
+		// 是个瞬变，补不出任何动画。所以用一次性的关键帧：形状瞬间换掉，星星自己转出来。
+		//
+		// ⚠️ 动画期间 `transform` 归关键帧管，inline 那个 `scale(1.4)`（悬停）和
+		//    `rotate(45deg)`（菱形）会被压住 340ms。只影响**刚被点的那一个点**，
+		//    播完立刻交还，比为了这 0.34 秒把 transform 拆成 CSS 变量划算。
+
+		/** 动画播多久（毫秒）。Rail 用它决定什么时候把动画标记摘掉。 */
+		const STAR_ANIM_MS = 340
+
+		/** 关键帧的名字。收藏和取消各一条 —— 取消那下要"缩回去"，不是把收藏倒放。 */
+		const STAR_ANIM = { on: 'dsh-tree-star-on', off: 'dsh-tree-star-off' }
+
+		/**
+		 * 把那两条关键帧塞进页面。整页只需要一份，Rail 挂载时调一次。
+		 * @returns 卸载函数
+		 */
+		function installStarAnimation() {
+			try {
+				if (document.querySelector('style[data-dsh-tree="star-anim"]') !== null) return () => {}
+				const tag = document.createElement('style')
+				tag.dataset.dshTree = 'star-anim'
+				tag.textContent =
+					`@keyframes ${STAR_ANIM.on}{` +
+					'0%{transform:scale(.3) rotate(-150deg);opacity:.15}' +
+					'55%{transform:scale(1.5) rotate(10deg);opacity:1}' +
+					'100%{transform:scale(1) rotate(0)}}' +
+					`@keyframes ${STAR_ANIM.off}{` +
+					'0%{transform:scale(1.45) rotate(0);opacity:.9}' +
+					'45%{transform:scale(.75) rotate(-18deg);opacity:.5}' +
+					'100%{transform:scale(1) rotate(0);opacity:1}}'
+				document.head.appendChild(tag)
+				return () => tag.remove()
+			} catch {
+				return () => {}
+			}
+		}
+
+		/**
+		 * 这一帧某个点该挂什么 `animation`。
+		 *
+		 * 抽成纯函数是为了能测：藏在渲染里的话，改成"永远 none"一条断言都不会响，
+		 * 而症状（点了收藏，星星直接蹦出来没有动画）只有人眼盯着才看得出来。
+		 * @param flash - `{key, on}`，刚被点的那个点；没有就是 null
+		 * @param key - 当前这个点的 key
+		 * @returns CSS 的 `animation` 值
+		 */
+		function starAnimation(flash, key) {
+			if (flash === null || flash === undefined || flash.key !== key) return 'none'
+			return `${flash.on ? STAR_ANIM.on : STAR_ANIM.off} ${STAR_ANIM_MS}ms cubic-bezier(.34,1.4,.64,1)`
+		}
+
 		// ===== settings-model.js =======================================
 
 		/**
@@ -1838,6 +3072,15 @@ window.__ModuleLoader__.load({
 		const isShape = (value) => typeof value === 'string' && shapeSpec(value).value === value
 
 		/**
+		 * 收藏图标认的值比节点形状多一个 `'star'`。
+		 *
+		 * ⚠️ 别图省事用 `isShape`：`shapeSpec('star')` 认不得五角星（它**故意**不在 SHAPES 里，
+		 *    免得五角星出现在四个角色的形状选择器里，"哪个是收藏"当场失效），会退回圆 ——
+		 *    于是"收藏默认形状"存成 star 之后读出来不合法，设置里改了跟没改一样。
+		 */
+		const isFavShape = (value) => typeof value === 'string' && favShape(value).value === value
+
+		/**
 		 * 卡片上的外观分组：一个角色一行，**左边颜色右边形状**，不再一项占一行。
 		 * 颜色和形状是同一个角色的两面，拆成两行既浪费竖直空间又要来回对照。
 		 */
@@ -1850,14 +3093,26 @@ window.__ModuleLoader__.load({
 				label: '空节点',
 				hint: '树根那个"新对话"占位，在它上面按 ＋ 可以在同一棵树里再开一条。边框永远是虚线 —— 那是"还没说话"的记号，不跟着配置走。',
 			},
-			// `key` 就是 shapes.js 里的角色名，所以改哪两个设置字段、要不要画虚线，
+			// 收藏**不是第五个角色**（它是盖在任何一种节点上的一层记号，所以不在 ROLES 里），
+			// 但它确实有一对"颜色 + 形状"要给用户调，所以字段名直接写出来。
+			{
+				key: 'favorite',
+				label: '收藏',
+				color: 'favoriteColor',
+				shape: 'favoriteShape',
+				extra: ['star'],
+				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边色是从这个颜色自动算出来的（压深到在当前底色上看得清），不用也不能单独配。',
+			},
+			// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 			// 一律从 ROLES 查，不在这儿重写一遍
 		].map((row) =>
-			Object.assign({}, row, {
-				color: ROLES[row.key].color,
-				shape: ROLES[row.key].shape,
-				dashed: ROLES[row.key].dashed === true,
-			}),
+			Object.assign(
+				{},
+				ROLES[row.key] === undefined
+					? {}
+					: { color: ROLES[row.key].color, shape: ROLES[row.key].shape, dashed: ROLES[row.key].dashed === true },
+				row,
+			),
 		)
 
 		/**
@@ -1874,7 +3129,8 @@ window.__ModuleLoader__.load({
 			// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。
 			...ROWS.flatMap((row) => [
 				{ field: row.color, kind: 'color', label: `${row.label}颜色`, fallback: THEME[row.color], accept: isHex, hint: '' },
-				{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: isShape, hint: '' },
+				// 收藏那一行的形状多认一个 'star'，见 isFavShape
+				{ field: row.shape, kind: 'shape', label: `${row.label}形状`, fallback: THEME[row.shape], accept: row.key === 'favorite' ? isFavShape : isShape, hint: '' },
 			]),
 		]
 
@@ -1969,22 +3225,449 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 悬停详情卡，以及挂在它上面的「合并」清单。
+		 *
+		 * 卡片有**两档**：
+		 *   · 收起（鼠标停在点上就是这档）—— 一行：信息 + ＋ + ☆，**就这两个动作**。
+		 *   · 展开（在卡片上双击）—— 第一行左边多出改树形那三颗（⇤ / ⇥ / ⊕），
+		 *     底下多出名字框和收藏图标那排。
+		 *
+		 * ⚠️ 全部动作按钮都在**第一行**，包括只有展开才露面的那三颗。
+		 *    它们本来整个收在展开档的第二行，跟名字框挤在一起 —— 那是"改结构"和"改标注"
+		 *    两回事摞成一摞。现在按钮归第一行、输入归下面，两档之间只有"多不多三颗"的差别。
+		 *
+		 * ⚠️ 卡片里**不写操作说明**（"双击收起""单击改名""名字改过了"这类）。
+		 *    双击、单击、框变蓝都是一眼就懂的事，写出来只是占地方。
 		 */
 
-		/** 就地重命名输入框。 */
-		function InlineEdit(props) {
-			const [draft, setDraft] = react.useState(props.initial)
-			return h('input', {
-				style: { flex: '1 1 auto', minWidth: 0, background: C.input, color: C.text, border: `1px solid ${C.accent}`, borderRadius: '4px', padding: '1px 5px', font: 'inherit', outline: 'none' },
-				value: draft, autoFocus: true,
-				onClick: (event) => event.stopPropagation(),
-				onChange: (event) => setDraft(event.target.value),
-				onBlur: () => props.onDone(draft.trim()),
-				onKeyDown: (event) => {
-					if (event.key === 'Enter') props.onDone(draft.trim())
-					if (event.key === 'Escape') props.onDone(props.initial)
+		/**
+		 * 草稿和现名比，算不算"改过了"。
+		 *
+		 * `draft === null` = 还没动过文本框。**这和"改成空串"是两回事**：
+		 * 空串的意思是"把名字清掉，回到默认"，那是一次真实的修改。
+		 * @param draft - 文本框里的草稿；null 表示没动过
+		 * @param text - 现在显示的名字
+		 * @returns 是否改过
+		 */
+		function isDirty(draft, text) {
+			return draft !== null && draft !== undefined && draft.trim() !== String(text === undefined ? '' : text).trim()
+		}
+
+		/**
+		 * 这个键盘事件是不是**中文输入法正在拼字**的那一下。
+		 *
+		 * ⚠️ 这就是 John 报的"双击改名时，中文输入法打两个字卡片就自己关了"：
+		 *    微软拼音选词是按**空格或回车**确认的，而那一下会先派发一个
+		 *    `keydown{key:'Enter'}`（`isComposing: true`）—— 老写法看见 Enter 就
+		 *    "确认改名并收起卡片"，于是你才打了两个拼音字母，卡片没了。
+		 *    Esc 同理：它在输入法里是"取消候选词"，不是"放弃改名"。
+		 *
+		 * 两条判据都要：`isComposing` 是标准写法，但 Safari 和几个国产输入法只给
+		 * composition 事件不给这个标志，所以再用 compositionstart/end 自己兜一层。
+		 * @param event - react 的键盘事件
+		 * @param composing - 我们自己用 composition 事件记的状态
+		 * @returns 是不是拼字中途
+		 */
+		function isComposingKey(event, composing) {
+			if (composing === true) return true
+			const native = event === undefined || event === null ? undefined : event.nativeEvent
+			if (native !== undefined && native !== null && native.isComposing === true) return true
+			return event !== undefined && event !== null && event.isComposing === true
+		}
+
+		/**
+		 * 焦点从我们的输入框上掉了，该不该抢回来。
+		 *
+		 * 【症状】在卡片里打字，打到一半字就跑进聊天框了；按 Ctrl+A 想全选节点描述，
+		 * 结果全选的是聊天区。两个都是同一件事：**焦点被别人悄悄拿走了**。
+		 * 宿主那边会在某些时刻重挂组件 / 让 Lexical 编辑器取回焦点，我们拦不住它。
+		 *
+		 * 拦不住就抢回来 —— 但**只抢"没有理由"的那一次**：
+		 *   · 用户自己点了别处（最近 `LEAVE_MS` 毫秒内有过 pointerdown）→ 他真的想走，不抢
+		 *   · 用户按了 Tab / Esc / 回车 → 他真的想走，不抢
+		 *   · 焦点落在卡片里的别的东西上 → 本来就是自己人，不抢
+		 *   · 以上都不是，也就是**谁都没动，焦点自己没的** → 抢回来
+		 *
+		 * ⚠️ 少一条"用户自己点了别处"就会变成焦点陷阱：点哪儿都跳回这个框，
+		 *    连关卡片都做不到。这条是整个机制能不能上线的分界线。
+		 * @param inside - 焦点现在落在卡片里面吗
+		 * @param byUser - 这次失焦有用户动作能解释吗（点了别处 / 按了 Tab-Esc-回车）
+		 * @param wanted - 这个框此刻还想要焦点吗（组件还在、还没提交）
+		 * @returns 是否抢回来
+		 */
+		function shouldRefocus(inside, byUser, wanted) {
+			return wanted === true && byUser !== true && inside !== true
+		}
+
+		/** 用户动作之后多久之内的失焦都算"他自己要走的"。 */
+		const LEAVE_MS = 350
+
+		/**
+		 * 一串字裁到最多 `GLYPH_MAX` 个**码点**。
+		 *
+		 * ⚠️ 按码点数不按 `.length`：`'🙂'` 的 `.length` 是 2，按它算的话一个 emoji
+		 *    就吃掉两格配额。展开成数组才是"用户眼里的几个字"。
+		 *
+		 * ⚠️ 这条**只能在拼字落地之后调**。中文输入法打字时框里躺的是一串拼音
+		 *    （"zhongguo" 八个字符才换来两个汉字），中途裁一刀就再也打不出字了 ——
+		 *    调用方必须先看 `compositionstart/end`，见 FavIconRow。
+		 * @param text - 框里的字
+		 * @returns 裁过的字；最多 GLYPH_MAX 个码点
+		 */
+		function clampGlyph(text) {
+			return [...String(text === undefined || text === null ? '' : text)].slice(0, GLYPH_MAX).join('')
+		}
+
+		/**
+		 * 这张卡现在该不该按住不放（不许关、不许换点）。
+		 *
+		 * ⚠️ 判据是「框里有光标 **或** 名字改过了」，**不能只看后者**。只看"改过了"的话，
+		 *    从点进框到敲出第一个不一样的字之间是一段没上锁的真空期：鼠标稍微飘出卡片，
+		 *    `onMouseLeave` 就把整张卡关了，输入框跟着卸载 —— 焦点掉回宿主那个 Lexical
+		 *    编辑器，**后面敲的字全进了聊天框**（John 报的就是这条）。
+		 *    删回原样时 `dirty` 会翻回 false，可光标还在框里，那一下同理也得按住。
+		 *
+		 * 抽成纯函数是为了能测：藏在组件里的话，改回"只看 dirty"一条断言都不会响，
+		 * 而症状要人肉边敲边把鼠标挪出去才复现得出来。
+		 * @param dirty - 名字改过了还没定夺
+		 * @param typing - 名字框里有光标
+		 * @returns 是否按住
+		 */
+		function keepsCard(dirty, typing) {
+			return dirty === true || typing === true
+		}
+
+		/** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
+		const CARD_MARK = 'data-dsh-tree-card'
+
+		/**
+		 * 焦点守卫：把 `shouldRefocus` 那条规矩挂到一个真的输入框上。
+		 *
+		 * 返回一组直接摊进 `h('input', {...})` 的属性 + 一个 `leave()`（自己主动要走时先喊一声）。
+		 *
+		 * ⚠️ 抢回焦点必须排到**下一帧**。`blur` 事件派发的当口 `document.activeElement`
+		 *    还没落定，当场 `focus()` 会被紧跟着的那一手再抢走一次，两边来回弹。
+		 * @param wanted - 这个框此刻还想要焦点吗
+		 * @returns `{props, leave}`
+		 */
+		function useFocusGuard(wanted) {
+			const box = react.useRef(null)
+			// 最近一次"用户自己要走"的时刻。pointerdown 记在 document 上（捕获阶段），
+			// 因为点的很可能是卡片外面的东西，冒泡到不了我们这儿。
+			const left = react.useRef(0)
+			const alive = react.useRef(false)
+			alive.current = wanted === true
+			react.useEffect(() => {
+				if (typeof document === 'undefined') return undefined
+				const mark = () => { left.current = Date.now() }
+				document.addEventListener('pointerdown', mark, true)
+				document.addEventListener('wheel', mark, true)
+				return () => {
+					document.removeEventListener('pointerdown', mark, true)
+					document.removeEventListener('wheel', mark, true)
+				}
+			}, [])
+			const leave = react.useCallback(() => { left.current = Date.now() }, [])
+			return {
+				leave,
+				props: {
+					ref: (node) => { box.current = node },
+					onBlur: () => {
+						const el = box.current
+						if (el === null || el === undefined) return
+						const byUser = Date.now() - left.current < LEAVE_MS
+						setTimeout(() => {
+							if (!alive.current) return
+							const now = typeof document === 'undefined' ? null : document.activeElement
+							const card = typeof el.closest === 'function' ? el.closest(`[${CARD_MARK}]`) : null
+							const inside = card !== null && card !== undefined && now !== null && card.contains(now)
+							if (!shouldRefocus(inside, byUser, alive.current)) return
+							// ⚠️ preventScroll：不加的话，抢回焦点会把聊天区滚到导轨那一行去
+							if (typeof el.focus === 'function') el.focus({ preventScroll: true })
+						}, 0)
+					},
 				},
-			})
+			}
+		}
+
+		/**
+		 * 展开档里那个名字框。单击即可改，**不自动聚焦** ——
+		 * 双击展开卡片时就把光标抢走的话，想按 ＋ 还得先点一下别处。
+		 *
+		 * ⚠️ 这个框**必须把自己的聚焦状态报上去**（`onHold` / `onDrop`）。
+		 *    卡片原来只在"名字改过了"时才锁住，于是从点进框到敲出第一个不一样的字之间
+		 *    有一段真空期：鼠标稍微飘出卡片，`onMouseLeave` 就把整张卡关了，
+		 *    输入框跟着卸载 —— 焦点掉回宿主那个 Lexical 编辑器，**后面敲的字全进了聊天框**
+		 *    （John 报的就是这条）。改成"框里有光标就锁住"，真空期整个没了。
+		 */
+		function NameField(props) {
+			const composing = react.useRef(false)
+			const canHover = useHover()
+			// 只要这个框现在有光标，就一直想要焦点 —— 被谁抢走都抢回来（见 useFocusGuard）
+			const [held, setHeld] = react.useState(false)
+			const guard = useFocusGuard(held)
+			return h('input', Object.assign({}, guard.props, {
+				style: {
+					width: '100%', boxSizing: 'border-box',
+					background: C.input, color: C.text, border: `1px solid ${C.line}`, borderRadius: '4px',
+					// 两行那么高。名字常常比框长，矮框里改字要一路盲敲；
+					// 而且框越大，光标在里面时鼠标越不容易蹭出卡片。
+					padding: '8px', minHeight: '48px', lineHeight: '18px',
+					font: 'inherit', outline: 'none',
+					// ⚠️ iOS Safari 的死规矩：聚焦一个**字号小于 16px** 的输入框，它会把整个页面
+					//    放大过去。宿主的 viewport meta 不归我们管，改不了 user-scalable，
+					//    所以只能把字号顶到 16px —— 这是唯一不靠 meta 的解法。
+					//    放大之后页面不会自己缩回来，而导轨是 position:fixed 的，
+					//    结果就是"改了个名字，树跑到屏幕外面去了"。
+					//    能悬停的机器上不动它，免得桌面上这个框忽然比周围字大一圈。
+					fontSize: canHover ? undefined : '16px',
+				},
+				value: props.value,
+				placeholder: props.placeholder,
+				spellCheck: false,
+				// iOS 的键盘默认会把第一个字母自动大写、还会自作主张改拼写。
+				// 这是**节点名**，不是句子，两样都不要。
+				autoCapitalize: 'off',
+				autoCorrect: 'off',
+				onClick: (event) => event.stopPropagation(),
+				onDoubleClick: (event) => event.stopPropagation(),
+				onFocus: (event) => {
+					event.currentTarget.style.borderColor = C.accent
+					setHeld(true)
+					if (typeof props.onHold === 'function') props.onHold()
+				},
+				onBlur: (event) => {
+					event.currentTarget.style.borderColor = C.line
+					guard.props.onBlur(event)
+					if (typeof props.onDrop === 'function') props.onDrop()
+				},
+				onChange: (event) => props.onChange(event.target.value),
+				onCompositionStart: () => { composing.current = true },
+				onCompositionEnd: () => { composing.current = false },
+				// ⚠️ 键盘事件到此为止，**不许冒泡出去**。宿主在上层挂着自己的快捷键
+				//    （Ctrl+A 全选、回车发送这类），不拦的话在这个框里敲的每一下都会被它
+				//    当成"在聊天界面上按的"—— John 报的"Ctrl+A 把聊天全选了"就是这条。
+				onKeyDown: (event) => {
+					event.stopPropagation()
+					// 拼字中途的 Enter / Esc 是输入法的，不是我们的（见 isComposingKey）
+					if (isComposingKey(event, composing.current)) return
+					// 这三下是"我自己要走"，别让焦点守卫再把光标抢回来
+					if (event.key === 'Enter' || event.key === 'Escape' || event.key === 'Tab') {
+						setHeld(false)
+						guard.leave()
+					}
+					if (event.key === 'Enter') { event.preventDefault(); props.onSave() }
+					if (event.key === 'Escape') { event.preventDefault(); props.onCancel() }
+				},
+				onKeyUp: (event) => event.stopPropagation(),
+				onKeyPress: (event) => event.stopPropagation(),
+			}))
+		}
+
+		/**
+		 * 收藏颜色的几个预设。第一格是空串 = 恢复默认（那个黄）。
+		 *
+		 * 挑的是**在深底和白底上都压得住**的六个色相，两两之间在 18px 的小圆点上也分得开；
+		 * 再多就不是"一眼认出"而是"逐个辨认"了，那正是这一排最该避免的下场。
+		 */
+		const FAV_COLORS = ['', '#f85149', '#ffa657', '#56d364', '#58a6ff', '#bc8cff', '#ff7bb0']
+
+		/** 收藏选择器里每一格多大、格与格之间留多少。全在一行里挤，所以比设置卡那排小一圈。 */
+		const PICK = 18
+		const GAP = 3
+
+		/**
+		 * 收藏图标能挑哪几种形状。
+		 *
+		 * ⚠️ **不是 `SHAPES` 全量**。挑剩下这几种的判据是"在 11px 上分得出来"：
+		 *    右箭头（chevron）、五边形、六边形在这个尺寸下和圆几乎没差别，
+		 *    占着格子却提供不了区分度 —— 而这一排要和颜色挤在同一行里，格子很贵。
+		 *    设置卡那边**不删**：那是给节点配形状的，格子宽松，而且删掉会让已经
+		 *    存了 hexagon 的设置读出来不合法。
+		 */
+		const FAV_DROP = ['chevron', 'pentagon', 'hexagon']
+
+		/** 实际列出来的那几格。`'star'` 排头 —— 它是默认，也是"恢复默认"那一格。 */
+		const FAV_SHAPES = ['star', ...SHAPES.map((one) => one.value).filter((one) => !FAV_DROP.includes(one))]
+
+		/**
+		 * 收藏图标选择器。挂在展开档里，只有**收藏过的点**才露面。
+		 *
+		 * 【为什么收藏能换图标，而四个角色的形状只能在设置里改】
+		 * 角色形状是"这一类节点长什么样"，全局一份；收藏是**按点**贴的记号 ——
+		 * 一屏里收藏了七八个点，全长一个样等于没标。所以它天然是每个点自己的事，
+		 * 也就只能在这个点自己的卡片里改。
+		 *
+		 * ⚠️ **只给形状，不给颜色**。收藏恒为那个黄，颜色一旦可配，"哪个是收藏"
+		 *    这件一眼能扫出来的事就当场失效了 —— 那是收藏存在的全部理由。
+		 *
+		 * 形状词汇和设置卡里那排完全一样（预设 id / `char:<字>` / `img:<id>`），
+		 * 所以 emoji 和自己传的图都能当收藏图标用。
+		 */
+		function FavIconRow(props) {
+			const { value, color, onPick, onFail, onColor } = props
+			const canHover = useHover()
+			const [held, setHeld] = react.useState(false)
+			const guard = useFocusGuard(held)
+			const now = typeof value === 'string' && value.length > 0 ? value : 'star'
+			// 「字」那一格自己拿着草稿。**不能直接把存起来的值当 value 用**：
+			// 那样每敲一下都要走「onPick → 写 localStorage → 整条导轨重画 → 值再绕回来」，
+			// 而那一圈落在中文输入法的拼字中途，拼一半的候选就被冲掉了 ——
+			// John 报的"自定义图标里一输中文就退出"就是这条。
+			const [draft, setDraft] = react.useState(null)
+			const composing = react.useRef(false)
+			const stored = String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : ''
+			// 落地：裁到上限再存。裁的动作只发生在这里，所以拼音中途永远碰不到它。
+			const land = (raw) => {
+				const cut = clampGlyph(raw)
+				setDraft(cut)
+				onPick(cut.trim() === '' ? '' : CUSTOM + cut)
+			}
+			// ⚠️ 传图那一格必须是 <label>，不能是 <span>：里面藏着的 file input 靠 label
+			//    的"点我等于点它"才点得动。所以这里把标签名开成参数。
+			const cell = (tag, key, picked, extra, child) =>
+				h(tag, Object.assign({
+					key,
+					style: Object.assign({
+						display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+						width: PICK + 'px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
+						borderWidth: '1px', borderStyle: 'solid', borderColor: picked ? color : C.line,
+						borderRadius: '5px', cursor: 'pointer', overflow: 'hidden',
+					}, TAPPABLE),
+				}, extra), child)
+
+			// 形状、字、传图、颜色**全在同一个 flex 里**，挤不下就自己换行。
+			// 拆成"图标一排、颜色一排"的话，光两个标题就占掉两行 —— 而卡片总共才十几行高。
+			return h('div', {
+				style: { display: 'flex', alignItems: 'center', gap: GAP + 'px', flexWrap: 'wrap', width: '100%', marginTop: '6px' },
+			}, [
+				// ⚠️ 预览一律走 `favShape` 解，不走 `shapeSpec`：`'star'` 不在 SHAPES 里，
+				//    交给 shapeSpec 会退回圆 —— 那一格就成了"默认是个圆点"，正好说反。
+				...FAV_SHAPES.map((want) =>
+					cell('span', want, now === want, {
+						title: want === 'star' ? '恢复默认（五角星）' : want,
+						onClick: (event) => { event.stopPropagation(); onPick(want === 'star' ? '' : want) },
+					}, preview(want, color, PICK - 6, false, favShape(want))),
+				),
+				// 填字：emoji 也行，于是"图标库"实际上是无限的。
+				// ⚠️ 它和这一排里所有格子**一样高**。以前特意做成两行高，结果整排被它撑起来、
+				//    白占一行 —— 而它最多只放 5 个字，一行绰绰有余。
+				//    真正需要两行的是名字框（那儿才写长句子），不是这个。
+				h('input', Object.assign({}, guard.props, {
+					key: 'char', type: 'text',
+					// ⚠️ 这里**不能挂 `maxLength`**。中文输入法是先把拼音打进框里再换成汉字的，
+					//    "zhongguo" 八个字符才换来两个字 —— 挂上 5 的上限，拼音打到第六个字母
+					//    就被截断，汉字根本拼不出来。上限改成在拼字**落地之后**裁（见 land）。
+					value: draft === null ? stored : draft,
+					placeholder: '字', title: `填几个字当图标，emoji 也行，最多 ${GLYPH_MAX} 个`,
+					spellCheck: false, autoCapitalize: 'off', autoCorrect: 'off',
+					style: {
+						width: '40px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
+						background: C.input, color: C.text, textAlign: 'center',
+						borderWidth: '1px', borderStyle: 'solid',
+						borderColor: String(now).startsWith(CUSTOM) ? color : C.line,
+						borderRadius: '5px', outline: 'none', font: 'inherit', padding: 0,
+						// 和 NameField 同一条 iOS 规矩：小于 16px 的输入框一聚焦就把整页放大
+						fontSize: canHover ? '11px' : '16px',
+					},
+					onClick: (event) => event.stopPropagation(),
+					onDoubleClick: (event) => event.stopPropagation(),
+					// 和名字框同一条规矩：框里有光标就把整张卡按住，不然鼠标一飘出去卡片就关了，
+					// 焦点掉回宿主的输入框，接着敲的字全进聊天框（见 keepsCard / useFocusGuard）。
+					onFocus: () => {
+						setHeld(true)
+						if (typeof props.onHold === 'function') props.onHold()
+					},
+					onBlur: (event) => {
+						composing.current = false
+						setDraft(null) // 交还给存起来的值，省得草稿和真值各说各话
+						guard.props.onBlur(event)
+						if (typeof props.onDrop === 'function') props.onDrop()
+					},
+					// 键盘到此为止，理由和名字框那条一模一样（宿主的 Ctrl+A / 回车会抢走）
+					onKeyDown: (event) => {
+						event.stopPropagation()
+						// ⚠️ 拼字中途的按键**一个都不许动**。微软拼音选词按的就是空格或回车，
+						//    那一下会先派发一个 `keydown{key:'Enter', isComposing:true}` ——
+						//    老写法看见 Enter 就 blur()，浏览器当场把这次合成掐掉、把**拼音原文**
+						//    当结果落进框里。于是打完 "ceshiyixia" 还没选词，框里就成了那串英文
+						//    （John 报的）。名字框早就有这道闸，这个框当初漏了。
+						if (isComposingKey(event, composing.current)) return
+						if (event.key === 'Enter' || event.key === 'Escape' || event.key === 'Tab') {
+							setHeld(false)
+							guard.leave()
+							if (typeof event.currentTarget.blur === 'function') event.currentTarget.blur()
+						}
+					},
+					onKeyUp: (event) => event.stopPropagation(),
+					onKeyPress: (event) => event.stopPropagation(),
+					onCompositionStart: () => { composing.current = true },
+					// 拼字落地那一下才裁、才存。Chrome 是 compositionend 在前、Firefox 在后，
+					// 两边都覆盖到：这里存一次，下面那个 onChange 看 composing 再存一次。
+					onCompositionEnd: (event) => {
+						composing.current = false
+						land(event.target.value)
+					},
+					onChange: (event) => {
+						const raw = event.target.value
+						// 拼音还在框里躺着，长度先不管，也别写进存储
+						if (composing.current) return setDraft(raw)
+						land(raw)
+					},
+				})),
+				// 传图：和设置卡里那颗同一套 —— 浏览器里先光栅化成 PNG 再交给 host（见 shrink()）
+				cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
+					String(now).startsWith(PICTURE)
+						? preview(now, color, PICK - 4, false, favShape(now))
+						: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
+					h('input', {
+						key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
+						onChange: (event) => {
+							const file = event.target.files && event.target.files[0]
+							event.target.value = '' // 同一个文件再传一次也要触发
+							if (file === undefined || file === null) return
+							// 传图是用户按下去的动作，失败了要说一句（摊在卡片下面那行），
+							// 不能悄悄没反应 —— 和 icon-upload.js 里那条注释同一个道理。
+							upload(file).then(onPick, (error) => onFail(String((error && error.message) || error)))
+						},
+					}),
+				]),
+				// ===== 颜色 =====
+				// ⚠️ 这几个色点推翻了原来"收藏恒为那个黄"的硬规矩。当初的理由现在仍然成立 ——
+				//    所以**默认还是黄的**，这里改的只是这一个点。真要按点分色（红=待办、
+				//    绿=已验证）给得出，但一屏里七八种颜色之后，"哪个是收藏"就得靠形状认了。
+				// 不写"收藏颜色"四个字，也不另起一行：圆的是颜色、方的是形状，一眼就分得开。
+				...FAV_COLORS.map((hex) =>
+					h('span', {
+						key: 'c' + hex,
+						title: hex === '' ? '恢复默认颜色' : hex,
+						style: Object.assign({
+							display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+							width: PICK + 'px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
+							background: hex === '' ? 'none' : hex,
+							borderWidth: hex === '' ? '1px' : '2px', borderStyle: hex === '' ? 'dashed' : 'solid',
+							// 选中的那颗描一圈亮边；没选中的用中性描边，免得每颗都在抢注意力
+							borderColor: (hex === '' ? props.ownColor === undefined : props.ownColor === hex) ? C.text : C.line,
+							// ⚠️ 颜色一律画成**圆**、形状一律画成**方**。两组挤在同一行里，
+							//    不靠外框区分的话，"这一格是选形状还是选颜色"得逐个试。
+							borderRadius: '50%', cursor: 'pointer',
+							fontSize: '9px', lineHeight: 1, color: C.muted,
+						}, TAPPABLE),
+						onClick: (event) => { event.stopPropagation(); if (typeof onColor === 'function') onColor(hex) },
+					}, hex === '' ? '×' : null),
+				),
+				// 取色盘：预设不够时自己挑。`type=color` 原生就给 `#rrggbb`，正好是我们收的格式。
+				h('input', {
+					key: 'pick', type: 'color',
+					value: typeof props.ownColor === 'string' ? props.ownColor : color,
+					title: '自己挑一个颜色',
+					style: {
+						width: (PICK + 4) + 'px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
+						padding: 0, background: 'none', border: '1px solid ' + C.line, borderRadius: '9px', cursor: 'pointer',
+					},
+					onClick: (event) => event.stopPropagation(),
+					onChange: (event) => { if (typeof onColor === 'function') onColor(event.target.value) },
+				}),
+			])
 		}
 
 		/**
@@ -1995,11 +3678,22 @@ window.__ModuleLoader__.load({
 		 */
 		function Detail(props) {
 			const { node, y, railWidth, labels, hold, release } = props
-			const [editing, setEditing] = react.useState(false)
+			const [expanded, setExpanded] = react.useState(false)
+			const [draft, setDraft] = react.useState(null)
 			const [merging, setMerging] = react.useState(false)
+			// 名字框里有没有光标。和 `dirty` 一起决定"这张卡现在不许关、也不许换点"。
+			const [typing, setTyping] = react.useState(false)
+			// 灰掉的按钮、小牌子上那些理由全写在 `title` 里，而 **title 在触摸设备上
+			// 永远不会出现**（手指没有"停在上面"这个状态）。iPad 上看到的就成了一个
+			// 按不动、也不说为什么的 ＋ —— 比没有这个按钮更让人发毛。
+			// 所以这些地方一律再挂一条 onClick，把同一句话摊在卡片里。
+			const [note, setNote] = react.useState(null)
 			react.useEffect(() => {
-				setEditing(false)
+				setExpanded(false)
 				setMerging(false)
+				setDraft(null)
+				setNote(null)
+				setTyping(false)
 			}, [node])
 
 			const shown = node !== null
@@ -2007,11 +3701,29 @@ window.__ModuleLoader__.load({
 			const key = !shown ? '' : isEmpty ? 'root' : node.key
 			const fallback = !shown ? '' : isEmpty ? node.session.title || '未命名对话' : node.entry.prompt || `第 ${node.entry.turn} 轮`
 			const text = labels[key] || fallback
+			const dirty = isDirty(draft, text)
+			const starred = shown && (props.favorites || new Set()).has(key)
 
-			const button = (glyph, title, action) =>
+			// 正在改名时，**整张卡锁住**：鼠标走开不关、换点不换。
+			// 否则手一滑划过别的点，刚敲的名字就没了 —— 而它连个"没保存"的提示都来不及给。
+			//
+			// 判据见 keepsCard：光标在框里就算，不必等到真改出不一样的字。
+			const busy = keepsCard(dirty, typing)
+			const onLock = props.onLock
+			react.useEffect(() => {
+				if (typeof onLock === 'function') onLock(busy)
+			}, [busy, onLock])
+			react.useEffect(() => () => { if (typeof onLock === 'function') onLock(false) }, [onLock])
+
+			const commit = (value) => {
+				props.onRename(key, value === null || value === undefined ? '' : value.trim())
+				setDraft(null)
+			}
+
+			const button = (glyph, title, action, color) =>
 				h('span', {
 					key: glyph, title,
-					style: { flex: '0 0 auto', cursor: 'pointer', color: C.muted, padding: '0 4px', fontSize: '13px' },
+					style: Object.assign({ flex: '0 0 auto', cursor: 'pointer', color: color || C.muted, padding: '0 4px', fontSize: '13px' }, TAPPABLE),
 					onClick: (event) => { event.stopPropagation(); action() },
 				}, glyph)
 
@@ -2020,22 +3732,164 @@ window.__ModuleLoader__.load({
 			const blocked = (glyph, why) =>
 				h('span', {
 					key: glyph, title: why,
-					style: { flex: '0 0 auto', cursor: 'not-allowed', color: C.muted, opacity: 0.4, padding: '0 4px', fontSize: '13px' },
+					style: Object.assign({ flex: '0 0 auto', cursor: 'not-allowed', color: C.muted, opacity: 0.4, padding: '0 4px', fontSize: '13px' }, TAPPABLE),
+					// 按不动，但**戳得动** —— 戳一下把理由摊到下面那行。桌面上多这一下无害
+					// （title 本来就会出来），触摸设备上这是唯一的知情途径。
+					onClick: (event) => { event.stopPropagation(); setNote(why) },
 				}, glyph)
 
-			// 「撤回」「无上下文」这类小牌子共用一套样子
-			const tag = (key, text, why) =>
+			// 保存 / 不保存那两颗。写成字而不是符号：这是**会丢东西**的抉择，
+			// 得让人一眼读懂，不能让他去猜 ✓ 和 ✗ 各是什么意思。
+			const word = (label, title, action, accent) =>
 				h('span', {
-					key, title: why,
-					style: {
+					key: label, title,
+					style: Object.assign({
+						flex: '0 0 auto', cursor: 'pointer', fontSize: '11.5px', lineHeight: '18px',
+						padding: '0 8px', borderRadius: '4px',
+						borderWidth: '1px', borderStyle: 'solid', borderColor: accent ? C.accent : C.line,
+						color: accent ? C.accent : C.muted,
+					}, TAPPABLE),
+					onClick: (event) => { event.stopPropagation(); action() },
+				}, label)
+
+			// 「撤回」「无上下文」这类小牌子共用一套样子
+			const tag = (slot, label, why) =>
+				h('span', {
+					key: slot, title: why,
+					style: Object.assign({
 						flex: '0 0 auto', color: C.muted, fontSize: '10px', lineHeight: '14px',
-						border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px',
+						border: `1px solid ${C.line}`, borderRadius: '3px', padding: '0 3px', cursor: 'help',
+					}, TAPPABLE),
+					// 同上：「撤回」「无上下文」这两块牌子的全部信息量都在 title 里
+					onClick: (event) => { event.stopPropagation(); setNote(why) },
+				}, label)
+
+			// 摊开的那句理由。再戳一下收起 —— 不然它会一直占着卡片下沿。
+			const noteLine = note === null ? null : h('div', {
+				key: 'note',
+				style: Object.assign({
+					width: '100%', marginTop: '5px', color: C.muted, fontSize: '11px', lineHeight: 1.5,
+					whiteSpace: 'pre-wrap', cursor: 'pointer',
+				}, TAPPABLE),
+				onClick: (event) => { event.stopPropagation(); setNote(null) },
+			}, note)
+
+			// ===== 第一行：信息 + 动作 =====
+			// 顺序是按"多重"排的，从左到右越来越轻：改树形（⇤ ⇥ ⊕）→ 开分支（＋）→ 收藏（☆）。
+			//
+			// ⚠️ 改树形那三颗**只在展开档露面**，收起档就只有 ＋ 和 ☆。
+			//    收起档是鼠标划过导轨时跟着走的那一档，手还在动，按钮又小又挨着 ——
+			//    这时候摆出"把这条支线拆出去"这种改结构的动作，迟早点错。
+			//    展开是一次明确的双击，相当于"我确实要动这个节点"。
+			const head = !shown ? null : h('div', {
+				key: 'head',
+				style: { display: 'flex', alignItems: 'center', gap: '6px', width: '100%' },
+			}, [
+				h('span', {
+					key: 'n',
+					title: isEmpty ? '' : `会话内第 ${node.entry.turn} 轮`,
+					style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' },
+				}, isEmpty ? '对话' : `#${node.no}`),
+				// 撤回过的那一轮还画在树上（答完了才留），但它已经不在对话里，
+				// 不挂个牌子的话点开只会看到一条"怎么滚不过去"的旧提问。
+				node.rewound !== true ? null : tag('r', '撤回', '这一轮已被撤回，不在对话里了'),
+				// 这条分支开出来的时候没能继承 Claude 那边的上下文。不说一声的话，
+				// 它看起来和别的分支一模一样，直到答得驴唇不对马嘴才发现。
+				node.session.contextMissing !== true || !isBranchHead(node)
+					? null
+					: tag('c', '无上下文', '开这条分支时没能继承 Claude 那边的记忆，所以它不记得岔路点之前的对话。\n（多半是开分支那一刻父对话正在运行 —— 读它的记录会打断那一轮。）'),
+				// 展开档里名字搬进了下面那个框，这里就淡下去 —— 同一个名字摆两遍没必要抢眼。
+				h('span', {
+					key: 't',
+					style: {
+						flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+						fontWeight: isEmpty ? 600 : 400, opacity: expanded ? 0.45 : 1,
 					},
-				}, text)
+				}, text),
+				// 改树形那三颗：只有展开档才露面，但露面时和 ＋ / ☆ 并排在这一行。
+				// ⚠️ 有未保存的草稿时一律灰掉：它们每一个都会触发重画，而重画就意味着草稿悄悄没了。
+				//    只是光标停在框里、还没改动的话不灰 —— 那会儿没东西可丢，灰掉纯属碍事。
+				!expanded || node.cut !== true
+					? null
+					: dirty
+						? blocked('⇤', '先保存或放弃这次改名')
+						: button('⇤', '把这条支线接回原来那棵树', () => props.onJoin(node)),
+				!expanded || !props.detachable
+					? null
+					: dirty
+						? blocked('⇥', '先保存或放弃这次改名')
+						: button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)),
+				// 合并整棵对话。挂在树根那个空节点上：合并是**整棵树对整棵树**的，
+				// 不是某个节点对某个节点，挂在中间任何一个节点上都会让人以为"接到这儿"。
+				!expanded || !isEmpty || (props.targets || []).length === 0
+					? null
+					: dirty
+						? blocked('⊕', '先保存或放弃这次改名')
+						: button(merging ? '×' : '⊕', merging ? '收起' : '把别的对话合并进这棵树', () => setMerging(!merging)),
+				branchAction(node) === 'none'
+					? null
+					: dirty
+						? blocked('＋', '先保存或放弃这次改名')
+						: forkBlockedWhy(node) !== ''
+							? blocked('＋', forkBlockedWhy(node))
+							: button('＋', '从这之后新开分支', () => props.onFork(node)),
+				dirty
+					? blocked(starred ? '★' : '☆', '先保存或放弃这次改名')
+					: button(
+						starred ? '★' : '☆',
+						starred ? '取消收藏' : '收藏这个节点（树上变成黄色五角星）',
+						() => props.onFavorite(key, !starred),
+						starred ? props.starInk : C.muted,
+					),
+			])
+
+			// 收藏图标那一排。**只在收藏过的点上露面** —— 没收藏的话它改的是个看不见的东西。
+			// 改名改到一半时也收起来：那会儿只剩"保存 / 不保存"两条出路（见下面那段注释）。
+			const favIcons = props.favIcons || {}
+			const iconRow = !starred || dirty || !expanded ? null : h(FavIconRow, {
+				key: 'favicon',
+				value: favIcons[key],
+				color: props.starInk || C.muted,
+				ownColor: (props.favColors || {})[key],
+				onColor: (want) => props.onFavColor(key, want),
+				onHold: () => setTyping(true),
+				onDrop: () => setTyping(false),
+				onPick: (want) => props.onFavIcon(key, want),
+				onFail: (why) => setNote(`图标没换成：${why}`),
+			})
+
+			// ===== 展开档：名字框 + 收藏图标 =====
+			// 动作按钮不在这儿 —— 它们全在第一行，展开与否都不动。
+			const body = !shown || !expanded ? null : [
+				h('div', { key: 'name', style: { display: 'flex', width: '100%', marginTop: '6px' } },
+					h(NameField, {
+						value: draft === null ? text : draft,
+						placeholder: fallback,
+						onChange: setDraft,
+						onHold: () => setTyping(true),
+						onDrop: () => setTyping(false),
+						onSave: () => { commit(draft); setExpanded(false) },
+						onCancel: () => setDraft(null),
+					}),
+				),
+				// 改过之后**只剩这两条出路**（别的按钮这会儿全灰着，见第一行那几个 `dirty`）。
+				// 不写"名字改过了"：框变蓝、这两颗冒出来，已经把话说完了。
+				!dirty ? null : h('div', {
+					key: 'acts',
+					style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', width: '100%', marginTop: '6px' },
+				}, [
+					word('不保存', '丢掉这次改名', () => { setDraft(null); setTyping(false); setExpanded(false) }),
+					word('保存', '保存这个名字（回车也行）', () => { commit(draft); setTyping(false); setExpanded(false) }, true),
+				]),
+				iconRow,
+			]
 
 			return h(
 				'div',
 				{
+					// 焦点守卫靠这个记号判断"焦点还落在卡片里（点了卡片上别的东西），
+					// 还是被外人抢走了"。见 useFocusGuard。
+					[CARD_MARK]: '1',
 					style: {
 						position: 'absolute', right: `${railWidth + 4}px`, top: `${y}px`,
 						transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
@@ -2043,49 +3897,27 @@ window.__ModuleLoader__.load({
 						transition: 'opacity .14s ease, transform .14s ease',
 						pointerEvents: shown ? 'auto' : 'none',
 						width: `${Z.card}px`, maxWidth: '60vw',
-						display: 'flex', alignItems: 'center', gap: '6px',
-						background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
+						display: 'flex', flexDirection: 'column', alignItems: 'stretch',
+						background: C.card, borderWidth: '1px', borderStyle: 'solid', borderColor: dirty ? C.accent : C.line, borderRadius: '7px',
 						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
+						// ⚠️ 这里只能上 NO_ZOOM，不能上整套 TAPPABLE：卡片里有改名输入框，
+						//    祖先一旦 user-select:none，iOS 上那个框里的字就选不中、放不了光标。
+						//    manipulation 还顺手救了"双击展开"—— 否则那两下被 Safari
+						//    当成缩放手势吃掉，dblclick 压根不发，展开档在 iPad 上打不开。
+						...NO_ZOOM,
 					},
 					onMouseEnter: hold,
-					onMouseLeave: release,
-					onDoubleClick: () => setEditing(true),
+					// 锁住的时候连"鼠标走了就关"都不许 —— 草稿还在里面
+					onMouseLeave: () => { if (!busy) release() },
+					// 双击开合。⚠️ 改过名之后不许用双击收起：那条路不经过保存/不保存，
+					//    等于给了第三个出口，而它是个**静默丢弃**。
+					onDoubleClick: () => { if (!dirty) setExpanded(!expanded) },
 				},
-				shown
-					? [
-							h('span', {
-								key: 'n',
-								title: isEmpty ? '' : `会话内第 ${node.entry.turn} 轮`,
-								style: { flex: '0 0 auto', color: C.muted, fontSize: '11px', fontVariantNumeric: 'tabular-nums' },
-							}, isEmpty ? '对话' : `#${node.no}`),
-							// 撤回过的那一轮还画在树上（答完了才留），但它已经不在对话里，
-							// 不挂个牌子的话点开只会看到一条"怎么滚不过去"的旧提问。
-							!shown || node.rewound !== true ? null : tag('r', '撤回', '这一轮已被撤回，不在对话里了'),
-							// 这条分支开出来的时候没能继承 Claude 那边的上下文。不说一声的话，
-							// 它看起来和别的分支一模一样，直到答得驴唇不对马嘴才发现。
-							!shown || node.session.contextMissing !== true || !isBranchHead(node)
-								? null
-								: tag('c', '无上下文', '开这条分支时没能继承 Claude 那边的记忆，所以它不记得岔路点之前的对话。\n（多半是开分支那一刻父对话正在运行 —— 读它的记录会打断那一轮。）'),
-							editing
-								? h(InlineEdit, { key: 'i', initial: text, onDone: (value) => { setEditing(false); props.onRename(key, value) } })
-								: h('span', { key: 't', style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isEmpty ? 600 : 400 } }, text),
-							branchAction(node) === 'none'
-									? null
-									: forkBlockedWhy(node) !== ''
-										? blocked('＋', forkBlockedWhy(node))
-										: button('＋', '从这之后新开分支', () => props.onFork(node)),
-							// 剪缝上的「接回去」—— 分离一直是单向的，拆出去就回不来了
-							!shown || node.cut !== true ? null : button('⇤', '把这条支线接回原来那棵树', () => props.onJoin(node)),
-							props.detachable ? button('⇥', '把这条支线拆成独立的一棵树', () => props.onDetach(node)) : null,
-							// 合并整棵对话。挂在树根那个空节点上：合并是**整棵树对整棵树**的，
-							// 不是某个节点对某个节点，挂在中间任何一个节点上都会让人以为"接到这儿"。
-							!isEmpty || (props.targets || []).length === 0
-								? null
-								: button(merging ? '×' : '⊕', merging ? '收起' : '把别的对话合并进这棵树', () => setMerging(!merging)),
-						]
-					: null,
-				!shown || !merging ? null : h(MergeList, {
+				head,
+				noteLine,
+				body,
+				!shown || !expanded || !merging || dirty ? null : h(MergeList, {
 					key: 'merge',
 					targets: props.targets || [],
 					railWidth,
@@ -2116,6 +3948,9 @@ window.__ModuleLoader__.load({
 					style: {
 						position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
 						width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
+						// 单子滑到头之后别把滚动传给底下的聊天区（iOS 上那一下是整页橡皮筋回弹，
+						// 手一松单子自己弹没了）；WebkitOverflowScrolling 给老 iOS 补惯性滚动。
+						overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch',
 						background: C.card, border: `1px solid ${C.line}`, borderRadius: '7px',
 						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '4px',
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
@@ -2133,6 +3968,7 @@ window.__ModuleLoader__.load({
 							padding: '4px 6px', borderRadius: '5px',
 							cursor: stop ? 'not-allowed' : 'pointer',
 							opacity: stop ? 0.45 : 1,
+							...TAPPABLE,
 						},
 						onMouseEnter: (event) => { if (!stop) event.currentTarget.style.background = C.hover },
 						onMouseLeave: (event) => { event.currentTarget.style.background = 'transparent' },
@@ -2228,6 +4064,8 @@ window.__ModuleLoader__.load({
 			const [hover, setHover] = react.useState(false)
 			const [failed, setFailed] = react.useState('')
 			const dark = useColorScheme()
+			// 只为一件事：iOS 上聚焦小于 16px 的输入框会把整页放大过去（见 NameField 那条注释）。
+			const canHover = useHover()
 
 			const on = state.writable === true
 			const values = state.values || {}
@@ -2333,8 +4171,30 @@ window.__ModuleLoader__.load({
 			 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
 			 * 预设后面跟两格自定义：传图片，或者填一个字符。
 			 */
-			const shapes = (field, now, color, dashed) =>
+			// 「填字」那个框自己拿草稿 + 认拼字，理由见下面那段 ⚠️
+			// ⚠️ 名字别和上面那个色值回显用的 `draft` 撞 —— 两件事，两份状态。
+			const [glyph, setGlyph] = react.useState(null)
+			const composing = react.useRef(false)
+			/** 拼字落地：按码点裁到上限再写进设置。空了就清掉这一项，回到默认。 */
+			const land = (field, raw) => {
+				const cut = [...String(raw)].slice(0, GLYPH_MAX).join('').trim()
+				setGlyph(cut)
+				if (cut === '') clear([field])
+				else put(field, CUSTOM + cut)
+			}
+
+			const shapes = (field, now, color, dashed, extra) =>
 				h('div', { key: 'sp', style: S.picks }, [
+					// 额外那几格：目前只有收藏那一行的五角星。它**故意不在 SHAPES 里**
+					// （进了就会出现在四个角色的选择器里，"哪个是收藏"当场失效），
+					// 所以预览得走 favShape 解，不然画出来是个圆。
+					...(extra || []).map((one) =>
+						h('button', {
+							key: one, type: 'button', disabled: !on, title: one,
+							style: S.chip(now === one, on),
+							onClick: () => put(field, one),
+						}, preview(one, color, 13, dashed, favShape(one))),
+					),
 					...SHAPES.map((one) =>
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
@@ -2342,7 +4202,7 @@ window.__ModuleLoader__.load({
 							onClick: () => put(field, one.value),
 						}, preview(one.value, color, 13, dashed)),
 					),
-					// 传图：选完立刻在浏览器里缩成 64×64 的 PNG 再上传，见 shrink()
+					// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 					h('label', {
 						key: 'img',
 						title: `传一张图当节点。png / jpg / webp / svg 都行，尺寸不限 —— 会自动等比缩进 ${ICON_EDGE}×${ICON_EDGE}`,
@@ -2362,16 +4222,28 @@ window.__ModuleLoader__.load({
 							},
 						}),
 					]),
-					// 填字：emoji 也行
+					// 填字：emoji 也行。
+					// ⚠️ 这个框和详情卡里那个「字」框是**同一套规矩**，别只改一边：
+					//    · 不挂 maxLength —— 中文是先把拼音打进框里再换成汉字的，
+					//      "zhongguo" 八个字符才换来两个字，挂上限就永远拼不出来
+					//    · 拼字期间只改草稿，一个字节都不写设置（写一次就整棵树重画，
+					//      那一圈落在拼字中途会把候选冲掉 —— John 在详情卡那个框里报过）
+					//    · 上限在**落地之后**按码点裁，见 clampGlyph
 					h('input', {
-						key: 'own', type: 'text', maxLength: 4, disabled: !on,
-						value: String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '',
-						placeholder: '填字', title: '填一个字符当节点，emoji 也行',
-						style: S.own(String(now).startsWith(CUSTOM), on),
+						key: 'own', type: 'text', disabled: !on,
+						value: glyph === null ? (String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '') : glyph,
+						placeholder: '填字', title: `填几个字当节点，emoji 也行，最多 ${GLYPH_MAX} 个`,
+						autoCapitalize: 'off', autoCorrect: 'off',
+						style: Object.assign({}, S.own(String(now).startsWith(CUSTOM), on), canHover ? {} : { fontSize: '16px' }),
+						onCompositionStart: () => { composing.current = true },
+						onCompositionEnd: (event) => {
+							composing.current = false
+							land(field, event.target.value)
+						},
+						onBlur: () => { composing.current = false; setGlyph(null) },
 						onChange: (event) => {
-							const text = event.target.value.trim()
-							if (text === '') clear([field])
-							else put(field, CUSTOM + text)
+							if (composing.current) return setGlyph(event.target.value)
+							land(field, event.target.value)
 						},
 					}),
 				])
@@ -2386,7 +4258,7 @@ window.__ModuleLoader__.load({
 							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
 							onChange: (event) => put(spot.color, event.target.value),
 						}),
-						shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true),
+						shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true, spot.extra),
 					]),
 					h('p', { key: 'p', style: S.hint }, spot.hint),
 				])
@@ -2421,6 +4293,9 @@ window.__ModuleLoader__.load({
 		 * 树本体：把 graph + elide 的结果画成一条贴着聊天区右缘的导轨。
 		 */
 
+		/** ⏳ 那句解释。title 和触摸设备上戳开的浮层是同一份，别让它们各写一遍。 */
+		const REWIND_TIP = '这条会话正在跑，暂时读不了它的撤回记录 —— 读那个文件会打断正在跑的这一轮。\n树上画的是上一次读到的状态，撤回过的轮次可能还画着。这一轮跑完会自动更正。'
+
 		/** 树本体。 */
 		function Rail(props) {
 			const api = (props && props.api) || {}
@@ -2430,6 +4305,9 @@ window.__ModuleLoader__.load({
 			const activeTurn = useActiveTurn()
 			const settings = useObservable(api.settings) || {}
 			const dark = useColorScheme()
+			// 这块屏能不能悬停。能 → 原样走 hover intent；不能（iPad / iPhone / 触摸屏本）
+			// → 换成"点一下开卡片，再点一下才跳"。判据和切换时机见 pointer.js。
+			const canHover = useHover()
 			const tuned = settings.values || {}
 			const radius = Number.isFinite(tuned.visibleRadius) ? tuned.visibleRadius : RADIUS.fallback
 			// 主题：每个字段各自回退，缺一项不影响其他项
@@ -2459,20 +4337,99 @@ window.__ModuleLoader__.load({
 			const [tick, setTick] = react.useState(0)
 			const lastGraph = react.useRef(undefined) // 数据空窗期顶上去的那棵树，见下面 ⚠️
 			const labels = react.useMemo(() => readLabels(), [tick])
+			// 收藏清单和改名共用一个 `tick`：两者都存在 localStorage，都只在用户点了之后才变，
+			// 各自开一个计数器只会让"点了收藏，名字也跟着重读一遍"这种无害的事看起来像 bug。
+			const favorites = react.useMemo(() => readFavorites(), [tick])
+			// 每个收藏点自己挑的图标（没挑过的不在里面，画默认的五角星）。
+			// 跟着同一个 `tick` 重读，理由同上。
+			const favIcons = react.useMemo(() => readFavIcons(), [tick])
+			// 每个收藏点自己挑的颜色（没改过的不在里面，画默认的那个黄）。同一个 `tick`，理由同上。
+			const favColors = react.useMemo(() => readFavColors(), [tick])
+			// 刚被点的那颗星，用来播一次性动画（见 hooks.js 的 starAnimation）
+			const [flash, setFlash] = react.useState(null)
 
 			// 换悬停目标用 hover intent：卡片开着时，鼠标**停下来**才换目标，一直在动就什么都不抢。
 			// 这样从点走到卡片上的 ＋ 全程安全 —— 赶路途中压过多少个点都无所谓。
 			const restTimer = react.useRef(0)
 
 			const closeTimer = react.useRef(0)
+			// 鼠标此刻真正在哪。关卡片前拿它复核一次 —— 见下面 release 那段。
+			const pointer = react.useRef(null)
+			// 导轨最外层。触摸设备判"戳到外面了吗"和上面那次复核都要用它。
+			const shellRef = react.useRef(null)
+			// 卡片自己说"现在锁住"（名字改了还没定夺）。锁住期间**既不关也不换点** ——
+			// 手一滑划过别的点就把刚敲的名字吞掉，是最气人的那种 bug。
+			// 用 ref 不用 state：release 是个 useCallback([])，state 会让它一直拿到旧值。
+			const locked = react.useRef(false)
+			// 同理：release 是个 useCallback([])，直接闭包 canHover 会永远拿到第一帧那个值。
+			const hoverable = react.useRef(true)
+			hoverable.current = canHover
+			const onLock = react.useCallback((value) => { locked.current = value === true }, [])
 			const hold = react.useCallback(() => clearTimeout(closeTimer.current), [])
 			const release = react.useCallback(() => {
+				if (locked.current) return
+				// ⚠️ 触摸设备上这条**整个不能跑**。手指没有"移开"这个状态，可 iOS 在别处一戳
+				//    会补发一串合成鼠标事件（含 mouseleave），计时器一旦起来，卡片会在手指
+				//    还没够到 ＋ 的时候自己关掉。那边的关法是下面那个"戳到导轨外面去"。
+				if (!hoverable.current) return
 				clearTimeout(closeTimer.current)
-				closeTimer.current = setTimeout(() => setHover(null), 280)
+				// ⚠️ 到点了**先复核鼠标到底在不在导轨上**，别一见 mouseleave 就关。
+				//
+				//    症状（John 报的）：卡片展开着，点一下"取消收藏"，卡片自己收起来了，有时还不收。
+				//    原因：那一下会改版式 —— 收藏图标那排整个消失、导轨宽度也跟着变，
+				//    而卡片是 translateY(-50%) 竖直居中的，变矮就意味着**内容在鼠标底下挪走了**。
+				//    鼠标一动没动，浏览器照样派一个 mouseleave 过来，老写法当场起表、280ms 后关掉。
+				//    这一类"自己点自己引发的布局跳动"在改图标、改颜色、拆支线时全都会发生。
+				//
+				//    复核要等到计时器到点再做：点击那一帧版式还没落定，当场量到的是旧的。
+				//    还在导轨上就**接着等**（自己续一次表）—— 这样鼠标真走的时候照样关得掉，
+				//    不会因为漏了一次 mouseleave 就永远挂在那儿。
+				const tick = () => {
+					if (locked.current) return
+					if (overRail(shellRef.current, pointer.current)) {
+						closeTimer.current = setTimeout(tick, 280)
+						return
+					}
+					setHover(null)
+				}
+				closeTimer.current = setTimeout(tick, 280)
+			}, [])
+			// 只记鼠标位置，不做别的。被动监听，整页一个。
+			react.useEffect(() => {
+				if (typeof document === 'undefined') return undefined
+				const track = (event) => { pointer.current = { x: event.clientX, y: event.clientY } }
+				document.addEventListener('mousemove', track, { passive: true, capture: true })
+				return () => document.removeEventListener('mousemove', track, true)
 			}, [])
 			react.useEffect(() => () => clearTimeout(closeTimer.current), [])
 			react.useEffect(() => hideNativeRail(), [])
+			react.useEffect(() => installStarAnimation(), [])
+			// 动画只播一次：播完把标记摘掉，否则这颗星每重画一次就重播一次
+			react.useEffect(() => {
+				if (flash === null) return undefined
+				const timer = setTimeout(() => setFlash(null), STAR_ANIM_MS)
+				return () => clearTimeout(timer)
+			}, [flash])
 			react.useEffect(() => () => clearTimeout(restTimer.current), [])
+
+			// 触摸设备上卡片怎么关：戳导轨以外的任何地方。
+			// （鼠标那边靠 onMouseLeave + 280ms 计时器，手指上没有对应的东西。）
+			// 锁住时不关 —— 名字改了还没定夺，和 release 一个规矩。
+			react.useEffect(() => {
+				if (canHover || typeof document === 'undefined') return undefined
+				const away = (event) => {
+					if (locked.current) return
+					const shell = shellRef.current
+					if (shell && typeof shell.contains === 'function' && shell.contains(event.target)) return
+					clearTimeout(closeTimer.current)
+					setHover(null)
+				}
+				// 捕获阶段：卡片里的按钮会 stopPropagation，冒泡阶段收不到。
+				document.addEventListener('pointerdown', away, true)
+				return () => document.removeEventListener('pointerdown', away, true)
+			}, [canHover])
+			// ⏳ 的说明在 title 里，而 title 在触摸设备上永远不会出现 —— 戳一下摊开。
+			const [tip, setTip] = react.useState(false)
 
 			// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 			// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
@@ -2515,25 +4472,52 @@ window.__ModuleLoader__.load({
 				sessionCount: (listState.ids || []).length,
 			})
 
-			const { z, available, rowH, treeHeight, railWidth, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn)
+			// 这棵树上画出来最宽的那个形状占多少像素 —— 列距按它留（见 railLayout）。
+			// ⚠️ 扫的是**整棵树**，不是这一屏画出来的那几个。只扫可见的话，一颗星星滚进
+			//    省略窗口、又滚出去，导轨就会跟着变宽变窄 —— 和 maxColumn 用整棵树是同一条理由。
+			// ⚠️ 鱼眼的缩放不算进来：它只会把点画小，撑宽列的永远是没被淡化的那个。
+			const widestOf = (size) => {
+				let most = 0
+				for (const node of graph.nodes) {
+					const star = favorites.has(node.key) ? favShape(favIcons[node.key]) : undefined
+					const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star
+					most = Math.max(most, drawnWidth(shape, dotSizeOf(node.kind, size, 1)))
+				}
+				return most
+			}
+			const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, railRoom(box))
+			// 命中区宽度。列被宽形状撑开时得跟着撑，否则两列之间会裂出一条点不中的缝。
+			// 反过来列距比 Z.hit 窄时**不收窄** —— 命中区互相重叠是故意的（点太小，靠 nodeAt 取最近的那个）。
+			const hitW = Math.max(z.hit, lane)
 
 			const parts = []
 
 			// 先铺线。跨列的折角**必须先横后竖**：反过来的话从节点 2 岔到 4 的竖线
 			// 会一路压过节点 3 再拐弯，看着像"经过 3 转个弯到 4"。
-			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha) => {
+			const bar = (part, key) => h('span', {
+				key,
+				style: { position: 'absolute', left: `${part.left}px`, top: `${part.top}px`, width: `${part.width}px`, height: `${part.height}px`, background: part.color, opacity: part.alpha },
+			})
+			// ⚠️ 横段**先攒着**，等所有边都算完再交给 trimRuns 去重。
+			//    同一个父节点的几个孩子，横段是一组同心嵌套的线段，靠父节点那一截会被画 N 遍 ——
+			//    每层各带一个 opacity，叠出来就比别处黑，看着就是"横线一会粗一会细还上下起伏"
+			//    （John 报的）。竖段各在各的列上，不会撞，直接画。
+			const runs = []
+			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha, active) => {
 				const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo)
 				for (const part of cut) {
-					parts.push(h('span', {
-						key: `${part.tag}${key}`,
-						style: { position: 'absolute', left: `${part.left}px`, top: `${part.top}px`, width: `${part.width}px`, height: `${part.height}px`, background: color, opacity: alpha },
-					}))
+					const piece = Object.assign({ key, color, alpha, active }, part)
+					if (part.tag === 'hz') runs.push(piece)
+					else parts.push(bar(piece, `${part.tag}${key}`))
 				}
 			}
 
 			// 鱼眼：越靠近半径边界的点画得越小越淡
 			const eyeOf = (node) => fisheye(view.dimOf.get(node))
-			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme, eyeOf(node).scale)
+			// 收藏的图标可换，所以让位量得按**它实际挑的那个形状**算，不能一律按五角星。
+			// 挑了个十字（1.11 倍）却按星星（1.67 倍）让位，连线会在点外面凭空断一截。
+			const starOf = (node) => (favorites.has(node.key) ? favShape(favIcons[node.key]) : false)
+			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme, eyeOf(node).scale, starOf(node))
 
 			const edge = (node) => {
 				// 两头都在才连。只剩一头的那条边整个不画 —— 鱼眼的收尾靠点自己淡掉，
@@ -2542,9 +4526,11 @@ window.__ModuleLoader__.load({
 				const color = node.active ? fade(theme.currentColor, 0.6) : C.line
 				// 线按**淡的那一头**走：亮点连着淡点时，线跟着亮会显得那个淡点还没退场
 				const alpha = Math.min(eyeOf(node).alpha, eyeOf(node.parent).alpha)
-				line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha)
+				line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha, node.active === true)
 			}
 			for (const node of edgeOrder(graph.nodes)) edge(node)
+			// 去重之后再画。出来的横段互不重叠，所以 DOM 先后不再影响观感。
+			for (const run of trimRuns(runs)) parts.push(bar(run, `hz${run.key}~${run.part}`))
 
 			// 再画点
 			for (const node of graph.nodes) {
@@ -2560,19 +4546,40 @@ window.__ModuleLoader__.load({
 				const alpha = isHover ? 1 : eye.alpha
 				// ⚠️ 点上**不再**挂 onMouseEnter。换目标一律走容器那一个 mousemove 做 hover intent，
 				//    否则赶路途中压过的每个点都会抢走卡片 —— ＋ 就永远够不着（DESIGN.md §6）。
-				const go = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
+				const jump = () => (node.entry === undefined ? api.open(node.session.id) : api.jump(jumpTarget(node, current), node.entry.turn, node.entry.seq))
+				// 能悬停的机器上点一下就跳，和原来一模一样。手指上要两下：第一下把卡片开在
+				// 这个点上（＋ / ☆ / 改名这些只在卡片里，不先开出来就永远够不着），
+				// 第二下戳同一个点才真的跳过去 —— 规矩见 pointer.js 的 tapNext。
+				const go = () => {
+					if (canHover || tapNext(hover === null ? null : hover.node, node) === 'go') return jump()
+					clearTimeout(restTimer.current)
+					clearTimeout(closeTimer.current)
+					setHover({ node, y })
+					return undefined
+				}
+				// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
+				// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
+				const star = favorites.has(node.key) ? starSkin(isFocused, dark, favIcons[node.key], favColors[node.key], theme) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-				const shape = shapeOf(node.kind, node.active, theme)
-				const skin = inkOf(node.kind, node.active, isFocused, theme)
+				const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
+				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
 				parts.push(h('span', {
 					key: `d${node.key}`,
-					style: Object.assign({ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer', userSelect: 'none' }, dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha)),
+					style: Object.assign(
+						{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
+						TAPPABLE,
+						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
+						// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
+						//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
+						//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
+						{ animation: starAnimation(flash, node.key) },
+					),
 					onClick: go,
-				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, dashedOf(node.kind))))
+				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, star === undefined && dashedOf(node.kind))))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
-					style: { position: 'absolute', left: `${x - z.hit / 2}px`, top: `${y - rowH / 2}px`, width: `${z.hit}px`, height: `${rowH}px`, cursor: 'pointer' },
+					style: Object.assign({ position: 'absolute', left: `${x - hitW / 2}px`, top: `${y - rowH / 2}px`, width: `${hitW}px`, height: `${rowH}px`, cursor: 'pointer' }, TAPPABLE),
 					onClick: go,
 				}))
 			}
@@ -2587,12 +4594,19 @@ window.__ModuleLoader__.load({
 				.filter((node) => view.shown.has(node))
 				.map((node) => ({ x: xOf(node.column), y: yOf(rowOfNode(node)), node }))
 			const top = box.top + Z.pad
-			const right = Math.max(0, window.innerWidth - box.right) + Z.gap
+			// 贴着聊天区右缘。空间不够是靠上面压列距解决的（railRoom），不是靠挪位置。
+			const right = railRight(box, railWidth, window.innerWidth)
 			const height = available
 
 			const shell = h(
 				'div',
 				{
+					// 这个记号只有一个用处：`isCovered` 打探针时认出"压在上面的是我自己"，
+					// 否则导轨一压到探针上就会把自己判成被遮挡，然后来回闪。
+					// ⚠️ 这个 ref **一定要挂上**。触摸设备上「戳到导轨外面去才关卡片」那条靠它认边界，
+					//    ref 为 null 时那个判断整条落空，等于戳哪儿都算外面 —— 卡片上的 ＋ 永远按不出结果。
+					ref: shellRef,
+					[RAIL_MARK]: '1',
 					style: { position: 'fixed', top: `${top}px`, height: `${height}px`, right: `${right}px`, width: `${railWidth}px`, zIndex: 40, pointerEvents: 'none' },
 					onMouseLeave: release,
 				},
@@ -2601,13 +4615,33 @@ window.__ModuleLoader__.load({
 				// 放在导轨上沿那 16px 空当里，不压到任何一个点；小、淡、鼠标停上去才解释。
 				!isRewindPending(outlines) ? null : h('span', {
 					key: 'rewind-pending',
-					title: '这条会话正在跑，暂时读不了它的撤回记录 —— 读那个文件会打断正在跑的这一轮。\n树上画的是上一次读到的状态，撤回过的轮次可能还画着。这一轮跑完会自动更正。',
-					style: {
+					title: REWIND_TIP,
+					style: Object.assign({
 						position: 'absolute', top: '-13px', right: '0px',
-						fontSize: '10px', lineHeight: '12px', color: C.muted, opacity: 0.55,
-						pointerEvents: 'auto', cursor: 'help', userSelect: 'none',
-					},
-				}, '⏳'),
+						fontSize: '10px', lineHeight: '12px', color: C.muted,
+						pointerEvents: 'auto', cursor: 'help',
+					}, TAPPABLE),
+					// ⚠️ 这行字只写在 title 里，而 **title 在触摸设备上永远不会出现** ——
+					//    手指上没有"停在上面"这个状态。于是 iPad 用户看到的就是一个不明所以的
+					//    ⏳ 加一棵画着旧形状的树，正是这条提示要避免的那种"这插件又坏了"。
+					//    能悬停的机器上不挂 onClick：那边 title 已经够了，多一个点开的浮层只会碍事。
+					onClick: canHover ? undefined : () => setTip((was) => !was),
+				}, [
+					// ⚠️ 那 0.55 的透明度只能压在这个字上，**不能留在外面那层**：
+					//    opacity 对子元素是连乘的，压在外层的话戳开的说明也跟着半透明，
+					//    小字加半透明，正是这条提示最不该长成的样子。
+					h('span', { key: 'g', style: { opacity: 0.55 } }, '⏳'),
+					!tip || canHover ? null : h('div', {
+						key: 'tip',
+						style: {
+							position: 'absolute', top: '16px', right: '0px', width: `${Z.card}px`, maxWidth: '70vw',
+							background: C.card, color: C.text, border: `1px solid ${C.line}`, borderRadius: '7px',
+							boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
+							font: '11.5px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif',
+							whiteSpace: 'pre-wrap', opacity: 1, zIndex: 1,
+						},
+					}, REWIND_TIP),
+				]),
 				h(
 					'div',
 					{
@@ -2617,8 +4651,15 @@ window.__ModuleLoader__.load({
 						//   · 已经开着  → 每次移动都把计时器清掉；只有**停住** restMs 才换目标
 						// 所以从点走到卡片上的 ＋ 全程不会被抢：只要手还在动，谁都抢不走。
 						onMouseMove: (event) => {
+							// ⚠️ 触摸设备上这个 handler 必须整个歇着。iOS 为了兼容老页面，会在每次
+							//    点击**之前合成一个 mousemove**；它会当场把卡片开在被戳的那个点上，
+							//    紧接着的 click 一看"卡片已经停在我身上"就直接跳走了 ——
+							//    两下点的规矩当场作废，等于什么都没改。
+							if (!canHover) return
+							// 卡片锁住时谁都别想换点，但计时器还是要按住（不然它自己会关）
+							if (locked.current) return hold()
 							const rect = event.currentTarget.getBoundingClientRect()
-							const at = nodeAt(seats, event.clientX - rect.left, event.clientY - rect.top, z.hit, rowH)
+							const at = nodeAt(seats, event.clientX - rect.left, event.clientY - rect.top, hitW, rowH)
 							hold()
 							clearTimeout(restTimer.current)
 							const want = hoverNext(hover === null ? null : hover.node, at)
@@ -2643,8 +4684,25 @@ window.__ModuleLoader__.load({
 							const at = cutPointOf(node)
 							if (at !== undefined) reshape(shapeOps.cut(at.key))
 						},
-						railWidth, labels, hold, release,
+						railWidth, labels, hold, release, onLock,
+						favorites, favIcons, favColors,
+						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
+						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
+						starInk: starSkin(true, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).fill,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
+						onFavorite: (key, on) => {
+							writeFavorite(key, on)
+							setFlash({ key, on })
+							setTick((value2) => value2 + 1)
+						},
+						onFavIcon: (key, want) => {
+							writeFavIcon(key, want)
+							setTick((value2) => value2 + 1)
+						},
+						onFavColor: (key, want) => {
+							writeFavColor(key, want)
+							setTick((value2) => value2 + 1)
+						},
 						onFork: (node) => {
 							const action = branchAction(node)
 							if (action === 'none') return undefined
@@ -2683,12 +4741,32 @@ window.__ModuleLoader__.load({
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 画
-			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
+			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
+			// 形状怎么算出来的：面积、按面积配齐的放大倍数、正 n 边形、十字
+			polyArea, growOf, regularPoly, crossPoly,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
+			// 自定义字：上限、占几倍宽、该用多大字号
+			GLYPH_MAX, GLYPH_SPAN, glyphGrow, glyphFont,
+			// 收藏：五角星的形状、配色、以及点下去那一下的动画
+			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
+			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
+			BACKDROP, CONTRAST_MIN, STAR_EDGE, starInkOf, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
+			// 节点上的用户标注（改名 / 收藏）
+			readLabels, writeLabel, readFavorites, writeFavorite, nextFavorites,
+			readFavIcons, writeFavIcon, nextFavIcons,
+			readFavColors, writeFavColor, nextFavColors, isColor,
+			// 详情卡里能离线测的那两件事：改没改过、这一下是不是输入法在拼字
+			isDirty, isComposingKey, keepsCard, clampGlyph,
+			// 焦点被宿主抢走时抢不抢回来
+			shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP,
 			// 配色与明暗
 			PALETTE, paletteOf, themeFrom, isDark, isHex,
 			// 几何
-			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout,
+			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN,
+			// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
+			contentRightOf, isCovered, RAIL_MARK,
+			// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
+			tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
 			// 撤回的重拉节奏
 			isRewindPending, rewindRetryDelay,
 			// 设置

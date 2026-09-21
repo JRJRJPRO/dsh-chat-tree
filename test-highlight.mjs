@@ -728,10 +728,65 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(shapeField.accept('char:★'), 'char:★ 该是合法形状')
 	check(shapeField.accept('char:🌟'), 'emoji 也该收（代理对算一个字）')
 	check(!shapeField.accept('char:'), '空的自定义值不该算数')
-	check(!shapeField.accept('char:一二三'), '塞一串字进去不该算数')
 	check(!shapeField.accept('八边形'), '认不得的预设名不该算数')
 	check(pure.shapeSpec('char:★').glyph === '★', '自定义形状没把字取出来')
-	check(pure.shapeSpec('char:一二三').value === 'circle', '超长的自定义值该退回圆形')
+
+	// 上限是 GLYPH_MAX（5 个**码点**），输入框和渲染共用同一份 —— 以前输入框写 4、
+	// shapeSpec 只认 2，于是打到第 3 个字时框里有字、树上却悄悄退回默认。
+	const full = '一二三四五'
+	check([...full].length === pure.GLYPH_MAX, '这条用例按 GLYPH_MAX 写的，上限改了就该改它')
+	check(shapeField.accept(`char:${full}`), `正好 ${pure.GLYPH_MAX} 个字该收`)
+	check(pure.shapeSpec(`char:${full}`).glyph === full, `正好 ${pure.GLYPH_MAX} 个字该照原样画出来`)
+	check(!shapeField.accept(`char:${full}六`), `超过 ${pure.GLYPH_MAX} 个不该算数`)
+	check(pure.shapeSpec(`char:${full}六`).value === 'circle', '超长的自定义值该退回圆形')
+	// 裁的那一手按码点算：emoji 的 .length 是 2，按它算一个 emoji 就吃掉两格配额
+	check(pure.clampGlyph('🙂🙂🙂🙂🙂🙂') === '🙂🙂🙂🙂🙂', '裁字该按码点数，不是 .length')
+	check(pure.clampGlyph('一二三') === '一二三', '没超上限的不该被动')
+	check(pure.clampGlyph('') === '' && pure.clampGlyph(undefined) === '', '空值不该炸')
+
+	// 字是横着摊开的：宽度跟着字数长，高度永远只有一个字高。
+	// 列距按宽度留（否则隔壁列被糊住），连线让位按高度留（否则上下凭空空两倍）。
+	const one = pure.shapeSpec('char:甲')
+	const three = pure.shapeSpec('char:甲乙丙')
+	check(pure.drawnWidth(three, 10) > pure.drawnWidth(one, 10), '三个字该比一个字宽')
+	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10), '不管几个字，高度都只有一个字高')
+	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * pure.GLYPH_SPAN,
+		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍，不然一个 5 字标签能把整棵树的列距撑开`)
+	// 字号跟着字数缩，好让这几个字正好填满那个封顶的宽度
+	check(pure.glyphFont('甲', 10) === 10, '一个字该用满字号')
+	check(pure.glyphFont('甲乙', 10) === 10, '两个字宽度也跟着翻倍，字号不用缩')
+	check(pure.glyphFont(full, 10) < pure.glyphFont('甲乙丙', 10), '宽度封顶之后，字数越多字号越小')
+	check(pure.glyphFont(full, 10) * [...full].length <= 10 * pure.GLYPH_SPAN + 1e-9, '五个字合起来不该超出封顶宽度')
+
+	// ⑤ 收藏的颜色：默认那个黄，改过的按点走
+	const gold = pure.starSkin(true, true)
+	const red = pure.starSkin(true, true, undefined, '#F85149')
+	check(gold.fill === pure.STAR_COLOR, '没改过颜色的收藏，星身该还是那个黄')
+	check(red.fill === '#f85149', `改过颜色的收藏，星身该用他挑的那个（大小写要归一），实际 ${red.fill}`)
+	// ⚠️ 这个字符串直接进 CSS，认宽了就是个注入口子
+	for (const bad of ['red', '#fff', 'url(javascript:1)', '#12345g', '', undefined, null, 123]) {
+		check(pure.starSkin(true, true, undefined, bad).fill === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
+	}
+	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色模式下描边该被压深')
+	check(pure.starSkin(true, false).fill === pure.STAR_COLOR, '星身不该跟着明暗变 —— 变的只有描边')
+	// 用户自己挑的颜色**也过 fitContrast** —— 挑一个亮绿，白底上同样看不清
+	check(pure.contrastRatio(pure.starSkin(true, true, undefined, '#56d364').ink, '#56d364') >= pure.STAR_EDGE - 0.05,
+		'深底上描边也得比星身深一档，不然星星是块没轮廓的色斑')
+	check(pure.contrastRatio(pure.starSkin(true, false, undefined, '#56d364').ink, '#ffffff') >= pure.CONTRAST_MIN - 1e-9,
+		'用户挑的颜色在亮色下也该被压到够对比度')
+	check(pure.starSkin(true, false, undefined, '#56d364').fill === '#56d364', '星身该是他挑的原色，不是压深过的')
+	// 存盘那一层：改过的才进字典，恢复默认是**删掉**而不是存一个黄
+	check(pure.nextFavColors({}, 'a:1', '#58A6FF')['a:1'] === '#58a6ff', '存进去该归一成小写')
+	check(pure.nextFavColors({ 'a:1': '#58a6ff' }, 'a:1', '')['a:1'] === undefined, '恢复默认该把这一条删掉，而不是存一个默认色')
+	check(pure.nextFavColors({ 'a:1': '#58a6ff' }, 'a:1', '红')['a:1'] === undefined, '认不得的值等同于恢复默认')
+	check(Object.keys(pure.nextFavColors({ 'a:1': '#58a6ff' }, '', '#fff')).length === 1, '空 key 不该改动任何东西')
+	const before = { 'a:1': '#58a6ff' }
+	pure.nextFavColors(before, 'b:2', '#56d364')
+	check(before['b:2'] === undefined, 'nextFavColors 必须是纯函数，不许改原来那张字典')
+	// 预设色板：第一格是"恢复默认"，其余都得是合法色值
+	check(pure.FAV_COLORS[0] === '', '色板第一格该是恢复默认（空串）')
+	check(pure.FAV_COLORS.slice(1).every(pure.isColor), '色板里有认不得的色值')
+	check(new Set(pure.FAV_COLORS).size === pure.FAV_COLORS.length, '色板里有重复的颜色')
 
 	const starred = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: 'char:★' }))
 	check(starred.background === 'none', '画成字的节点不该再有底色')
@@ -885,6 +940,329 @@ console.log('用例 18：普通节点在亮色下必须还是"灰圈 + 淡填充
 	check(pure.isHex(skin.ink), `描边色应该是真实色值，实际 ${skin.ink}`)
 	check(skin.ink !== skin.fill, '描边和填充同色 —— 那就不是"圈"了')
 	console.log(`  填充 = ${skin.fill}（跟宿主主题走），描边 = ${skin.ink}`)
+}
+
+console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才填实')
+{
+	const points = pure.starPoly()
+	check(points.length === 10, `五角星该有 10 个顶点，实际 ${points.length}`)
+	check(points.every(([x, y]) => x >= -0.001 && x <= 1.001 && y >= -0.001 && y <= 1.001), '顶点跑出单位框了，画出来会被裁掉一个角')
+	// 外角顶格、内角收进去；两者一样大的话画出来是个正十边形，不是星
+	const radius = (i) => Math.hypot(points[i][0] - 0.5, points[i][1] - 0.5)
+	check(Math.abs(radius(0) - 0.5) < 0.001, `外角没顶格：${radius(0)}`)
+	check(radius(1) < radius(0) * 0.5, `内角收得不够（${radius(1).toFixed(3)} / ${radius(0).toFixed(3)}），看着会是个十边形不是星`)
+	// ⚠️ 面积要和圆配齐（和三角同一条规矩）。直接同边长的话，五个角把面积摊开，
+	//    星星看着比旁边的圆小一圈 —— 而它恰恰是最该被一眼看见的那个点。
+	check(pure.STAR.grow > 1.5 && pure.STAR.grow < 1.85, `星星的 grow 是 ${pure.STAR.grow}，按面积配齐应该在 1.67 上下`)
+	check(pure.STAR.poly !== undefined && pure.STAR.poly.length === 10, '星星没带上顶点，会退化成一个方块')
+
+	// ⚠️ 收藏色现在**只有一个**。亮色下那版由 fitContrast 算出来，不再手写第二个色值。
+	check(typeof pure.STAR_COLOR === 'string' && pure.isHex(pure.STAR_COLOR), `星星色该是一个合法色值，实际 ${JSON.stringify(pure.STAR_COLOR)}`)
+	const chan = Number.parseInt(pure.STAR_COLOR.slice(1), 16)
+	check(((chan >> 16) & 255) > (chan & 255) && ((chan >> 8) & 255) > (chan & 255), `${pure.STAR_COLOR} 不像黄色`)
+
+	// ===== 一个色值，两种底色都得能看 =====
+	// John 报的：暗色下那个黄挺好，浅色下"特别黑"。老写法是手写两版，
+	// 亮色那版压到 #b8860b（亮度 0.27）才够对比度 —— 够是够了，但它已经不像黄了。
+	{
+		const gold = pure.STAR_COLOR
+		// ① 分工：**星身填亮色，描边扛对比度**。所以基色**本来就不该**自己够对比度 ——
+		//    它只负责"看着是黄的"。把这个前提钉住，免得哪天有人"顺手"把基色压深。
+		check(pure.relLuminance(gold) > 0.6, `基色亮度 ${pure.relLuminance(gold).toFixed(2)} 太低了 —— 它只管填充，该亮`)
+		check(pure.contrastRatio(gold, pure.BACKDROP.dark) >= 7, '基色在深底上该一眼就看见')
+		const hue = pure.hexToHsl(gold).h
+		check(hue > 35 && hue < 55, `色相 ${hue.toFixed(0)}° 不在暖金那一段（35~55）—— 再往上就是发酸的柠檬黄`)
+
+		// ② 描边两条下限都要满足，两种底色各由其中一条说了算
+		for (const dark of [true, false]) {
+			const skin = pure.starSkin(false, dark)
+			const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
+			check(skin.fill === gold, `${dark ? '暗' : '亮'}色下星身该是基色本身`)
+			check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
+				`${dark ? '暗' : '亮'}色下描边对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
+			check(pure.contrastRatio(skin.ink, skin.fill) >= pure.STAR_EDGE - 0.05,
+				`${dark ? '暗' : '亮'}色下描边对星身才 ${pure.contrastRatio(skin.ink, skin.fill).toFixed(2)}:1 —— 边描不出来`)
+			// 外发光用星身那个亮色，不用压深过的描边色（深色光晕看着像脏了一圈）
+			check(skin.accent === gold, `${dark ? '暗' : '亮'}色下外发光该用亮色`)
+		}
+
+		// ③ 深底那条**必须由"对星身"说了算**：基色对深底本来就 13:1，
+		//    只看"对底色 3:1"的话描边 = 星身，那颗星就是一块没有轮廓的黄斑。
+		const onDark = pure.starSkin(false, true)
+		check(onDark.ink !== gold, '深底上描边和星身同色了 —— 星星成了没轮廓的色斑')
+		check(pure.relLuminance(onDark.ink) < pure.relLuminance(gold), '描边该比星身深')
+
+		// ④ 只动明度：色相和饱和度一个都不许变，不然那就不是"同一个颜色"了
+		const lit = pure.starSkin(false, false).ink
+		const was = pure.hexToHsl(gold)
+		const now = pure.hexToHsl(lit)
+		check(Math.abs(was.h - now.h) < 2, `色相被动了：${was.h.toFixed(1)}° → ${now.h.toFixed(1)}°`)
+		check(Math.abs(was.s - now.s) < 0.06, `饱和度被动了：${was.s.toFixed(2)} → ${now.s.toFixed(2)}`)
+		check(now.l < was.l, '白底上描边该往深里调')
+
+		// ⑤ 压到**刚好够**就停，不许压过头（越压越不像黄）
+		const ratio = pure.contrastRatio(lit, pure.BACKDROP.light)
+		check(ratio <= pure.CONTRAST_MIN + 0.15, `亮色下压过头了（${ratio.toFixed(2)}:1）`)
+
+		// ⑥ HSL round-trip 不许跑偏，不然上面每一条都建在沙子上
+		for (const hex of ['#ffd43b', '#000000', '#ffffff', '#58a6ff', '#7f7f7f']) {
+			check(pure.hslToHex(pure.hexToHsl(hex)) === hex, `${hex} 转一圈回来变成了 ${pure.hslToHex(pure.hexToHsl(hex))}`)
+		}
+		check(pure.fitContrast('红', '#fff', 3) === '红' && pure.relLuminance('红') === 0, '认不得的色值该原样退回')
+
+		// ⑦ 换成任何一个颜色都得站得住 —— 这才是"配色方案"而不是"调对了一个数"。
+		//    用户能在设置里改默认色、也能给单个点挑色，所以每一个都要过这两条下限。
+		for (const seed of ['#ffd43b', ...pure.FAV_COLORS.slice(1), '#1a1a1a', '#f0f0f0', '#ffffff', '#000000']) {
+			for (const dark of [true, false]) {
+				const skin = pure.starSkin(false, dark, undefined, seed)
+				const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
+				check(skin.fill === seed.toLowerCase(), `${seed} 的星身被改动了：${skin.fill}`)
+				check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
+					`${seed} 在${dark ? '暗' : '亮'}色下，描边对底色只有 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
+				check(pure.contrastRatio(skin.ink, skin.fill) >= pure.STAR_EDGE - 0.05,
+					`${seed} 在${dark ? '暗' : '亮'}色下，描边对星身只有 ${pure.contrastRatio(skin.ink, skin.fill).toFixed(2)}:1`)
+			}
+		}
+		// ⚠️ 描边优先往**深**里走（浅描边读起来像光晕）。只有深到底也够不着时才让步 ——
+		//    近黑色配深底就是那一档：它比底色还深，再深下去只会和底色糊在一起。
+		check(pure.relLuminance(pure.starInkOf('#ffd43b', false)) < pure.relLuminance('#ffd43b'), '正常情况下描边该比星身深')
+		check(pure.relLuminance(pure.starInkOf('#1a1a1a', true)) > pure.relLuminance('#1a1a1a'), '近黑色配深底时该让步往亮里走')
+
+		console.log(`  一个色 ${gold}（亮度 ${pure.relLuminance(gold).toFixed(2)}、色相 ${hue.toFixed(0)}°）：` +
+			`描边 深底 ${onDark.ink} / 白底 ${lit}（${ratio.toFixed(2)}:1）`)
+	}
+
+	// ⚠️ "平时空心、走到那一轮才填实"这条**取消了**（原来是 idle.fill 只有 0.12 alpha）。
+	//    空心意味着只剩一圈描边，而描边为了对比度必须压深 —— 白底上看到的就是一圈黑线。
+	//    现在一律填实，"正看着这一轮"改由外发光表示（dotStyle 里那条 drop-shadow）。
+	const idle = pure.starSkin(false, true)
+	const here = pure.starSkin(true, true)
+	check(idle.fill === here.fill && idle.fill === pure.STAR_COLOR, '收藏的星身该恒为基色，不随"是不是当前点"变')
+	check(idle.ink === here.ink, '描边色不该随"是不是当前点"变')
+	check(idle.fill !== idle.ink, '星身和描边同色了 —— 星星没有轮廓')
+	// 那么当前点靠什么区分？靠 dotStyle 里那条只在 focused 时挂的外发光。
+	// 参数顺序：(kind, active, hover, size, focused, theme, alpha, star)
+	const lit2 = pure.dotStyle('normal', false, false, 11, true, pure.THEME, 1, here)
+	const dim2 = pure.dotStyle('normal', false, false, 11, false, pure.THEME, 1, idle)
+	check(lit2.filter !== 'none' && dim2.filter === 'none',
+		'当前点的外发光没了 —— 星身不再区分明暗档之后，区分"正看着这一轮"全靠它')
+	console.log(`  10 个顶点、grow ${pure.STAR.grow}；星身 ${idle.fill}、描边 ${idle.ink}，当前点靠外发光`)
+}
+
+console.log('用例 20：收藏过的点不跟着"路径外"那一档淡下去')
+{
+	const theme = pure.themeFrom({}, {}, true)
+	const star = pure.starSkin(false, true)
+	const plain = pure.dotStyle('normal', false, false, 11, false, theme)
+	const fancy = pure.dotStyle('normal', false, false, 11, false, theme, undefined, star)
+	// 收藏的意思就是"待会儿我要回来找它"，而它多半不在当前路径上。
+	// 淡到 0.4 等于白收藏 —— 这一条钉着它。
+	check(plain.opacity === 0.4, `普通点在路径外应该是 0.4，实际 ${plain.opacity}`)
+	check(fancy.opacity > plain.opacity, `收藏过的点在路径外还是 ${fancy.opacity}，和没收藏一样淡`)
+	// 多边形靠里面的 <svg> 成形，外面那个方框必须关掉，否则星星外面套一圈方边
+	check(fancy.borderWidth === '0px', `星星外面套了 ${fancy.borderWidth} 的方框`)
+	check(fancy.background === 'none', `星星的方框还垫着底色 ${fancy.background}`)
+	check(String(fancy.borderColor).includes(star.ink.slice(1)) || fancy.borderColor === star.ink, '星星没用自己的黄')
+	// key 集合不许因为多传一个参数就变（React 会把"上一帧有这一帧没有"的属性置空）
+	check(JSON.stringify(Object.keys(plain).sort()) === JSON.stringify(Object.keys(fancy).sort()), '带不带 star，dotStyle 的 key 集合必须一样')
+	// 线要按星星**实际画多大**让开，不然一收藏，连线就戳进下面那两个角里
+	const near = pure.reachFor('normal', true, 11, theme, 1, false)
+	const far = pure.reachFor('normal', true, 11, theme, 1, true)
+	check(far > near, `星星的让开量 ${far} 没比圆 ${near} 大 —— 连线会戳进角里`)
+	console.log(`  路径外 ${plain.opacity} → ${fancy.opacity}；方框关掉；连线让开 ${near} → ${far.toFixed(1)}`)
+}
+
+console.log('用例 21：收藏清单存得住、删得掉，且不越改越脏')
+{
+	const empty = new Set()
+	const one = pure.nextFavorites(empty, 'a:1', true)
+	check(one.has('a:1') && empty.size === 0, 'nextFavorites 改了传进来的那个集合 —— 纯函数不该有副作用')
+	check(pure.nextFavorites(one, 'a:1', false).size === 0, '取消收藏没删掉')
+	check(pure.nextFavorites(one, 'a:1', true).size === 1, '同一个点收藏两次变成两条')
+	check(pure.nextFavorites(one, '', true).size === 1, '空 key 也被收进去了')
+
+	// 存进去再读出来（test-kit 的 localStorage 是真存得住的）
+	pure.writeFavorite('s1:3', true)
+	pure.writeFavorite('root', true)
+	check(pure.readFavorites().has('s1:3') && pure.readFavorites().has('root'), '存进去读不出来')
+	pure.writeFavorite('s1:3', false)
+	check(!pure.readFavorites().has('s1:3'), '取消收藏之后还在清单里')
+	check(pure.readFavorites().has('root'), '取消一个把别的也带走了')
+	console.log('  集合算术无副作用；存盘读盘对得上；取消不误伤别人')
+}
+
+console.log('用例 22：中文输入法拼字那一下的回车，不算"确认改名"')
+{
+	// ⚠️ John 报的那条：双击改名后用微软拼音打字，打两个字母卡片就自己关了。
+	//    选词确认按的是空格或回车，而那一下会先派发一个 keydown{key:'Enter'}，
+	//    老写法看见 Enter 就收工 —— 名字还没打完就没了。
+	check(pure.isComposingKey({ key: 'Enter', nativeEvent: { isComposing: true } }, false) === true, '拼字中途的回车没被识别出来')
+	check(pure.isComposingKey({ key: 'Enter', nativeEvent: { isComposing: false } }, false) === false, '真按下的回车被当成拼字了 —— 那就永远存不了')
+	// Safari 和几个国产输入法不给 isComposing，只给 composition 事件，所以要兜一层
+	check(pure.isComposingKey({ key: 'Enter' }, true) === true, 'compositionstart 记下的状态没起作用')
+	check(pure.isComposingKey({ key: 'Enter', isComposing: true }, false) === true, '挂在事件自己身上的 isComposing 没认')
+	check(pure.isComposingKey(undefined, false) === false, '没有事件时不该当成拼字')
+
+	// 改没改过：`null` = 没动过文本框，和"改成空串"是两回事
+	check(pure.isDirty(null, '旧名字') === false, '没动过就被当成改过了 —— 卡片会一直锁着关不掉')
+	check(pure.isDirty('旧名字', '旧名字') === false, '原样敲一遍也算改过')
+	check(pure.isDirty(' 旧名字 ', '旧名字') === false, '首尾空格被当成一次修改')
+	check(pure.isDirty('', '旧名字') === true, '清空名字（回到默认）是一次真实的修改，不能当没改')
+	check(pure.isDirty('新名字', '旧名字') === true, '真改了却没认出来')
+	console.log('  拼字中途的 Enter/Esc 全部让给输入法；清空算改、原样不算改')
+}
+
+console.log('用例 23：收藏的动画只在被点的那一颗上播，且收藏和取消不是同一条')
+{
+	check(pure.starAnimation(null, 'a:1') === 'none', '没人被点的时候也在播动画')
+	check(pure.starAnimation({ key: 'a:1', on: true }, 'b:2') === 'none', '点了一颗星，别的点跟着一起抖')
+	const on = pure.starAnimation({ key: 'a:1', on: true }, 'a:1')
+	const off = pure.starAnimation({ key: 'a:1', on: false }, 'a:1')
+	check(on.includes(pure.STAR_ANIM.on) && on.includes(String(pure.STAR_ANIM_MS)), `收藏的动画不对：${on}`)
+	check(off.includes(pure.STAR_ANIM.off), `取消收藏的动画不对：${off}`)
+	// 取消不是把收藏倒放：一个是"转出来"，一个是"缩回去"，倒放看着像卡了一帧
+	check(pure.STAR_ANIM.on !== pure.STAR_ANIM.off, '收藏和取消用了同一条关键帧')
+	console.log(`  只认被点的那个 key；收藏 ${pure.STAR_ANIM.on} / 取消 ${pure.STAR_ANIM.off}，${pure.STAR_ANIM_MS}ms`)
+}
+
+console.log('用例 24：新加的形状 —— grow 一律算出来，且不许有两个同名')
+{
+	// ⚠️ 这一整条是给"图形库"加料时的护栏。以前 grow 是注释里算一遍、代码里抄一个
+	//    两位小数，加错的那个"看着小一圈"没有任何断言会响。
+	const ids = pure.SHAPES.map((one) => one.value)
+	check(new Set(ids).size === ids.length, `SHAPES 里有重名：${ids.join(',')}`)
+	check(ids.length >= 10, `预设形状只有 ${ids.length} 个，这张表本来就是拿来加的`)
+	// 五角星是"收藏"的专属记号，混进 SHAPES 就会出现在四个角色的选择器里，
+	// 于是"一眼看出哪个是收藏"当场失效
+	check(!ids.includes('star'), 'star 混进 SHAPES 了 —— 它是收藏的专属记号')
+
+	// 每个形状都得能被 shapeSpec 解回自己，否则设置里选了也存不住（isShape 那关过不去）
+	for (const one of pure.SHAPES) {
+		check(pure.shapeSpec(one.value).value === one.value, `shapeSpec 认不得 ${one.value}，设置里选了会退回圆`)
+	}
+
+	// 面积配齐：每个多边形按自己的 grow 画出来，面积都该落在正圆附近
+	for (const one of pure.SHAPES) {
+		if (one.poly === undefined) continue
+		const area = pure.polyArea(one.poly) * one.grow * one.grow
+		check(Math.abs(area - Math.PI / 4) < 0.02, `${one.value} 和正圆的面积没配齐：${area.toFixed(3)} vs ${(Math.PI / 4).toFixed(3)}`)
+		// ⚠️ 这一条是上面那条抓不住的：自交图形的净面积会抵成浮点残渣（1.6e-17），
+		//    配齐检查照样通过（残渣 × 天文数字的 grow 正好等于 π/4），可那个点会占满屏幕。
+		//    沙漏第一版就是这么写的，grow 实测 2.4 亿倍。
+		check(pure.polyArea(one.poly) > 0.05, `${one.value} 的顶点自交了 —— 面积抵成 ${pure.polyArea(one.poly)}，grow 会除出天文数字`)
+		check(one.grow < 3, `${one.value} 的 grow 是 ${one.grow}，这不可能是个正常形状`)
+	}
+
+	// 鞋带公式本身
+	check(Math.abs(pure.polyArea([[0, 0], [1, 0], [1, 1], [0, 1]]) - 1) < 1e-9, '单位正方形的面积不是 1')
+	check(Math.abs(pure.polyArea([[0, 0], [1, 0], [0.5, 1]]) - 0.5) < 1e-9, '底 1 高 1 的三角面积不是 0.5')
+	// 自交四边形：两个三角朝向相反，鞋带公式把它们抵成浮点残渣。
+	// `growOf` 必须把这种当退化处理，否则 grow 会除出两亿多倍。
+	const crossed = [[0, 0], [1, 0], [0, 1], [1, 1]]
+	check(pure.polyArea(crossed) < 1e-6, '自交四边形的净面积居然不是 0 —— 那这条护栏的前提就变了')
+	check(pure.growOf(crossed) === 1, '自交四边形没被当成退化 —— grow 会除出天文数字，点会占满整块屏')
+	check(pure.growOf([[0, 0], [0, 0], [0, 0]]) === 1, '面积为 0 的多边形应该退回 grow=1，而不是除出个 Infinity')
+
+	// 正 n 边形：顶点数对、都在外接圆上、第一个点在正上方
+	const hex = pure.regularPoly(6)
+	check(hex.length === 6, `六边形给了 ${hex.length} 个顶点`)
+	check(hex.every(([x, y]) => Math.abs(Math.hypot(x - 0.5, y - 0.5) - 0.5) < 1e-9), '顶点没落在外接圆上')
+	check(Math.abs(hex[0][0] - 0.5) < 1e-9 && hex[0][1] < 0.01, '第一个顶点不在正上方')
+	check(pure.regularPoly(2).length === 3, '边数小于 3 时没夹到 3，会画出一条线段')
+
+	// 十字：12 个顶点，臂厚对得上
+	const cross = pure.crossPoly(0.4)
+	check(cross.length === 12, `十字给了 ${cross.length} 个顶点`)
+	check(Math.abs(pure.polyArea(cross) - (2 * 0.4 - 0.4 * 0.4)) < 1e-9, '十字的面积和 2t-t² 对不上')
+	check(pure.crossPoly(5).length === 12 && pure.polyArea(pure.crossPoly(5)) < 1, '臂厚超出 0..1 时没夹住')
+	console.log(`  ${ids.length} 个预设、无重名、面积逐个配齐正圆；n 边形与十字的顶点算得对`)
+}
+
+console.log('用例 25：收藏能换图标，但换不掉那个黄')
+{
+	// 默认、空、以及认不得的一律退回五角星 —— **不是圆**。
+	// `shapeSpec` 认不得时退回的是圆，收藏那条路要是直接用它，
+	// 手改一个字就能让一屏收藏全变成普通圆点。
+	check(pure.favShape(undefined).value === 'star', '没挑过图标时不是五角星')
+	check(pure.favShape('').value === 'star', '空串没退回五角星')
+	check(pure.favShape('  ').value === 'star', '全空格没退回五角星')
+	check(pure.favShape('star').value === 'star', "显式写 'star' 没认出来")
+	check(pure.favShape('没这个形状').value === 'star', '认不得的形状退回了圆 —— 收藏的默认是星不是圆')
+	check(pure.favShape('char:').value === 'star', '空的 char: 退回了圆')
+	// 挑过的就用挑的那个，三类词汇都要认
+	check(pure.favShape('cross').value === 'cross', '预设形状没生效')
+	check(pure.favShape('char:🔥').glyph === '🔥', 'emoji 当图标没生效')
+	check(pure.favShape(`img:${'a'.repeat(32)}`).image === 'a'.repeat(32), '自己传的图当图标没生效')
+
+	// ===== 卡片上那排选择器：形状和颜色挤在同一行 =====
+	{
+		// 右箭头 / 五边形 / 六边形在 11px 上和圆几乎没差别，占着格子却提供不了区分度。
+		// 而这一排要和颜色挤在同一行里，格子很贵 —— 所以卡片上不列它们。
+		// ⚠️ 名字**写死在这儿**，不许写成 `for (const gone of pure.FAV_DROP)` ——
+		//    那样把 FAV_DROP 清空，这条用例会跟着一起变成空转，一条都不响。
+		for (const gone of ['chevron', 'pentagon', 'hexagon']) {
+			check(pure.FAV_DROP.includes(gone), `「${gone}」该在卡片的排除名单里`)
+			check(!pure.FAV_SHAPES.includes(gone), `卡片上不该再列「${gone}」`)
+			// ⚠️ 设置卡那边**不删**：那儿是给节点配形状的，格子宽松；
+			//    而且从 SHAPES 里删掉的话，已经存了 hexagon 的设置读出来就不合法了。
+			check(pure.SHAPES.some((one) => one.value === gone), `「${gone}」不该从 SHAPES 里删掉 —— 会让已存的设置失效`)
+		}
+		check(pure.FAV_SHAPES[0] === 'star', '五角星该排头 —— 它既是默认，也是"恢复默认"那一格')
+		check(pure.FAV_SHAPES.length === pure.SHAPES.length - 3 + 1,
+			`卡片上该列 ${pure.SHAPES.length - 2} 格（SHAPES 减三个再加五角星），实际 ${pure.FAV_SHAPES.length}`)
+		check(new Set(pure.FAV_SHAPES).size === pure.FAV_SHAPES.length, '卡片那排有重复的格子')
+		// 每一格都得画得出来。走 favShape 不是 shapeSpec —— 'star' 交给后者会退回圆
+		for (const want of pure.FAV_SHAPES) {
+			check(pure.favShape(want).value === want, `「${want}」解不出自己，那一格会画成别的形状`)
+		}
+		// 尺寸：一行里放得下 20 格的前提是格子够小
+		check(pure.PICK <= 20 && pure.GAP <= 4, `格子 ${pure.PICK}px / 间距 ${pure.GAP}px 太大，挤不进两行`)
+	}
+
+	// 颜色**不跟着形状走**：换了图标还是那个黄，不然"哪个是收藏"当场失效
+	const plain = pure.starSkin(false, true)
+	const fancy = pure.starSkin(false, true, 'cross')
+	check(fancy.ink === plain.ink && fancy.fill === plain.fill, '换了图标连颜色也跟着变了 —— 收藏就不再是一眼能扫出来的记号')
+	check(fancy.shape.value === 'cross' && plain.shape.value === 'star', 'starSkin 没把挑的形状带出来')
+	check(pure.starSkin(false, false).ink !== pure.STAR_COLOR, '亮色模式下描边没压深 —— 原色对白底只有 1.95:1，看不清')
+
+	// 画出来的点要用挑的那个形状
+	const drawn = pure.dotStyle('normal', false, false, 11, false, pure.THEME, 1, fancy)
+	check(drawn.background === 'none' && drawn.borderWidth === '0px', '多边形图标该由里面的 svg 画，方框要关掉')
+	// 老调用方只给 {accent,ink,fill}、不给 shape 的，得退回五角星而不是崩掉
+	const legacy = pure.dotStyle('normal', false, false, 11, false, pure.THEME, 1, { accent: '#e3b341', ink: '#e3b341', fill: 'none' })
+	check(legacy.borderWidth === '0px', '没带 shape 的旧写法没退回五角星')
+
+	// 连线让位要按**挑的那个形状**算，不能一律按五角星（1.67 倍）
+	const star = pure.reachFor('normal', false, 11, pure.THEME, 1, true)
+	const cross = pure.reachFor('normal', false, 11, pure.THEME, 1, pure.favShape('cross'))
+	check(star > cross, `五角星比十字大一圈，让位量却是 ${star} vs ${cross}`)
+	check(pure.reachFor('normal', false, 11, pure.THEME, 1, false) === pure.reachFor('normal', false, 11, pure.THEME, 1), 'false 应该和不传一样（没收藏）')
+	console.log(`  三类图标都认、认不得退回星；颜色钉死；让位量跟着实际形状（星 ${star.toFixed(1)} / 十字 ${cross.toFixed(1)}）`)
+}
+
+console.log('用例 26：收藏图标存得住，取消收藏不把它一起抹掉')
+{
+	const one = pure.nextFavIcons({}, 'a:1', 'cross')
+	check(one['a:1'] === 'cross', '挑了图标没记下来')
+	check(Object.keys(pure.nextFavIcons({}, 'a:1', 'cross')).length === 1, '纯函数改了传进来的那个字典')
+	// 恢复默认 = **删掉这一条**，不是存一个 'star'：存进去的话，哪天默认记号换了样子，
+	// 所有"没改过"的点会被这条陈年记录钉在旧样子上
+	check(pure.nextFavIcons(one, 'a:1', '')['a:1'] === undefined, '恢复默认没把那一条删掉')
+	check(pure.nextFavIcons(one, 'a:1', 'star')['a:1'] === undefined, "挑回 'star' 时该删掉这一条，而不是存进去")
+	check(pure.nextFavIcons(one, '', 'cross')['']  === undefined, '空 key 被收进去了')
+
+	pure.writeFavIcon('s9:2', 'char:🔥')
+	pure.writeFavIcon('root', 'hexagon')
+	check(pure.readFavIcons()['s9:2'] === 'char:🔥', '存进去读不出来')
+	// 取消收藏**故意不动图标**：再收藏回来还是上次那个，不用重挑一遍
+	pure.writeFavorite('s9:2', true)
+	pure.writeFavorite('s9:2', false)
+	check(pure.readFavIcons()['s9:2'] === 'char:🔥', '取消收藏把挑好的图标也抹掉了')
+	pure.writeFavIcon('s9:2', '')
+	check(pure.readFavIcons()['s9:2'] === undefined, '恢复默认之后还留在字典里')
+	check(pure.readFavIcons().root === 'hexagon', '删一个把别的也带走了')
+	console.log('  字典算术无副作用；恢复默认是删而不是存 star；取消收藏不误伤图标')
 }
 
 report()

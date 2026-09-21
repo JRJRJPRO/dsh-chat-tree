@@ -54,11 +54,38 @@ import {
 	shapeBox,
 	shapeOf,
 	shapeSpec,
+	drawnWidth,
+	shapeHeight,
+	glyphGrow,
+	glyphFont,
+	GLYPH_MAX,
+	GLYPH_SPAN,
+	STAR,
+	STAR_COLOR,
+	BACKDROP,
+	CONTRAST_MIN,
+	STAR_EDGE,
+	starInkOf,
+	relLuminance,
+	contrastRatio,
+	hexToHsl,
+	hslToHex,
+	fitContrast,
+	crossPoly,
+	favShape,
+	growOf,
+	polyArea,
+	regularPoly,
+	starPoly,
+	starSkin,
 } from './shapes.js'
-import { edgeOrder, hoverNext, nodeAt, railLayout, reachFor, segments } from './geometry.js'
-import { isRewindPending, rewindRetryDelay } from './hooks.js'
+import { MIN_RUN, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
+import { RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, rewindRetryDelay, starAnimation, watchViewport } from './hooks.js'
+import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
+import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { FIELDS, ROWS, SCALES, STEPS, isHex, scaleText, settingsStore, stepText, themeFrom } from './settings-model.js'
 import { isDark } from './theme.js'
+import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 
 export const __pure = {
 	// 选树、归组、节点上能做什么
@@ -67,12 +94,32 @@ export const __pure = {
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 画
-	dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
+	dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
+	// 形状怎么算出来的：面积、按面积配齐的放大倍数、正 n 边形、十字
+	polyArea, growOf, regularPoly, crossPoly,
 	SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
+	// 自定义字：上限、占几倍宽、该用多大字号
+	GLYPH_MAX, GLYPH_SPAN, glyphGrow, glyphFont,
+	// 收藏：五角星的形状、配色、以及点下去那一下的动画
+	STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
+	// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
+	BACKDROP, CONTRAST_MIN, STAR_EDGE, starInkOf, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
+	// 节点上的用户标注（改名 / 收藏）
+	readLabels, writeLabel, readFavorites, writeFavorite, nextFavorites,
+	readFavIcons, writeFavIcon, nextFavIcons,
+	readFavColors, writeFavColor, nextFavColors, isColor,
+	// 详情卡里能离线测的那两件事：改没改过、这一下是不是输入法在拼字
+	isDirty, isComposingKey, keepsCard, clampGlyph,
+	// 焦点被宿主抢走时抢不抢回来
+	shouldRefocus, LEAVE_MS, CARD_MARK, FAV_COLORS, FAV_SHAPES, FAV_DROP, PICK, GAP,
 	// 配色与明暗
 	PALETTE, paletteOf, themeFrom, isDark, isHex,
 	// 几何
-	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout,
+	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN,
+	// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
+	contentRightOf, isCovered, RAIL_MARK,
+	// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
+	tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
 	// 撤回的重拉节奏
 	isRewindPending, rewindRetryDelay,
 	// 设置

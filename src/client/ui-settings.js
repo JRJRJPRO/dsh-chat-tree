@@ -4,10 +4,11 @@
  * 容器归我们自己画：宿主只铺一个 `<ul>` 再按 namespace 派发，所以根元素**必须是 `<li>`**。
  */
 import { h, react } from './runtime.js'
-import { CUSTOM, ICON_EDGE, PICTURE, preview } from './shapes.js'
+import { CUSTOM, GLYPH_MAX, ICON_EDGE, PICTURE, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
 import { useObservable } from './hooks.js'
 import { useColorScheme } from './theme.js'
+import { useHover } from './pointer.js'
 import { FIELDS, ROWS, themeFrom } from './settings-model.js'
 
 /**
@@ -85,6 +86,8 @@ export function SettingsCard(props) {
 	const [hover, setHover] = react.useState(false)
 	const [failed, setFailed] = react.useState('')
 	const dark = useColorScheme()
+	// 只为一件事：iOS 上聚焦小于 16px 的输入框会把整页放大过去（见 NameField 那条注释）。
+	const canHover = useHover()
 
 	const on = state.writable === true
 	const values = state.values || {}
@@ -190,8 +193,30 @@ export function SettingsCard(props) {
 	 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
 	 * 预设后面跟两格自定义：传图片，或者填一个字符。
 	 */
-	const shapes = (field, now, color, dashed) =>
+	// 「填字」那个框自己拿草稿 + 认拼字，理由见下面那段 ⚠️
+	// ⚠️ 名字别和上面那个色值回显用的 `draft` 撞 —— 两件事，两份状态。
+	const [glyph, setGlyph] = react.useState(null)
+	const composing = react.useRef(false)
+	/** 拼字落地：按码点裁到上限再写进设置。空了就清掉这一项，回到默认。 */
+	const land = (field, raw) => {
+		const cut = [...String(raw)].slice(0, GLYPH_MAX).join('').trim()
+		setGlyph(cut)
+		if (cut === '') clear([field])
+		else put(field, CUSTOM + cut)
+	}
+
+	const shapes = (field, now, color, dashed, extra) =>
 		h('div', { key: 'sp', style: S.picks }, [
+			// 额外那几格：目前只有收藏那一行的五角星。它**故意不在 SHAPES 里**
+			// （进了就会出现在四个角色的选择器里，"哪个是收藏"当场失效），
+			// 所以预览得走 favShape 解，不然画出来是个圆。
+			...(extra || []).map((one) =>
+				h('button', {
+					key: one, type: 'button', disabled: !on, title: one,
+					style: S.chip(now === one, on),
+					onClick: () => put(field, one),
+				}, preview(one, color, 13, dashed, favShape(one))),
+			),
 			...SHAPES.map((one) =>
 				h('button', {
 					key: one.value, type: 'button', disabled: !on, title: one.value,
@@ -199,7 +224,7 @@ export function SettingsCard(props) {
 					onClick: () => put(field, one.value),
 				}, preview(one.value, color, 13, dashed)),
 			),
-			// 传图：选完立刻在浏览器里缩成 64×64 的 PNG 再上传，见 shrink()
+			// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 			h('label', {
 				key: 'img',
 				title: `传一张图当节点。png / jpg / webp / svg 都行，尺寸不限 —— 会自动等比缩进 ${ICON_EDGE}×${ICON_EDGE}`,
@@ -219,16 +244,28 @@ export function SettingsCard(props) {
 					},
 				}),
 			]),
-			// 填字：emoji 也行
+			// 填字：emoji 也行。
+			// ⚠️ 这个框和详情卡里那个「字」框是**同一套规矩**，别只改一边：
+			//    · 不挂 maxLength —— 中文是先把拼音打进框里再换成汉字的，
+			//      "zhongguo" 八个字符才换来两个字，挂上限就永远拼不出来
+			//    · 拼字期间只改草稿，一个字节都不写设置（写一次就整棵树重画，
+			//      那一圈落在拼字中途会把候选冲掉 —— John 在详情卡那个框里报过）
+			//    · 上限在**落地之后**按码点裁，见 clampGlyph
 			h('input', {
-				key: 'own', type: 'text', maxLength: 4, disabled: !on,
-				value: String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '',
-				placeholder: '填字', title: '填一个字符当节点，emoji 也行',
-				style: S.own(String(now).startsWith(CUSTOM), on),
+				key: 'own', type: 'text', disabled: !on,
+				value: glyph === null ? (String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '') : glyph,
+				placeholder: '填字', title: `填几个字当节点，emoji 也行，最多 ${GLYPH_MAX} 个`,
+				autoCapitalize: 'off', autoCorrect: 'off',
+				style: Object.assign({}, S.own(String(now).startsWith(CUSTOM), on), canHover ? {} : { fontSize: '16px' }),
+				onCompositionStart: () => { composing.current = true },
+				onCompositionEnd: (event) => {
+					composing.current = false
+					land(field, event.target.value)
+				},
+				onBlur: () => { composing.current = false; setGlyph(null) },
 				onChange: (event) => {
-					const text = event.target.value.trim()
-					if (text === '') clear([field])
-					else put(field, CUSTOM + text)
+					if (composing.current) return setGlyph(event.target.value)
+					land(field, event.target.value)
 				},
 			}),
 		])
@@ -243,7 +280,7 @@ export function SettingsCard(props) {
 					key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
 					onChange: (event) => put(spot.color, event.target.value),
 				}),
-				shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true),
+				shapes(spot.shape, valueOf(spot.shape), color, spot.dashed === true, spot.extra),
 			]),
 			h('p', { key: 'p', style: S.hint }, spot.hint),
 		])
