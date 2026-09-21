@@ -286,13 +286,13 @@ export function Rail(props) {
 		const star = favorites.has(node.key) ? starSkin(isFocused, dark, favIcons[node.key], favColors[node.key], theme) : undefined
 		// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
 		const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
-		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme, dark) : star
 		parts.push(h('span', {
 			key: `d${node.key}`,
 			style: Object.assign(
 				{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
 				TAPPABLE,
-				dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
+				dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star, dark),
 				// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 				//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 				//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
@@ -412,7 +412,9 @@ export function Rail(props) {
 				favorites, favIcons, favColors,
 				// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 				// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
-				starInk: starSkin(true, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).fill,
+				starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+				// 图标选择器里那几颗预览要按当前明暗上色（`preview` → `paint`）
+				dark,
 				onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 				onFavorite: (key, on) => {
 					writeFavorite(key, on)

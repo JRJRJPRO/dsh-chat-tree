@@ -215,14 +215,14 @@ export function SettingsCard(props) {
 					key: one, type: 'button', disabled: !on, title: one,
 					style: S.chip(now === one, on),
 					onClick: () => put(field, one),
-				}, preview(one, color, 13, dashed, favShape(one))),
+				}, preview(one, color, 13, dashed, favShape(one), dark)),
 			),
 			...SHAPES.map((one) =>
 				h('button', {
 					key: one.value, type: 'button', disabled: !on, title: one.value,
 					style: S.chip(now === one.value, on),
 					onClick: () => put(field, one.value),
-				}, preview(one.value, color, 13, dashed)),
+				}, preview(one.value, color, 13, dashed, undefined, dark)),
 			),
 			// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 			h('label', {
@@ -231,7 +231,7 @@ export function SettingsCard(props) {
 				style: S.chip(String(now).startsWith(PICTURE), on),
 			}, [
 				String(now).startsWith(PICTURE)
-					? preview(now, color, 15, dashed)
+					? preview(now, color, 15, dashed, undefined, dark)
 					: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
 				h('input', {
 					key: 'f', type: 'file', accept: 'image/*', disabled: !on,

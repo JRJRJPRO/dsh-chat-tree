@@ -523,8 +523,10 @@ console.log('\n用例 12：自定义颜色与形状')
 	//   · 换了主色，派生色（路径垫色 / 外发光 / 连线）必须跟着换，不能还硬编码蓝
 	//   · key 集合仍然恒定（否则又是"滑过一个点白一个"）
 	//   · 认不得的值退回默认，不能把树搞崩
+	// ⚠️ 挑的这几个色对深底本来就够 3:1，`readable` 不会动它们 ——
+	//    这一条用例测的是"主色有没有传到位"，别让对比度兜底混进来当噪音。
 	const skin = {
-		normalColor: '#112233', normalShape: 'square',
+		normalColor: '#99aabb', normalShape: 'square',
 		currentColor: '#00ff00', currentShape: 'rounded',
 		compactColor: '#ff00ff', compactShape: 'circle',
 	}
@@ -537,12 +539,12 @@ console.log('\n用例 12：自定义颜色与形状')
 
 	// 在路径上但不是当前轮 → 边框和垫色都从主色派生
 	const onPath = pure.dotStyle('normal', true, false, 9, false, skin)
-	check(/0,\s*255,\s*0/.test(onPath.borderColor), `路径上的边框该跟着主色，实际 ${onPath.borderColor}`)
+	check(onPath.borderColor === '#00ff00', `路径上的边框该是主色本身，实际 ${onPath.borderColor}`)
 	check(/0,\s*255,\s*0/.test(onPath.background), `路径上的垫色该跟着主色，实际 ${onPath.background}`)
 
 	// 不在路径上 → 用普通节点色
 	const off = pure.dotStyle('normal', false, false, 9, false, skin)
-	check(off.borderColor === '#112233', `路径外该用普通节点色，实际 ${off.borderColor}`)
+	check(off.borderColor === '#99aabb', `路径外该用普通节点色，实际 ${off.borderColor}`)
 
 	// 当前路径的形状**必须独立生效**。曾经 shapeOf 把 current 和 normal 合成一个，
 	// 于是设置里"当前路径形状"怎么改都没反应 —— John 报的"改了好像没反应"就是这条。
@@ -782,14 +784,20 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(pure.drawnWidth(pure.shapeSpec('char:i'), 10) >= pure.shapeHeight(pure.shapeSpec('char:i'), 10),
 		'兜底只许把框撑宽，不许撑窄')
 
-	// 框和别的形状同源：一样的描边色、线宽。唯独**不填底**。
+	// 框和别的形状**同源**：描边、填充、线宽全走同一个 `paint`，不许自成一套。
 	{
-		const skin = { ink: '#abc', fill: '#123', accent: '#abc' }
+		const skin = pure.paint('#58a6ff', false, true)
 		const box = pure.glyphBoxStyle(one, 10, skin, 1.5, false)
 		check(box.borderColor === skin.ink, '框的描边色要和别的形状同源')
 		check(box.borderWidth === '1.5px', '框的线宽要和同尺寸的方框类形状一样粗')
-		// ⚠️ 填了底字就糊在底色里，当前那一轮（填充最实）反而最看不清
-		check(box.background === 'none', '框不许填底')
+		check(box.background === skin.fill, '框的填充也要走同一个 paint，不许自己写死')
+		check(box.color === skin.ink, '平时字就用主色')
+		// ⚠️ 实心时字**必须**换成对比色。不换的话字和底同色，而恰好是"正看着的
+		//    这一轮"最看不清 —— 它填得最实。这就是设计系统里的 on-color。
+		const litBox = pure.glyphBoxStyle(one, 10, pure.paint('#58a6ff', true, true), 1.5, false)
+		check(litBox.background === '#58a6ff', '实心时框该填满主色')
+		check(litBox.color === pure.onAccent('#58a6ff'), '实心底上的字没换成对比色，会糊进底里')
+		check(pure.contrastRatio(litBox.color, litBox.background) >= 4.5, '实心底上的字对比度不够，读不出来')
 		// ⚠️ 圆角跟着框高走，不跟描边宽度走。跟描边的话默认尺寸下只有 3px，
 		//    放在一个十几像素的框上远看就是个方框。
 		check(box.borderRadius === `${pure.shapeHeight(one, 10) * pure.GLYPH_RADIUS}px`, '圆角该按框高算')
@@ -801,20 +809,17 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	// ⑤ 收藏的颜色：默认那个黄，改过的按点走
 	const gold = pure.starSkin(true, true)
 	const red = pure.starSkin(true, true, undefined, '#F85149')
-	check(gold.fill === pure.STAR_COLOR, '没改过颜色的收藏，星身该还是那个黄')
-	check(red.fill === '#f85149', `改过颜色的收藏，星身该用他挑的那个（大小写要归一），实际 ${red.fill}`)
+	check(gold.ink === pure.STAR_COLOR, '没改过颜色的收藏，该还是那个黄')
+	check(red.ink === '#f85149', `改过颜色的收藏，该用他挑的那个（大小写要归一），实际 ${red.ink}`)
 	// ⚠️ 这个字符串直接进 CSS，认宽了就是个注入口子
 	for (const bad of ['red', '#fff', 'url(javascript:1)', '#12345g', '', undefined, null, 123]) {
-		check(pure.starSkin(true, true, undefined, bad).fill === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
+		check(pure.starSkin(true, true, undefined, bad).ink === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
 	}
-	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色模式下描边该被压深')
-	check(pure.starSkin(true, false).fill === pure.STAR_COLOR, '星身不该跟着明暗变 —— 变的只有描边')
-	// 用户自己挑的颜色**也过 fitContrast** —— 挑一个亮绿，白底上同样看不清
-	check(pure.contrastRatio(pure.starSkin(true, true, undefined, '#56d364').ink, '#56d364') >= pure.STAR_EDGE - 0.05,
-		'深底上描边也得比星身深一档，不然星星是块没轮廓的色斑')
+	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色模式下那个黄该被压深，不然白底上看不见')
+	// 用户自己挑的颜色**也过同一条 readable** —— 挑一个亮绿，白底上同样看不清
 	check(pure.contrastRatio(pure.starSkin(true, false, undefined, '#56d364').ink, '#ffffff') >= pure.CONTRAST_MIN - 1e-9,
 		'用户挑的颜色在亮色下也该被压到够对比度')
-	check(pure.starSkin(true, false, undefined, '#56d364').fill === '#56d364', '星身该是他挑的原色，不是压深过的')
+	check(pure.starSkin(true, true, undefined, '#56d364').ink === '#56d364', '深底上够对比度的颜色不该被动')
 	// 存盘那一层：改过的才进字典，恢复默认是**删掉**而不是存一个黄
 	check(pure.nextFavColors({}, 'a:1', '#58A6FF')['a:1'] === '#58a6ff', '存进去该归一成小写')
 	check(pure.nextFavColors({ 'a:1': '#58a6ff' }, 'a:1', '')['a:1'] === undefined, '恢复默认该把这一条删掉，而不是存一个默认色')
@@ -829,8 +834,9 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(new Set(pure.FAV_COLORS).size === pure.FAV_COLORS.length, '色板里有重复的颜色')
 
 	const starred = pure.dotStyle('normal', true, false, 9, false, Object.assign({}, pure.THEME, { currentShape: 'char:★' }))
-	check(starred.background === 'none', '画成字的节点不该再有底色')
-	check(starred.borderWidth === '0px', '画成字的节点不该再描边')
+	// 外面那个 <span> 只是个定位壳：框和字都由 glyphBoxStyle 画在里面
+	check(starred.background === 'none', '字节点的外壳不该再有底色')
+	check(starred.borderWidth === '0px', '字节点的外壳不该再描边')
 	check(starred.color === pure.inkOf('normal', true, false).ink, '字的颜色该和描边色一致')
 
 	// ④ 自定义图片。id 是内容哈希，要直接拼进 URL 和文件名 —— 认宽了就是路径穿越
@@ -862,21 +868,23 @@ console.log('\n用例 15：空节点也归自己管')
 {
 	// John：“空结点长什么样应该也可以设置呀。”
 	// 空节点 = 树根那个“新对话”占位。它以前蹭普通/当前路径的颜色和形状，设置里够不着。
+	// ⚠️ 四个色都挑成对深底够 3:1 的，`readable` 不会动 —— 这条测的是"哪个角色
+	//    用哪个字段"，掺进对比度兜底只会让失败信息变得看不懂。
 	const skin = {
-		normalColor: '#111111', normalShape: 'square',
-		currentColor: '#222222', currentShape: 'rounded',
-		compactColor: '#333333', compactShape: 'triangle',
-		emptyColor: '#444444', emptyShape: 'diamond',
+		normalColor: '#777777', normalShape: 'square',
+		currentColor: '#888888', currentShape: 'rounded',
+		compactColor: '#999999', compactShape: 'triangle',
+		emptyColor: '#aaaaaa', emptyShape: 'diamond',
 	}
 
 	// ① 颜色和形状都走自己那一份
 	check(pure.shapeOf('empty', false, skin).value === 'diamond', '空节点没用 emptyShape')
-	check(pure.inkOf('empty', false, false, skin).ink === '#444444', '空节点没用 emptyColor')
+	check(pure.inkOf('empty', false, false, skin).ink === '#aaaaaa', '空节点没用 emptyColor')
 
 	// ② 而且**不跟着在不在当前路径上变**。空节点永远是树根、永远在当前路径上，
 	//    要是还按 active 切色，那 emptyColor 就只在某些时候生效，等于半个死设置。
 	for (const active of [true, false]) {
-		check(pure.inkOf('empty', active, false, skin).ink === '#444444', `active=${active} 时空节点的颜色跑了`)
+		check(pure.inkOf('empty', active, false, skin).ink === '#aaaaaa', `active=${active} 时空节点的颜色跑了`)
 		check(pure.shapeOf('empty', active, skin).value === 'diamond', `active=${active} 时空节点的形状跑了`)
 	}
 	// 反过来：普通节点该跟着 active 切，别把这条一起改没了
@@ -970,16 +978,71 @@ console.log('用例 17：改过的颜色钉死，没改过的跟着明暗走')
 	console.log('  换明暗立刻生效；亲手改过的那一项钉死；存量脏值兜住')
 }
 
-console.log('用例 18：普通节点在亮色下必须还是"灰圈 + 淡填充"')
+console.log('用例 18：全树唯一的上色规则 —— 描边和填充永远同一个颜色')
 {
-	// 这就是 John 报的那条：填充写死成深色，暗色下正好隐形（看着像空心圈），
-	// 亮色下就成了白底上一个深色实心点，描边反而看不见了。
-	// 修法是让填充跟着宿主的主题变量走，所以这里钉的是"它必须是个变量"。
-	const skin = pure.inkOf('normal', false, false, pure.themeFrom({}, {}, false))
-	check(String(skin.fill).startsWith('var(--'), `普通节点的填充是写死的 ${skin.fill} —— 换到亮色模式就成深色实心点了`)
-	check(pure.isHex(skin.ink), `描边色应该是真实色值，实际 ${skin.ink}`)
-	check(skin.ink !== skin.fill, '描边和填充同色 —— 那就不是"圈"了')
-	console.log(`  填充 = ${skin.fill}（跟宿主主题走），描边 = ${skin.ink}`)
+	// 【这条用例为什么存在】John：“我们说一个 node 的颜色是 xxx，到底是指这个 node
+	// 的哪里？是边框？还是填充？…… 明明颜色设置是一样的，看起来却有色差。”
+	//
+	// 以前四个角色各写一套深浅（普通=不填、当前=0.18、压缩=0.3、空=0.15，描边还分
+	// 1 和 0.9），收藏又是第五套（星身亮色 + 另算一个压深的描边）。同一个色号挂到
+	// 不同地方能画出四五种样子，"我设的颜色"没有唯一答案。
+	//
+	// 现在只有一条：**描边 = 这个色；填充 = 同一个色，只是透明度不同。**
+	// 下面每一条都在钉这句话的一个侧面。
+	const roles = [['normal', false], ['normal', true], ['compact', true], ['empty', false]]
+	for (const dark of [true, false]) {
+		const theme = pure.themeFrom({}, {}, dark)
+		const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
+		for (const [kind, active] of roles) {
+			const rest = pure.inkOf(kind, active, false, theme, dark)
+			const lit = pure.inkOf(kind, active, true, theme, dark)
+			const label = `${kind}${active ? '/当前' : ''}@${dark ? '暗' : '亮'}`
+			// ① 平时：填充就是描边色的半透明版。同一个 rgb，只有 alpha 不同。
+			check(pure.isHex(rest.ink), `${label} 描边该是个实色，实际 ${rest.ink}`)
+			check(rest.fill === pure.fade(rest.ink, pure.FILL_ALPHA), `${label} 填充不是描边色的半透明版：${rest.fill}`)
+			// ② 实心：填充 = 描边色本身
+			check(lit.fill === lit.ink, `${label} 实心时填充该等于描边色，实际 ${lit.fill}`)
+			// ③ 实心与否**只由"正看着这一轮"决定**，不由角色决定
+			check(rest.solid === false && lit.solid === true, `${label} solid 该只跟 focused 走`)
+			// ④ 外发光也是同一个色 —— 以前它另取"这个 kind 在当前路径上的颜色"，
+			//    于是一个配成绿色的普通节点滚到那一轮会发蓝光，又一个对不上的颜色
+			check(lit.accent === lit.ink, `${label} 外发光和描边不同色了`)
+			// ⑤ 上屏前过 readable，两种底色都看得见
+			check(pure.contrastRatio(rest.ink, page) >= pure.CONTRAST_MIN - 0.05,
+				`${label} 描边对底色只有 ${pure.contrastRatio(rest.ink, page).toFixed(2)}:1`)
+		}
+	}
+
+	// ⑥ **同一个色号，普通节点和收藏节点必须长得一模一样**（形状除外）。
+	//    这就是 John 说的"色差"那条，直接钉死。
+	for (const dark of [true, false]) {
+		const seed = '#ffd43b'
+		const theme = Object.assign({}, pure.themeFrom({}, {}, dark), { normalColor: seed })
+		for (const focused of [false, true]) {
+			const plain = pure.inkOf('normal', false, focused, theme, dark)
+			const fav = pure.starSkin(focused, dark, undefined, seed, theme)
+			check(plain.ink === fav.ink && plain.fill === fav.fill,
+				`${dark ? '暗' : '亮'}色下同一个 ${seed}，普通节点 ${plain.ink}/${plain.fill}、收藏 ${fav.ink}/${fav.fill} —— 对不上就是色差`)
+		}
+	}
+
+	// ⑦ readable 只动明度：色相和饱和度一个都不许变，不然那就不是"同一个颜色"了
+	for (const hex of ['#ffd43b', '#56d364', '#f85149', '#1a1a1a', '#f0f0f0']) {
+		for (const dark of [true, false]) {
+			const out = pure.readable(hex, dark)
+			const was = pure.hexToHsl(hex)
+			const now = pure.hexToHsl(out)
+			check(Math.abs(was.h - now.h) < 2, `${hex} 的色相被动了：${was.h.toFixed(1)}° → ${now.h.toFixed(1)}°`)
+			check(Math.abs(was.s - now.s) < 0.06, `${hex} 的饱和度被动了：${was.s.toFixed(2)} → ${now.s.toFixed(2)}`)
+			check(pure.contrastRatio(out, dark ? pure.BACKDROP.dark : pure.BACKDROP.light) >= pure.CONTRAST_MIN - 0.05,
+				`${hex} 在${dark ? '暗' : '亮'}色下没被推到够对比度：${out}`)
+		}
+	}
+	// 够了就一个像素不动 —— 这条防的是"顺手把所有颜色都重算一遍"
+	check(pure.readable('#58a6ff', true) === '#58a6ff', '深底上本来就够对比度的颜色不许被动')
+
+	const sample = pure.inkOf('normal', false, false, pure.themeFrom({}, {}, false), false)
+	console.log(`  亮色普通节点：描边 ${sample.ink}，填充 ${sample.fill}（同色，只差 ${pure.FILL_ALPHA} 透明度）`)
 }
 
 console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才填实')
@@ -1003,90 +1066,71 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 
 	// ===== 一个色值，两种底色都得能看 =====
 	// John 报的：暗色下那个黄挺好，浅色下"特别黑"。老写法是手写两版，
-	// 亮色那版压到 #b8860b（亮度 0.27）才够对比度 —— 够是够了，但它已经不像黄了。
+	// 亮色那版压到 #b8860b 才够对比度 —— 够是够了，但它已经不像黄了。
 	{
 		const gold = pure.STAR_COLOR
-		// ① 分工：**星身填亮色，描边扛对比度**。所以基色**本来就不该**自己够对比度 ——
-		//    它只负责"看着是黄的"。把这个前提钉住，免得哪天有人"顺手"把基色压深。
-		check(pure.relLuminance(gold) > 0.6, `基色亮度 ${pure.relLuminance(gold).toFixed(2)} 太低了 —— 它只管填充，该亮`)
+		// ① 基色按**暗色**挑（用户的日常模式），亮色那版由 readable 现算
+		check(pure.relLuminance(gold) > 0.6, `基色亮度 ${pure.relLuminance(gold).toFixed(2)} 太低了`)
 		check(pure.contrastRatio(gold, pure.BACKDROP.dark) >= 7, '基色在深底上该一眼就看见')
 		const hue = pure.hexToHsl(gold).h
 		check(hue > 35 && hue < 55, `色相 ${hue.toFixed(0)}° 不在暖金那一段（35~55）—— 再往上就是发酸的柠檬黄`)
 
-		// ② 描边两条下限都要满足，两种底色各由其中一条说了算
+		// ② 收藏**没有自己的上色规则**，它只是换个色号走同一条路。
+		//    以前这里是"星身填亮黄 + 描边另算一个压深的同色"，于是同一个 #ffd43b，
+		//    普通节点是空心黄边、收藏是实心黄加暗黄边 —— 三个颜色，用户只设了一个。
 		for (const dark of [true, false]) {
 			const skin = pure.starSkin(false, dark)
 			const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
-			check(skin.fill === gold, `${dark ? '暗' : '亮'}色下星身该是基色本身`)
+			check(skin.ink === pure.readable(gold, dark), `${dark ? '暗' : '亮'}色下收藏该直接走 readable，不许自己算一套`)
+			check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${dark ? '暗' : '亮'}色下填充该是描边色的半透明版`)
+			check(skin.accent === skin.ink, `${dark ? '暗' : '亮'}色下外发光该和描边同色`)
 			check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
-				`${dark ? '暗' : '亮'}色下描边对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
-			check(pure.contrastRatio(skin.ink, skin.fill) >= pure.STAR_EDGE - 0.05,
-				`${dark ? '暗' : '亮'}色下描边对星身才 ${pure.contrastRatio(skin.ink, skin.fill).toFixed(2)}:1 —— 边描不出来`)
-			// 外发光用星身那个亮色，不用压深过的描边色（深色光晕看着像脏了一圈）
-			check(skin.accent === gold, `${dark ? '暗' : '亮'}色下外发光该用亮色`)
+				`${dark ? '暗' : '亮'}色下对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
 		}
-
-		// ③ 深底那条**必须由"对星身"说了算**：基色对深底本来就 13:1，
-		//    只看"对底色 3:1"的话描边 = 星身，那颗星就是一块没有轮廓的黄斑。
-		const onDark = pure.starSkin(false, true)
-		check(onDark.ink !== gold, '深底上描边和星身同色了 —— 星星成了没轮廓的色斑')
-		check(pure.relLuminance(onDark.ink) < pure.relLuminance(gold), '描边该比星身深')
-
-		// ④ 只动明度：色相和饱和度一个都不许变，不然那就不是"同一个颜色"了
+		// ③ 暗色是用户的日常模式：那个黄必须一个像素都不动
+		check(pure.starSkin(false, true).ink === gold, '暗色下那个黄被动过了 —— 它对深底 13:1，不该动')
+		// ④ 亮色下压到**刚好够**就停，不许压过头（越压越不像黄）
 		const lit = pure.starSkin(false, false).ink
-		const was = pure.hexToHsl(gold)
-		const now = pure.hexToHsl(lit)
-		check(Math.abs(was.h - now.h) < 2, `色相被动了：${was.h.toFixed(1)}° → ${now.h.toFixed(1)}°`)
-		check(Math.abs(was.s - now.s) < 0.06, `饱和度被动了：${was.s.toFixed(2)} → ${now.s.toFixed(2)}`)
-		check(now.l < was.l, '白底上描边该往深里调')
-
-		// ⑤ 压到**刚好够**就停，不许压过头（越压越不像黄）
 		const ratio = pure.contrastRatio(lit, pure.BACKDROP.light)
-		check(ratio <= pure.CONTRAST_MIN + 0.15, `亮色下压过头了（${ratio.toFixed(2)}:1）`)
+		check(ratio >= pure.CONTRAST_MIN - 0.05 && ratio <= pure.CONTRAST_MIN + 0.15, `亮色下压过头了（${ratio.toFixed(2)}:1）`)
+		check(pure.hexToHsl(lit).l < pure.hexToHsl(gold).l, '白底上该往深里调')
 
-		// ⑥ HSL round-trip 不许跑偏，不然上面每一条都建在沙子上
+		// ⑤ HSL round-trip 不许跑偏，不然上面每一条都建在沙子上
 		for (const hex of ['#ffd43b', '#000000', '#ffffff', '#58a6ff', '#7f7f7f']) {
 			check(pure.hslToHex(pure.hexToHsl(hex)) === hex, `${hex} 转一圈回来变成了 ${pure.hslToHex(pure.hexToHsl(hex))}`)
 		}
 		check(pure.fitContrast('红', '#fff', 3) === '红' && pure.relLuminance('红') === 0, '认不得的色值该原样退回')
 
-		// ⑦ 换成任何一个颜色都得站得住 —— 这才是"配色方案"而不是"调对了一个数"。
-		//    用户能在设置里改默认色、也能给单个点挑色，所以每一个都要过这两条下限。
+		// ⑥ 换成任何一个颜色都得站得住 —— 用户能在设置里改默认色、也能给单个点挑色
 		for (const seed of ['#ffd43b', ...pure.FAV_COLORS.slice(1), '#1a1a1a', '#f0f0f0', '#ffffff', '#000000']) {
 			for (const dark of [true, false]) {
 				const skin = pure.starSkin(false, dark, undefined, seed)
 				const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
-				check(skin.fill === seed.toLowerCase(), `${seed} 的星身被改动了：${skin.fill}`)
+				check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${seed} 的填充和描边不同色了：${skin.fill}`)
 				check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
-					`${seed} 在${dark ? '暗' : '亮'}色下，描边对底色只有 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
-				check(pure.contrastRatio(skin.ink, skin.fill) >= pure.STAR_EDGE - 0.05,
-					`${seed} 在${dark ? '暗' : '亮'}色下，描边对星身只有 ${pure.contrastRatio(skin.ink, skin.fill).toFixed(2)}:1`)
+					`${seed} 在${dark ? '暗' : '亮'}色下对底色只有 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
 			}
 		}
-		// ⚠️ 描边优先往**深**里走（浅描边读起来像光晕）。只有深到底也够不着时才让步 ——
-		//    近黑色配深底就是那一档：它比底色还深，再深下去只会和底色糊在一起。
-		check(pure.relLuminance(pure.starInkOf('#ffd43b', false)) < pure.relLuminance('#ffd43b'), '正常情况下描边该比星身深')
-		check(pure.relLuminance(pure.starInkOf('#1a1a1a', true)) > pure.relLuminance('#1a1a1a'), '近黑色配深底时该让步往亮里走')
+		// ⚠️ 亮底往深里推、深底往亮里推。近黑色配深底就是后者：它比底色还深，
+		//    再深下去只会和底色糊在一起。
+		check(pure.relLuminance(pure.readable('#ffd43b', false)) < pure.relLuminance('#ffd43b'), '白底上该往深里推')
+		check(pure.relLuminance(pure.readable('#1a1a1a', true)) > pure.relLuminance('#1a1a1a'), '近黑色配深底该往亮里推')
 
 		console.log(`  一个色 ${gold}（亮度 ${pure.relLuminance(gold).toFixed(2)}、色相 ${hue.toFixed(0)}°）：` +
-			`描边 深底 ${onDark.ink} / 白底 ${lit}（${ratio.toFixed(2)}:1）`)
+			`深底 ${pure.starSkin(false, true).ink} 原样 / 白底 ${lit}（${ratio.toFixed(2)}:1）`)
 	}
 
-	// ⚠️ "平时空心、走到那一轮才填实"这条**取消了**（原来是 idle.fill 只有 0.12 alpha）。
-	//    空心意味着只剩一圈描边，而描边为了对比度必须压深 —— 白底上看到的就是一圈黑线。
-	//    现在一律填实，"正看着这一轮"改由外发光表示（dotStyle 里那条 drop-shadow）。
+	// ⚠️ 实心**只表示"正看着这一轮"**，收藏不再自带实心。
+	//    原来收藏一律填实，于是"填实"同时背着两个含义，谁都读不出来是哪个。
 	const idle = pure.starSkin(false, true)
 	const here = pure.starSkin(true, true)
-	check(idle.fill === here.fill && idle.fill === pure.STAR_COLOR, '收藏的星身该恒为基色，不随"是不是当前点"变')
-	check(idle.ink === here.ink, '描边色不该随"是不是当前点"变')
-	check(idle.fill !== idle.ink, '星身和描边同色了 —— 星星没有轮廓')
-	// 那么当前点靠什么区分？靠 dotStyle 里那条只在 focused 时挂的外发光。
-	// 参数顺序：(kind, active, hover, size, focused, theme, alpha, star)
+	check(idle.ink === here.ink, '描边色不该随"是不是当前点"变 —— 变的只有填充')
+	check(idle.fill !== here.fill && here.fill === here.ink, '收藏的当前点该填实，别的时候该是半透明')
+	// 外发光同样只在当前点挂。参数顺序：(kind, active, hover, size, focused, theme, alpha, star, dark)
 	const lit2 = pure.dotStyle('normal', false, false, 11, true, pure.THEME, 1, here)
 	const dim2 = pure.dotStyle('normal', false, false, 11, false, pure.THEME, 1, idle)
-	check(lit2.filter !== 'none' && dim2.filter === 'none',
-		'当前点的外发光没了 —— 星身不再区分明暗档之后，区分"正看着这一轮"全靠它')
-	console.log(`  10 个顶点、grow ${pure.STAR.grow}；星身 ${idle.fill}、描边 ${idle.ink}，当前点靠外发光`)
+	check(lit2.filter !== 'none' && dim2.filter === 'none', '当前点的外发光没了')
+	console.log(`  10 个顶点、grow ${pure.STAR.grow}；平时 ${idle.fill}、当前点填实 ${here.fill}`)
 }
 
 console.log('用例 20：收藏过的点不跟着"路径外"那一档淡下去')

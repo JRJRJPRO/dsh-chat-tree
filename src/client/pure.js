@@ -48,6 +48,10 @@ import {
 	dotStyle,
 	fade,
 	inkOf,
+	paint,
+	FILL_ALPHA,
+	readable,
+	onAccent,
 	polyPoints,
 	polyProps,
 	roleOf,
@@ -71,8 +75,6 @@ import {
 	STAR_COLOR,
 	BACKDROP,
 	CONTRAST_MIN,
-	STAR_EDGE,
-	starInkOf,
 	relLuminance,
 	contrastRatio,
 	hexToHsl,
@@ -110,7 +112,7 @@ export const __pure = {
 	// 收藏：五角星的形状、配色、以及点下去那一下的动画
 	STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 	// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
-	BACKDROP, CONTRAST_MIN, STAR_EDGE, starInkOf, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
+	BACKDROP, CONTRAST_MIN, FILL_ALPHA, readable, onAccent, paint, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
 	// 节点上的用户标注（改名 / 收藏）
 	readLabels, writeLabel, readFavorites, writeFavorite, nextFavorites,
 	readFavIcons, writeFavIcon, nextFavIcons,

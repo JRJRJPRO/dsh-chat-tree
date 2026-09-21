@@ -285,7 +285,7 @@ export const FAV_SHAPES = ['star', ...SHAPES.map((one) => one.value).filter((one
  * 所以 emoji 和自己传的图都能当收藏图标用。
  */
 export function FavIconRow(props) {
-	const { value, color, onPick, onFail, onColor } = props
+	const { value, color, dark, onPick, onFail, onColor } = props
 	const canHover = useHover()
 	const [held, setHeld] = react.useState(false)
 	const guard = useFocusGuard(held)
@@ -327,7 +327,7 @@ export function FavIconRow(props) {
 			cell('span', want, now === want, {
 				title: want === 'star' ? '恢复默认（五角星）' : want,
 				onClick: (event) => { event.stopPropagation(); onPick(want === 'star' ? '' : want) },
-			}, preview(want, color, PICK - 6, false, favShape(want))),
+			}, preview(want, color, PICK - 6, false, favShape(want), dark)),
 		),
 		// 填字：emoji 也行，于是"图标库"实际上是无限的。
 		// ⚠️ 它和这一排里所有格子**一样高**。以前特意做成两行高，结果整排被它撑起来、
@@ -398,7 +398,7 @@ export function FavIconRow(props) {
 		// 传图：和设置卡里那颗同一套 —— 浏览器里先光栅化成 PNG 再交给 host（见 shrink()）
 		cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 			String(now).startsWith(PICTURE)
-				? preview(now, color, PICK - 4, false, favShape(now))
+				? preview(now, color, PICK - 4, false, favShape(now), dark)
 				: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
 			h('input', {
 				key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
@@ -631,6 +631,8 @@ export function Detail(props) {
 		key: 'favicon',
 		value: favIcons[key],
 		color: props.starInk || C.muted,
+		// ⚠️ 选择器里那几颗预览要按当前明暗算，否则亮色下画出来的是暗色那套色
+		dark: props.dark,
 		ownColor: (props.favColors || {})[key],
 		onColor: (want) => props.onFavColor(key, want),
 		onHold: () => setTyping(true),

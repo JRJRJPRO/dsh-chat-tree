@@ -1733,14 +1733,10 @@ window.__ModuleLoader__.load({
 		 *   · 由它算出的描边 `#b88f00` 在白底上 3.01:1，对星身 2.11:1，两头都描得出边
 		 * （老的 `#e3b341` 亮度只有 0.49，算出来的描边对星身才 1.54:1，边几乎看不见。）
 		 *
-		 * 【现在怎么办】换一条路：**颜色只有一个，分工有两层**。
-		 *   · 星身（`fill`）—— 一律用这个亮黄本身，负责"这是黄的"
-		 *   · 描边（`ink`）—— 从它算出来的一个更深的同色，负责"看得见"（见 `starInkOf`）
-		 * 于是白底上是"深橄榄描边 + 亮黄星身"，一眼是颗黄星；深底上星身自己就够亮。
-		 *
-		 * ⚠️ 这个值**亮得几乎没法直接当描边用**（对白底只有 1.16:1）—— 这是故意的。
-		 *    它只负责填充，对比度整个交给描边扛。想换基色的话记住这条分工，
-		 *    别挑一个"描边也凑合能用"的中间调：那正好两头都不讨好。
+		 * 【它怎么落到两种底色上】不靠"星身一个色、描边另一个色"那套分工了 —— 那正是
+		 * "同一个色号，普通节点和收藏节点看起来不一样"的来源。现在和别的颜色走同一条路：
+		 * 上屏前过一遍 `readable`，暗底上它自己就够亮（13.3:1，一个像素不变），
+		 * 亮底上整体压深到 3:1。**描边和填充永远是这同一个颜色**，只差一个透明度。
 		 */
 		const STAR_COLOR = '#ffd43b'
 
@@ -1773,7 +1769,7 @@ window.__ModuleLoader__.load({
 		 * 形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。
 		 *
 		 * `favoriteShape` 在这儿而不在 PALETTE 里，是因为收藏的默认色**不分明暗**
-		 * （就一个 `STAR_COLOR`，明暗差别整个交给 `starInkOf` 算描边）。
+		 * （就一个 `STAR_COLOR`，明暗差别交给 `readable` 在上屏前统一处理）。
 		 */
 		const SHAPE_DEFAULTS = {
 			normalShape: 'circle',
@@ -1876,12 +1872,48 @@ window.__ModuleLoader__.load({
 		const CONTRAST_MIN = 3
 
 		/**
-		 * 描边至少要比星身深多少倍，边才描得出来。
+		 * 普通态下填充的不透明度。
 		 *
-		 * 深底上星身本来就够亮（`#fbf431` 对深底 16:1），光按"对底色 3:1"算的话描边 = 星身，
-		 * 那颗星就成了一块没有轮廓的黄斑。所以还要单独跟**星身自己**比一次。
+		 * **全局只有这一个数**。以前四个角色各写一个（普通=不填、当前=0.18、压缩=0.3、
+		 * 空=0.15），于是同一个色号挂到不同角色上深浅差一倍，谁都说不清"我设的颜色"
+		 * 到底应该长什么样 —— John 报的"看起来有色差"就是这条。
 		 */
-		const STAR_EDGE = 1.6
+		const FILL_ALPHA = 0.18
+
+		/**
+		 * 把一个颜色推到对当前底色**至少 3:1**，方向按明暗定。
+		 *
+		 * 【为什么要有这一步】用户挑的色号是个绝对值，而它要落在两种底色上。亮黄
+		 * `#ffd43b` 对深底 13:1（好看），对白底只有 1.4:1（基本看不见）。业界的做法是
+		 * **令牌随主题解析**（Material 的 tonal palette、Primer 的 functional color）：
+		 * 同一个语义色在亮暗两套里本来就是两个不同的明度，而不是画的时候临时补救。
+		 * 这里就是那一步 —— 一个颜色上屏前先过它，之后描边和填充都从结果派生。
+		 *
+		 * ⚠️ 只推明度，色相和饱和度不动（`fitContrast` 保证）。推的是"刚好够"的那一档，
+		 *    不是推到底 —— 调过头只会离用户挑的那个颜色越来越远。
+		 * @param hex - 用户挑的颜色 `#rrggbb`
+		 * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+		 * @returns `#rrggbb`
+		 */
+		function readable(hex, dark) {
+			const light = dark === false
+			const page = light ? BACKDROP.light : BACKDROP.dark
+			if (contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9) return hex
+			// 亮底上往深里推，深底上往亮里推 —— 反过来推只会撞进底色里
+			return fitContrast(hex, page, CONTRAST_MIN, light ? 'darker' : 'lighter')
+		}
+
+		/**
+		 * 实心底上放什么颜色的内容（自定义的那个字）。
+		 *
+		 * 就是业界说的 on-color：底色实了之后，压在上面的字必须换成和底色对比最大的那个，
+		 * 不然字会糊进底色里 —— **而且恰好是"正看着的这一轮"最糊**，因为它填得最实。
+		 * @param hex - 底下那块实色
+		 * @returns `#ffffff` 或 `#0d1117`
+		 */
+		function onAccent(hex) {
+			return contrastRatio(hex, BACKDROP.light) >= contrastRatio(hex, BACKDROP.dark) ? BACKDROP.light : BACKDROP.dark
+		}
 
 		/**
 		 * WCAG 相对亮度。
@@ -1958,8 +1990,8 @@ window.__ModuleLoader__.load({
 		 * 那个提前返回只是**省一次二分**，不是行为保证 —— 二分本来也会收敛回原色。
 		 *
 		 * 往哪边调：缺省由底色决定（底色亮就往深里调，底色深就往亮里调）。
-		 * `dir` 给 `'darker'` / `'lighter'` 可以钉死方向 —— 描边就要钉死往深里调，
-		 * 因为**浅一档的描边读起来像光晕，不像边**（见 `starInkOf`）。
+		 * `dir` 给 `'darker'` / `'lighter'` 可以钉死方向 —— `readable` 就钉死：
+		 * 亮底往深里调、深底往亮里调，反过来只会撞进底色里。
 		 * 调到 0 或 1 还够不着就交回能拿到的最好的那个 —— 纯黑纯白都够不着的目标不存在，
 		 * 但传进来一个奇怪的 target 时不该死循环。
 		 *
@@ -1997,43 +2029,24 @@ window.__ModuleLoader__.load({
 			return best
 		}
 
-		/**
-		 * 收藏那颗星的描边色。
-		 * @param seed - 星身那个颜色 `#rrggbb`
-		 * @param dark - 是不是暗色
-		 * @returns `#rrggbb`
-		 */
-		function starInkOf(seed, dark) {
-			// 描边要**同时**满足两条，不是二选一：
-			//   · 对**页面底色**够 3:1 —— 白底上那条说了算（亮黄自己才 1.4:1）
-			//   · 对**星身**够 STAR_EDGE —— 深底上那条说了算（星身已经很亮，描边得压下去才看得见边）
-			const page = dark === false ? BACKDROP.light : BACKDROP.dark
-			const ok = (hex) => contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9 && contrastRatio(hex, seed) >= STAR_EDGE - 1e-9
-			// 两步都往**同一个方向**推，所以第二步只会让第一条更宽松，不会把它推回去。
-			const push = (way) => fitContrast(fitContrast(seed, seed, STAR_EDGE, way), page, CONTRAST_MIN, way)
-			// ⚠️ 先往深里试。浅一档的描边读起来像**光晕**，不像边 —— 只有深的才描得出轮廓。
-			const darker = push('darker')
-			if (ok(darker)) return darker
-			// 深到黑了还够不着（底色本来就比它深，比如用户挑了个近黑色）—— 那只能往亮里让
-			const lighter = push('lighter')
-			return ok(lighter) ? lighter : darker
-		}
 
 		/**
-		 * 收藏节点的描边色和填充色。
+		 * 收藏节点的颜色。
 		 *
-		 * 分工：**星身填那个亮黄，描边扛对比度**（见 STAR_COLOR 和 starInkOf）。
+		 * **和普通节点同一条规则** —— 这正是它存在的全部意义：收藏只换「用哪个色号」和
+		 * 「画成什么形状」，怎么上色一个字都不改。所以一个普通节点和一个收藏节点配同一个
+		 * 色号时，它俩长得一模一样（只差形状），不会再出现 John 报的那种"同一个颜色，
+		 * 看起来却有色差"。
 		 *
-		 * ⚠️ "平时空心、走到那一轮才填实"这条**取消了**。原来靠空心/实心区分当前点，
-		 *    可空心意味着只剩一圈描边，而描边为了对比度必须压深 —— 白底上看到的就是
-		 *    "一圈黑线"（John 报的"浅色模式下特别黑"）。现在一律填实，
-		 *    "正看着这一轮"改由**外发光**表示（`dotStyle` 里那条 drop-shadow 本来就只在 focused 时挂）。
+		 * ⚠️ 别再给收藏开小灶。以前它是"星身填亮黄 + 描边另算一个压深的同色"，于是
+		 *    同一个 `#ffd43b`，普通节点是"空心黄边"、收藏是"实心黄 + 暗黄边"——
+		 *    三个颜色，用户设的只有一个，哪个都对不上。
 		 * @param focused - 正看着这一轮（= 当前点）
 		 * @param dark - 是不是暗色
 		 * @param icon - 这个点自己挑的图标；空 = 跟着默认走
 		 * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
 		 * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
-		 * @returns `{accent, ink, fill, shape}` —— 前三项和 inkOf 的返回值一致，好喂给同一套画法
+		 * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
 		 */
 		function starSkin(focused, dark, icon, want, theme) {
 			const skin = theme || THEME
@@ -2041,15 +2054,11 @@ window.__ModuleLoader__.load({
 			// 认得严一点：这个字符串要直接进 CSS。
 			const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 			const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
-			const ink = starInkOf(seed, dark)
-			// 外发光用**星身那个亮色**，不用压深过的描边色 —— 深色的光晕看着像脏了一圈
-			return {
-				accent: seed,
-				ink,
-				fill: seed,
+			return Object.assign(paint(seed, focused, dark), {
 				shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
-			}
+			})
 		}
+
 		// ===== 角色表：一个节点长什么样，全从这里查 =====
 		//
 		// 四个角色，**不是**四种 kind：`normal` 这一种 kind 站在当前路径上时算 `current`。
@@ -2063,17 +2072,19 @@ window.__ModuleLoader__.load({
 		/**
 		 * 角色表。
 		 *   · `color` / `shape` —— 到主题里查哪两个字段（字段名必须和 host 的 schema 对得上）
-		 *   · `ink`  —— 描边色的不透明度；1 = 原色
-		 *   · `fill` —— 填充色的不透明度；`'bg'` = 不垫色，直接用背景色
 		 *   · `own`  —— 自带颜色，不随"在不在当前路径上"变（靠颜色表明**自己是什么**，
 		 *               而不是表明**自己在哪**）
 		 *   · `dashed` —— 虚线边，"还没说话"的记号；不跟着配置走
+		 *
+		 * ⚠️ **这里不许再出现"描边多透明""填充多透明"这类数字。** 原来四个角色各写一份
+		 *    （普通=不填、当前=0.18、压缩=0.3、空=0.15，描边还有 1 和 0.9 之分），
+		 *    于是同一个色号挂到不同角色上深浅差一倍。深浅归 `paint`，那儿只有一个 `FILL_ALPHA`。
 		 */
 		const ROLES = {
-			normal: { color: 'normalColor', shape: 'normalShape', ink: 1, fill: 'bg' },
-			current: { color: 'currentColor', shape: 'currentShape', ink: 0.9, fill: 0.18 },
-			compact: { color: 'compactColor', shape: 'compactShape', ink: 1, fill: 0.3, own: true },
-			empty: { color: 'emptyColor', shape: 'emptyShape', ink: 1, fill: 0.15, own: true, dashed: true, plus: 2 },
+			normal: { color: 'normalColor', shape: 'normalShape' },
+			current: { color: 'currentColor', shape: 'currentShape' },
+			compact: { color: 'compactColor', shape: 'compactShape', own: true },
+			empty: { color: 'emptyColor', shape: 'emptyShape', own: true, dashed: true, plus: 2 },
 		}
 
 		/**
@@ -2113,17 +2124,6 @@ window.__ModuleLoader__.load({
 			return (dotSize + plus) * (grow === undefined ? 1 : grow)
 		}
 
-		/**
-		 * 上色：alpha 为 1 时原样返回。
-		 *
-		 * ⚠️ 别偷懒写成 `fade(hex, 1)` —— 那会把 `#6e7681` 变成 `rgba(110,118,129,1)`，
-		 *    颜色一样但字符串不一样，快照类断言会整片红。
-		 * @param hex - `#rrggbb`
-		 * @param alpha - 0..1
-		 */
-		function tint(hex, alpha) {
-			return alpha === 1 ? hex : fade(hex, alpha)
-		}
 
 		/**
 		 * 给颜色加透明度。主题色是 `#rrggbb`，但路径垫色 / 外发光 / 连线都要半透明，
@@ -2170,14 +2170,18 @@ window.__ModuleLoader__.load({
 		 * @param color - 用什么颜色画
 		 * @param size - 边长
 		 * @param dashed - 画成虚线（空节点那一行用）
+		 * @param dark - 是不是暗色主题；省略按暗色算
 		 * @param override - 已经解析好的画法。收藏那排要用 `favShape` 解（`'star'` 在
 		 *                   `shapeSpec` 眼里是认不得的，会退回圆），所以给个口子让调用方
 		 *                   把解析权拿走 —— 而不是在这里再塞一个"是不是收藏"的开关。
 		 * @returns 一个 <span>
 		 */
-		function preview(want, color, size, dashed, override) {
+		function preview(want, color, size, dashed, override, dark) {
 			const spec = override === undefined || override === null ? shapeSpec(want) : override
-			const skin = { ink: color, fill: fade(color, 0.3), accent: color }
+			// ⚠️ 选择器里看到的必须是**节点平时的样子**，所以走同一个 `paint`（非实心那一档）。
+			//    以前这里写死 0.3、树上普通节点又是不填 —— 于是选择器里挑的和树上画出来的
+			//    深浅对不上；收藏那排更离谱，选择器是半透明、树上是实心。
+			const skin = paint(color, false, dark)
 			const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
 			return h('span', {
 				style: {
@@ -2213,28 +2217,44 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 一个节点此刻用什么描边色、什么填充色。
+		 * **全树唯一的上色规则。** 一个颜色进来，描边和填充出去。
 		 *
-		 * 单独抽出来是因为**有两拨人要用同一套颜色**：方框类的 `dotStyle`，和多边形
-		 * 那个 `<svg><polygon>`。各算各的必然对不齐，最后就是三角和圆看着不是一套东西。
+		 * ```
+		 * 普通态：描边 = 这个色        填充 = 这个色 @ FILL_ALPHA
+		 * 实心态：描边 = 这个色        填充 = 这个色（不透明）
+		 * ```
+		 *
+		 * 描边和填充**永远是同一个颜色**，差别只有一个透明度 —— 所以"我设的那个颜色"
+		 * 指的就是它，不存在第二个答案。这是 Material / Primer / Ant Design 这些成熟
+		 * 设计系统的通行写法（一个 accent 令牌，填充是它的低透明度版，选中时填实）。
+		 *
+		 * 实心态**只有一个含义：正看着这一轮**。别再往里塞第二个含义 —— 收藏、压缩、
+		 * 空节点靠颜色和形状表达自己，不靠填不填实。
+		 * @param color - 用户挑的颜色 `#rrggbb`
+		 * @param focused - 正看着这一轮
+		 * @param dark - 是不是暗色主题
+		 * @returns `{accent, ink, fill, solid}`
+		 */
+		function paint(color, focused, dark) {
+			const ink = readable(color, dark)
+			const solid = focused === true
+			// accent（外发光）就用同一个色。以前它另取"这个 kind 在当前路径上的颜色"，
+			// 于是一个配成绿色的普通节点，滚到它那一轮时会发蓝光 —— 又一个对不上的颜色。
+			return { accent: ink, ink, fill: solid ? ink : fade(ink, FILL_ALPHA), solid }
+		}
+
+		/**
+		 * 一个节点该用哪个颜色，然后交给 `paint` 上色。
 		 * @param kind - normal / compact / empty
 		 * @param active - 在当前路径上
 		 * @param focused - 正看着这一轮
 		 * @param theme - 颜色与形状，缺省用 THEME
-		 * @returns `{accent, ink, fill}`
+		 * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+		 * @returns `{accent, ink, fill, solid}`
 		 */
-		function inkOf(kind, active, focused, theme) {
+		function inkOf(kind, active, focused, theme, dark) {
 			const skin = theme || THEME
-			const role = ROLES[roleOf(kind, active)]
-			const color = skin[role.color]
-			// 外发光色 = **这个 kind 在当前路径上时**用的颜色。普通节点借当前路径的蓝，
-			// 压缩和空节点用自己的色（它们本来就不随路径变）。
-			const accent = skin[ROLES[roleOf(kind, true)].color]
-			return {
-				accent,
-				ink: focused ? accent : tint(color, role.ink),
-				fill: focused ? accent : role.fill === 'bg' ? C.bg : tint(color, role.fill),
-			}
+			return paint(skin[ROLES[roleOf(kind, active)].color], focused, dark)
 		}
 
 		/**
@@ -2256,9 +2276,10 @@ window.__ModuleLoader__.load({
 		 * @param theme - 颜色与形状，缺省用 THEME
 		 * @param alpha - 鱼眼透明度，缺省 1；乘在原有透明度上，不是覆盖
 		 * @param star - `starSkin()` 的结果；给了就整个换成五角星（收藏），不给就照角色画
+		 * @param dark - 是不是暗色主题；省略按暗色算
 		 * @returns 内联样式
 		 */
-		function dotStyle(kind, active, hover, size, focused, theme, alpha, star) {
+		function dotStyle(kind, active, hover, size, focused, theme, alpha, star, dark) {
 			const k = size / Z.dot
 			// 收藏过的点整个换成五角星：形状和颜色都由 `star` 说了算，角色那一套全部让位。
 			// 之所以传进来一个**算好的 skin** 而不是一个 `starred` 布尔，是因为星星的黄
@@ -2266,7 +2287,7 @@ window.__ModuleLoader__.load({
 			// 收藏的形状由 `starSkin` 一起带过来（用户能在详情卡里换图标）；
 			// 老调用方只传 `{accent, ink, fill}` 的话退回五角星。
 			const shape = star === undefined ? shapeOf(kind, active, theme) : star.shape || STAR
-			const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme) : star
+			const { accent, ink, fill } = star === undefined ? inkOf(kind, active, focused, theme, dark) : star
 			// 多边形 / 字 / 图片都不靠这个 <span> 的 border+background 成形：
 			// 方框会在图形外面套一圈，所以这三类一律把方框关掉，由里面的内容自己画。
 			// 外发光也得换 —— box-shadow 画的是**方框**的光晕，套在三角外面就是个方的光。
@@ -2350,11 +2371,14 @@ window.__ModuleLoader__.load({
 				display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
 				borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,
 				borderRadius: `${shapeHeight(shape, size) * GLYPH_RADIUS}px`,
-				// ⚠️ **不填底**。别的形状靠填充区分状态，可框里坐着字 —— 填上去字就糊在底色里，
-				//    当前那一轮（填充最实）反而最看不清。这里的状态改由描边色和字色一起表达。
-				background: 'none',
+				// 填充和别的形状同一条规则（`paint`）：平时是主色的 18%，压不住字；
+				// 实心时才填满，而那时字会换成 `onAccent` 的对比色，见下面那行。
+				background: skin.fill,
 				whiteSpace: 'nowrap', pointerEvents: 'none',
-				fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1, color: skin.ink,
+				// ⚠️ 实心底上必须换对比色。不换的话字和底同色 —— 而**恰好是"正看着的这一轮"
+				//    最看不清**，因为它填得最实。这就是设计系统里的 on-color。
+				fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1,
+				color: skin.solid === true ? onAccent(skin.ink) : skin.ink,
 			}
 		}
 
@@ -3263,7 +3287,7 @@ window.__ModuleLoader__.load({
 				color: 'favoriteColor',
 				shape: 'favoriteShape',
 				extra: ['star'],
-				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边色是从这个颜色自动算出来的（压深到在当前底色上看得清），不用也不能单独配。',
+				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版；深浅由当前主题自动调。',
 			},
 			// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 			// 一律从 ROLES 查，不在这儿重写一遍
@@ -3666,7 +3690,7 @@ window.__ModuleLoader__.load({
 		 * 所以 emoji 和自己传的图都能当收藏图标用。
 		 */
 		function FavIconRow(props) {
-			const { value, color, onPick, onFail, onColor } = props
+			const { value, color, dark, onPick, onFail, onColor } = props
 			const canHover = useHover()
 			const [held, setHeld] = react.useState(false)
 			const guard = useFocusGuard(held)
@@ -3708,7 +3732,7 @@ window.__ModuleLoader__.load({
 					cell('span', want, now === want, {
 						title: want === 'star' ? '恢复默认（五角星）' : want,
 						onClick: (event) => { event.stopPropagation(); onPick(want === 'star' ? '' : want) },
-					}, preview(want, color, PICK - 6, false, favShape(want))),
+					}, preview(want, color, PICK - 6, false, favShape(want), dark)),
 				),
 				// 填字：emoji 也行，于是"图标库"实际上是无限的。
 				// ⚠️ 它和这一排里所有格子**一样高**。以前特意做成两行高，结果整排被它撑起来、
@@ -3779,7 +3803,7 @@ window.__ModuleLoader__.load({
 				// 传图：和设置卡里那颗同一套 —— 浏览器里先光栅化成 PNG 再交给 host（见 shrink()）
 				cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 					String(now).startsWith(PICTURE)
-						? preview(now, color, PICK - 4, false, favShape(now))
+						? preview(now, color, PICK - 4, false, favShape(now), dark)
 						: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
 					h('input', {
 						key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
@@ -4012,6 +4036,8 @@ window.__ModuleLoader__.load({
 				key: 'favicon',
 				value: favIcons[key],
 				color: props.starInk || C.muted,
+				// ⚠️ 选择器里那几颗预览要按当前明暗算，否则亮色下画出来的是暗色那套色
+				dark: props.dark,
 				ownColor: (props.favColors || {})[key],
 				onColor: (want) => props.onFavColor(key, want),
 				onHold: () => setTyping(true),
@@ -4355,14 +4381,14 @@ window.__ModuleLoader__.load({
 							key: one, type: 'button', disabled: !on, title: one,
 							style: S.chip(now === one, on),
 							onClick: () => put(field, one),
-						}, preview(one, color, 13, dashed, favShape(one))),
+						}, preview(one, color, 13, dashed, favShape(one), dark)),
 					),
 					...SHAPES.map((one) =>
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
 							style: S.chip(now === one.value, on),
 							onClick: () => put(field, one.value),
-						}, preview(one.value, color, 13, dashed)),
+						}, preview(one.value, color, 13, dashed, undefined, dark)),
 					),
 					// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 					h('label', {
@@ -4371,7 +4397,7 @@ window.__ModuleLoader__.load({
 						style: S.chip(String(now).startsWith(PICTURE), on),
 					}, [
 						String(now).startsWith(PICTURE)
-							? preview(now, color, 15, dashed)
+							? preview(now, color, 15, dashed, undefined, dark)
 							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
 						h('input', {
 							key: 'f', type: 'file', accept: 'image/*', disabled: !on,
@@ -4724,13 +4750,13 @@ window.__ModuleLoader__.load({
 				const star = favorites.has(node.key) ? starSkin(isFocused, dark, favIcons[node.key], favColors[node.key], theme) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
 				const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
-				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme, dark) : star
 				parts.push(h('span', {
 					key: `d${node.key}`,
 					style: Object.assign(
 						{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
 						TAPPABLE,
-						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
+						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star, dark),
 						// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 						//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 						//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
@@ -4850,7 +4876,9 @@ window.__ModuleLoader__.load({
 						favorites, favIcons, favColors,
 						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
-						starInk: starSkin(true, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).fill,
+						starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
+						// 图标选择器里那几颗预览要按当前明暗上色（`preview` → `paint`）
+						dark,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFavorite: (key, on) => {
 							writeFavorite(key, on)
@@ -4912,7 +4940,7 @@ window.__ModuleLoader__.load({
 			// 收藏：五角星的形状、配色、以及点下去那一下的动画
 			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
-			BACKDROP, CONTRAST_MIN, STAR_EDGE, starInkOf, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
+			BACKDROP, CONTRAST_MIN, FILL_ALPHA, readable, onAccent, paint, relLuminance, contrastRatio, hexToHsl, hslToHex, fitContrast,
 			// 节点上的用户标注（改名 / 收藏）
 			readLabels, writeLabel, readFavorites, writeFavorite, nextFavorites,
 			readFavIcons, writeFavIcon, nextFavIcons,
