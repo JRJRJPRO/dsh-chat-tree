@@ -12,12 +12,12 @@
  * ⚠️ 这里读的是**父会话**的旁车，所以 `rewind.js` 顶上那道"在跑就不许读"的闸
  *    同样适用，而且更严：那一整条血缘上的每一份旁车，读之前都要先问一句它在不在跑。
  *
- * 【读不了的时候怎么办】**不等、不重试、不偷偷降级**，当场返回 `parent-busy`，
- * 由界面明说"所以这条分支没有上下文"。三条路里选了这条：
- *   · 等父会话空下来 —— `adoptBranch` 必须在 fork 返回前跑完，等不了；
- *   · 先记下来、等它 `turn/end` 之后再补 —— 那几秒里用户看到的是一条"看起来正常、
- *     其实失忆"的分支，比直接说更误导；而且他会以为卡住了去瞎点。
- *   · 当场说清楚 —— 用户自己决定是跑完再开，还是就要一条不带上下文的。
+ * 【读不了的时候怎么办】`graft` 本身**不等、不重试**，当场返回 `parent-busy` ——
+ * 它是同步的，而 `adoptBranch` 必须在 fork 返回前跑完，等不了。
+ * "等父会话空下来再补一次"这件事交给上一层（`adopt.js` 的 `scheduleGraftRetry`）：
+ * 同步这一下照样收手，界面照样标"无上下文"，补上了再自己消掉。
+ * 补做是安全的 —— 新分支一旦自己跑起来就有了自己的旁车，`child-already-bound`
+ * 那道闸会拦下，绝不会覆盖任何东西。
  */
 import { existsSync } from 'node:fs'
 import { lineage } from './lineage.js'
@@ -60,6 +60,19 @@ export function anchorSource(fromId, turn, isBusy) {
 }
 
 /**
+ * 这条会话的对话正文是不是托管给了外部引擎（也就是有没有旁车）。
+ *
+ * **只 `existsSync`，不读内容** —— 实测 statSync / existsSync 各 60 次，
+ * 对面的原子 rename 一次都没失败；而开着读句柄时是 40/40 全失败。
+ * 差别只在"句柄有没有和 rename 重叠"，元数据查询压根不开那种句柄。
+ * @param sessionId - dsh 会话 id
+ * @returns 是不是 claude 这类桥接会话
+ */
+export function isClaudeSession(sessionId) {
+	return existsSync(sidecarPath(sessionId))
+}
+
+/**
  * 把父分支第 `turn` 轮为止的外部引擎记忆嫁接给新分支。
  *
  * reason（`grafted: false` 时）：
@@ -77,19 +90,6 @@ export function anchorSource(fromId, turn, isBusy) {
  *                 **必须给**：漏给就等于默认"谁都不在跑"，而那正是会打死用户一轮对话的假设。
  * @returns 结果说明
  */
-/**
- * 这条会话的对话正文是不是托管给了外部引擎（也就是有没有旁车）。
- *
- * **只 `existsSync`，不读内容** —— 实测 statSync / existsSync 各 60 次，
- * 对面的原子 rename 一次都没失败；而开着读句柄时是 40/40 全失败。
- * 差别只在"句柄有没有和 rename 重叠"，元数据查询压根不开那种句柄。
- * @param sessionId - dsh 会话 id
- * @returns 是不是 claude 这类桥接会话
- */
-export function isClaudeSession(sessionId) {
-	return existsSync(sidecarPath(sessionId))
-}
-
 export function graft(childId, parentId, turn, isBusy) {
 	if (typeof isBusy !== 'function') return { grafted: false, reason: 'bad-request' }
 	if (!childId || !parentId || !Number.isSafeInteger(turn) || turn < 1) return { grafted: false, reason: 'bad-request' }

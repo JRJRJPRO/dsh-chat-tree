@@ -17,7 +17,7 @@
  */
 
 import { check, report, loadClient } from './test-kit.mjs'
-import { apply as hostApply } from './index.js'
+import { __test, apply as hostApply } from './index.js'
 
 // ===== 第 1 步：假宿主 =====
 
@@ -229,6 +229,24 @@ console.log('用例 4：浏览器半也要收干净')
 		again.dispose()
 		console.log('  导轨 + 设置卡片挂上、收掉、再挂上；__dshTree 跟着走')
 	}
+}
+
+console.log('用例 5：停用时，等父会话空闲的补接定时器也要一并取消')
+{
+	// 父会话正在跑的时候开岔路，graft 会先收手（读旁车会打断那一轮），
+	// 改成排队等它空下来再补。⚠️ 这些定时器要是活过插件本身，
+	// 就会在插件已经卸掉之后去写别人的旁车 —— 这一条就钉着它。
+	__test.cancelPendingGrafts() // 先清干净，免得被前面的用例带进来
+	const host = fakeHost(world)
+	hostApply(host.ctx)
+	// 间隔给得很长：这一条测的是"停用能不能取消"，不是"重试灵不灵"
+	__test.scheduleGraftRetry(host.ctx, 'child-1', 'parent-1', 3, { intervalMs: 60000 })
+	__test.scheduleGraftRetry(host.ctx, 'child-2', 'parent-1', 5, { intervalMs: 60000 })
+	host.dispose()
+	const leaked = __test.cancelPendingGrafts()
+	check(leaked === 0, `停用后还剩 ${leaked} 个补接定时器 —— 它们会活过插件，去写已经不归我们管的旁车`)
+	world.namespaces.clear()
+	console.log('  排了 2 个补接，停用后一个不剩')
 }
 
 report()

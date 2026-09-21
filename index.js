@@ -19,7 +19,7 @@
  * @module dsh-tree
  */
 
-import { adoptBranch, agentOf, forkTurnOf, inheritedPendingIds } from './src/host/adopt.js'
+import { adoptBranch, agentOf, cancelPendingGrafts, forkTurnOf, inheritedPendingIds, scheduleGraftRetry } from './src/host/adopt.js'
 import { collect } from './src/host/collect.js'
 import { graft } from './src/host/graft.js'
 import { HttpError, raw, route } from './src/host/http.js'
@@ -33,7 +33,13 @@ import { SETTINGS_NS, SETTINGS_SCHEMA } from './src/host/settings.js'
 /** cordis 插件名。 */
 export const name = 'tree'
 
-/** 必须的宿主服务；少一个都会让 fiber 永远 pending，所以只要这三个。 */
+/**
+ * 必须的宿主服务；少一个都会让 fiber 永远 pending，所以只收真的离不开的。
+ *
+ * `connection` 是三条路由的信任围栏（Host/Origin + 登录 cookie，见 src/host/http.js）。
+ * 写进**顶层** inject 而不是 `ctx.inject` 是有意的：没有它就没有鉴权，
+ * 那这三条路由宁可不开 —— 少个树，总好过把全部会话的提问预览挂在局域网上。
+ */
 export const inject = ['webServer', 'sessionPersistence', 'agents']
 
 // 对外出口。测试和别人从这里取，别直接 import src/ 里的文件 ——
@@ -43,7 +49,7 @@ export { foldOutline } from './src/host/outline.js'
 
 /** 内部件出口，仅供离线测试（cordis 只读 name/inject/apply）。 */
 export const __test = {
-	adoptBranch, forkTurnOf, inheritedPendingIds, lineage,
+	adoptBranch, forkTurnOf, inheritedPendingIds, lineage, scheduleGraftRetry, cancelPendingGrafts,
 	putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX,
 	statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS,
 	collect,
@@ -51,13 +57,13 @@ export const __test = {
 
 /**
  * 装上监听、设置和三个路由。
- * @param ctx - 携带 webServer / sessionPersistence / agents 的 context
+ * @param ctx - 携带 webServer / sessionPersistence / agents / connection 的 context
  */
 export function apply(ctx) {
 	ctx.effect(() => {
 		// 开机报到：看不到这行就说明监听没装上
 		ctx.logger?.info?.('dsh-tree: 已接管分支创建（agent/created）')
-		return ctx.on('agent/created', (...args) => {
+		const off = ctx.on('agent/created', (...args) => {
 			const agent = agentOf(args)
 			if (agent === undefined) {
 				ctx.logger?.warn?.('dsh-tree: agent/created 的参数里没认出 agent，分支不会被接管')
@@ -65,6 +71,13 @@ export function apply(ctx) {
 			}
 			adoptBranch(ctx, agent)
 		})
+		// ⚠️ 停用时得把「等父会话空下来再补 graft」的定时器一并取消，
+		//    否则它们会活过插件本身，在插件已经卸掉之后去写别人的旁车。
+		return () => {
+			off()
+			const dropped = cancelPendingGrafts()
+			if (dropped > 0) ctx.logger?.info?.(`dsh-tree: 取消了 ${dropped} 个等待中的上下文补接`)
+		}
 	}, 'dsh-tree: 接管新分支')
 
 	// 设置 namespace。ctx.settings 是可选服务，所以走 ctx.inject 而不是顶层 inject
