@@ -815,11 +815,14 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	for (const bad of ['red', '#fff', 'url(javascript:1)', '#12345g', '', undefined, null, 123]) {
 		check(pure.starSkin(true, true, undefined, bad).ink === pure.STAR_COLOR, `认不得的颜色「${String(bad)}」该退回默认的黄`)
 	}
-	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色模式下那个黄该被压深，不然白底上看不见')
-	// 用户自己挑的颜色**也过同一条 readable** —— 挑一个亮绿，白底上同样看不清
-	check(pure.contrastRatio(pure.starSkin(true, false, undefined, '#56d364').ink, '#ffffff') >= pure.CONTRAST_MIN - 1e-9,
-		'用户挑的颜色在亮色下也该被压到够对比度')
-	check(pure.starSkin(true, true, undefined, '#56d364').ink === '#56d364', '深底上够对比度的颜色不该被动')
+	// 默认色分明暗两版（和另外四个角色色一样），所以没挑过色的收藏在亮色下会深一些
+	check(pure.starSkin(true, false).ink !== pure.STAR_COLOR, '亮色下该用亮色那版默认收藏色')
+	check(pure.starSkin(true, false).ink === pure.paletteOf(false).favoriteColor, '亮色下的默认收藏色没走 PALETTE')
+	// ⚠️ 但**用户亲手挑的色一个像素不动**，两种明暗都一样
+	for (const dark of [true, false]) {
+		check(pure.starSkin(true, dark, undefined, '#56d364').ink === '#56d364',
+			`${dark ? '暗' : '亮'}色下用户挑的 #56d364 被改动了`)
+	}
 	// 存盘那一层：改过的才进字典，恢复默认是**删掉**而不是存一个黄
 	check(pure.nextFavColors({}, 'a:1', '#58A6FF')['a:1'] === '#58a6ff', '存进去该归一成小写')
 	check(pure.nextFavColors({ 'a:1': '#58a6ff' }, 'a:1', '')['a:1'] === undefined, '恢复默认该把这一条删掉，而不是存一个默认色')
@@ -1007,13 +1010,29 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 			// ④ 外发光也是同一个色 —— 以前它另取"这个 kind 在当前路径上的颜色"，
 			//    于是一个配成绿色的普通节点滚到那一轮会发蓝光，又一个对不上的颜色
 			check(lit.accent === lit.ink, `${label} 外发光和描边不同色了`)
-			// ⑤ 上屏前过 readable，两种底色都看得见
+			// ⑤ 主题里是什么色，画出来就是什么色，**一个像素不动**。
+			//    这条是 `themeFrom` 立的规矩："没改过的跟着明暗走，改过的钉死"——
+			//    画的时候再偷偷调一次，用户就会在设置里看到一个色、树上量到另一个色。
+			check(rest.ink === theme[pure.ROLES[pure.roleOf(kind, active)].color],
+				`${label} 描边被改动了：主题里是 ${theme[pure.ROLES[pure.roleOf(kind, active)].color]}，画出来是 ${rest.ink}`)
+			// ⑥ 对比度是**默认色自己**的责任，不是画的时候补救
 			check(pure.contrastRatio(rest.ink, page) >= pure.CONTRAST_MIN - 0.05,
-				`${label} 描边对底色只有 ${pure.contrastRatio(rest.ink, page).toFixed(2)}:1`)
+				`${label} 默认色对底色只有 ${pure.contrastRatio(rest.ink, page).toFixed(2)}:1 —— 默认色得自己扛住`)
 		}
 	}
 
-	// ⑥ **同一个色号，普通节点和收藏节点必须长得一模一样**（形状除外）。
+	// ⑦ **用户亲手挑的颜色，一个像素都不许动。** John 在设置里挑了 #fff833，
+	//    拿取色器在树上量到 #9e9800 —— 那是画的时候偷偷"压到够对比度"干的。
+	//    明暗自适应属于默认值那一层（上面 ⑥），不属于这一层。
+	for (const seed of ['#fff833', '#ffd43b', '#1a1a1a', '#f0f0f0']) {
+		for (const dark of [true, false]) {
+			const theme = Object.assign({}, pure.themeFrom({}, {}, dark), { normalColor: seed, favoriteColor: seed })
+			check(pure.inkOf('normal', false, true, theme).fill === seed, `${seed} 在${dark ? '暗' : '亮'}色下被改成了 ${pure.inkOf('normal', false, true, theme).fill}`)
+			check(pure.starSkin(true, dark, undefined, seed, theme).fill === seed, `${seed} 收藏在${dark ? '暗' : '亮'}色下被改动了`)
+		}
+	}
+
+	// ⑧ **同一个色号，普通节点和收藏节点必须长得一模一样**（形状除外）。
 	//    这就是 John 说的"色差"那条，直接钉死。
 	for (const dark of [true, false]) {
 		const seed = '#ffd43b'
@@ -1026,7 +1045,8 @@ console.log('用例 18：全树唯一的上色规则 —— 描边和填充永�
 		}
 	}
 
-	// ⑦ readable 只动明度：色相和饱和度一个都不许变，不然那就不是"同一个颜色"了
+	// ⑨ `readable` 现在只在**算默认色**时用（`PALETTE.light` 那两项），不再碰画的那一步。
+	//    它只动明度：色相和饱和度一个都不许变，不然那就不是"同一个颜色"了。
 	for (const hex of ['#ffd43b', '#56d364', '#f85149', '#1a1a1a', '#f0f0f0']) {
 		for (const dark of [true, false]) {
 			const out = pure.readable(hex, dark)
@@ -1081,19 +1101,21 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 		for (const dark of [true, false]) {
 			const skin = pure.starSkin(false, dark)
 			const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
-			check(skin.ink === pure.readable(gold, dark), `${dark ? '暗' : '亮'}色下收藏该直接走 readable，不许自己算一套`)
+			check(skin.ink === pure.paletteOf(dark).favoriteColor, `${dark ? '暗' : '亮'}色下收藏该直接取 PALETTE 里那一版，不许自己算一套`)
 			check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${dark ? '暗' : '亮'}色下填充该是描边色的半透明版`)
 			check(skin.accent === skin.ink, `${dark ? '暗' : '亮'}色下外发光该和描边同色`)
 			check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
-				`${dark ? '暗' : '亮'}色下对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
+				`${dark ? '暗' : '亮'}色下默认色对底色才 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
 		}
 		// ③ 暗色是用户的日常模式：那个黄必须一个像素都不动
 		check(pure.starSkin(false, true).ink === gold, '暗色下那个黄被动过了 —— 它对深底 13:1，不该动')
-		// ④ 亮色下压到**刚好够**就停，不许压过头（越压越不像黄）
+		// ④ 亮色那版由 readable 算出来，压到**刚好够**就停（越压越不像黄）
 		const lit = pure.starSkin(false, false).ink
 		const ratio = pure.contrastRatio(lit, pure.BACKDROP.light)
 		check(ratio >= pure.CONTRAST_MIN - 0.05 && ratio <= pure.CONTRAST_MIN + 0.15, `亮色下压过头了（${ratio.toFixed(2)}:1）`)
 		check(pure.hexToHsl(lit).l < pure.hexToHsl(gold).l, '白底上该往深里调')
+		// ⚠️ 亮色那版是**算出来的**，不是手抄的十六进制 —— 改了基色它自动跟着变
+		check(lit === pure.readable(gold, false), '亮色版收藏色该由 readable 从基色算出来')
 
 		// ⑤ HSL round-trip 不许跑偏，不然上面每一条都建在沙子上
 		for (const hex of ['#ffd43b', '#000000', '#ffffff', '#58a6ff', '#7f7f7f']) {
@@ -1101,18 +1123,16 @@ console.log('用例 19：收藏 = 黄色五角星，只有走到它那一轮才�
 		}
 		check(pure.fitContrast('红', '#fff', 3) === '红' && pure.relLuminance('红') === 0, '认不得的色值该原样退回')
 
-		// ⑥ 换成任何一个颜色都得站得住 —— 用户能在设置里改默认色、也能给单个点挑色
+		// ⑥ 换成任何一个颜色都得站得住：**原样用**，而且描边填充永远同色
 		for (const seed of ['#ffd43b', ...pure.FAV_COLORS.slice(1), '#1a1a1a', '#f0f0f0', '#ffffff', '#000000']) {
 			for (const dark of [true, false]) {
 				const skin = pure.starSkin(false, dark, undefined, seed)
-				const page = dark ? pure.BACKDROP.dark : pure.BACKDROP.light
+				check(skin.ink === seed.toLowerCase(), `${seed} 被改动成了 ${skin.ink} —— 用户挑的色不许动`)
 				check(skin.fill === pure.fade(skin.ink, pure.FILL_ALPHA), `${seed} 的填充和描边不同色了：${skin.fill}`)
-				check(pure.contrastRatio(skin.ink, page) >= pure.CONTRAST_MIN - 0.05,
-					`${seed} 在${dark ? '暗' : '亮'}色下对底色只有 ${pure.contrastRatio(skin.ink, page).toFixed(2)}:1`)
 			}
 		}
-		// ⚠️ 亮底往深里推、深底往亮里推。近黑色配深底就是后者：它比底色还深，
-		//    再深下去只会和底色糊在一起。
+		// ⚠️ `readable` 推的方向：亮底往深里推、深底往亮里推。近黑色配深底就是后者 ——
+		//    它比底色还深，再深下去只会和底色糊在一起。
 		check(pure.relLuminance(pure.readable('#ffd43b', false)) < pure.relLuminance('#ffd43b'), '白底上该往深里推')
 		check(pure.relLuminance(pure.readable('#1a1a1a', true)) > pure.relLuminance('#1a1a1a'), '近黑色配深底该往亮里推')
 

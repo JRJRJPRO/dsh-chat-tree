@@ -10,7 +10,7 @@ import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
 import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, inkOf, shapeOf, starSkin } from './shapes.js'
-import { edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
+import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
 import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
@@ -389,7 +389,8 @@ export function Rail(props) {
 					clearTimeout(restTimer.current)
 					const want = hoverNext(hover === null ? null : hover.node, at)
 					if (want === 'keep') return
-					const seat = () => setHover({ node: at, y: yOf(rowOfNode(at)) })
+					// ⚠️ x 也要记：详情卡锚在**这个点**上，不是锚在整条导轨的左缘（见 cardAnchor）
+					const seat = () => setHover({ node: at, x: xOf(at.column), y: yOf(rowOfNode(at)) })
 					if (want === 'now') seat()
 					else restTimer.current = setTimeout(seat, Z.restMs)
 				},
@@ -409,13 +410,13 @@ export function Rail(props) {
 					const at = cutPointOf(node)
 					if (at !== undefined) reshape(shapeOps.cut(at.key))
 				},
+				// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
+				anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
 				railWidth, labels, hold, release, onLock,
 				favorites, favIcons, favColors,
 				// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 				// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
 				starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
-				// 图标选择器里那几颗预览要按当前明暗上色（`preview` → `paint`）
-				dark,
 				onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 				onFavorite: (key, on) => {
 					writeFavorite(key, on)

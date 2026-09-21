@@ -108,6 +108,44 @@ export function railRight(box, railWidth, viewWidth, gap) {
 	return Math.max(0, viewWidth - box.right) + pad
 }
 
+/** 详情卡和它那个点之间留多少空白（px）。 */
+export const CARD_GAP = 8
+
+/**
+ * 详情卡的 `right`（离导轨**右**缘多远，值越大越靠左）。
+ *
+ * 规矩：**贴着那个点本身，不是贴着整条导轨的左缘。**
+ *
+ * 以前这里写死 `railWidth + 4`，也就是不管点在第几列，卡片一律甩到整棵树的
+ * 左边去。树只有一列时看不出来；某个点一旦分出五个岔，`maxColumn` 变成 4，
+ * 第 0 列（主干，也就是最常悬停的那一列）的卡片就被推到四个列距之外 ——
+ * John 的原话是"中间隔了 4 个结点，有点太远了"。
+ *
+ * 业界做法就一条（Floating UI / Popper 的 `reference` + `offset`，
+ * Material、Primer、Ant Design 的 popover 全是这个）：
+ * **浮层锚在触发元素上**，中间只留一个固定的小 offset；容器只用来做碰撞检测
+ * （flip / shift），不用来当锚点。这里的碰撞检测已经有了 —— 宽度 `maxWidth: 60vw`
+ * 加上导轨自己的压列距（railRoom），所以只差"锚回点上"这一步。
+ *
+ * 代价是卡片会盖住它左边那几条岔路线。这是所有图形界面的 hover 卡片都在付的
+ * 代价（GitKraken / VS Code Git Graph / GitHub 的提交图都盖），而且一行最多
+ * 只有一个点，被盖住的基本是穿过去的连线，不是别的点。走开就还回去。
+ *
+ * 小例子（railWidth 116、edge 22、lane 23.4、hitW 23.4、点在第 0 列）：
+ *   x = 116 - 11 = 105；right = 116 - 105 + 11.7 + 8 = 30.7
+ *   —— 老写法是 116 + 4 = 120，整整近了 89px。
+ *   同一棵树里最左那列（第 4 列）：x = 105 - 93.6 = 11.4；right = 124，
+ *   和老写法的 120 差不多 —— 说明这一改**只把不该远的拉近，没把该远的推远**。
+ *
+ * @param railWidth - 导轨宽
+ * @param x - 点的圆心 x（导轨内坐标系，左缘为 0）
+ * @param hitW - 命中区宽度，卡片从命中区外缘再让 `CARD_GAP`
+ * @returns CSS `right` 的像素值
+ */
+export function cardAnchor(railWidth, x, hitW) {
+	return railWidth - x + hitW / 2 + CARD_GAP
+}
+
 /**
  * 导轨横向最多能占多宽。
  *

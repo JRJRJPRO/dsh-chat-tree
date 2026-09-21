@@ -285,7 +285,7 @@ export const FAV_SHAPES = ['star', ...SHAPES.map((one) => one.value).filter((one
  * 所以 emoji 和自己传的图都能当收藏图标用。
  */
 export function FavIconRow(props) {
-	const { value, color, dark, onPick, onFail, onColor } = props
+	const { value, color, onPick, onFail, onColor } = props
 	const canHover = useHover()
 	const [held, setHeld] = react.useState(false)
 	const guard = useFocusGuard(held)
@@ -327,7 +327,7 @@ export function FavIconRow(props) {
 			cell('span', want, now === want, {
 				title: want === 'star' ? '恢复默认（五角星）' : want,
 				onClick: (event) => { event.stopPropagation(); onPick(want === 'star' ? '' : want) },
-			}, preview(want, color, PICK - 6, false, favShape(want), dark)),
+			}, preview(want, color, PICK - 6, false, favShape(want))),
 		),
 		// 填字：emoji 也行，于是"图标库"实际上是无限的。
 		// ⚠️ 它和这一排里所有格子**一样高**。以前特意做成两行高，结果整排被它撑起来、
@@ -398,7 +398,7 @@ export function FavIconRow(props) {
 		// 传图：和设置卡里那颗同一套 —— 浏览器里先光栅化成 PNG 再交给 host（见 shrink()）
 		cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 			String(now).startsWith(PICTURE)
-				? preview(now, color, PICK - 4, false, favShape(now), dark)
+				? preview(now, color, PICK - 4, false, favShape(now))
 				: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
 			h('input', {
 				key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
@@ -459,6 +459,9 @@ export function FavIconRow(props) {
  */
 export function Detail(props) {
 	const { node, y, railWidth, labels, hold, release } = props
+	// 卡片锚在那个点上（cardAnchor 算好了送过来），不是锚在整条导轨的左缘。
+	// 没人悬停时退回老位置，免得淡出那一下横向滑一段。
+	const anchor = Number.isFinite(props.anchor) ? props.anchor : railWidth + 4
 	const [expanded, setExpanded] = react.useState(false)
 	const [draft, setDraft] = react.useState(null)
 	const [merging, setMerging] = react.useState(false)
@@ -631,8 +634,6 @@ export function Detail(props) {
 		key: 'favicon',
 		value: favIcons[key],
 		color: props.starInk || C.muted,
-		// ⚠️ 选择器里那几颗预览要按当前明暗算，否则亮色下画出来的是暗色那套色
-		dark: props.dark,
 		ownColor: (props.favColors || {})[key],
 		onColor: (want) => props.onFavColor(key, want),
 		onHold: () => setTyping(true),
@@ -674,7 +675,7 @@ export function Detail(props) {
 			// 还是被外人抢走了"。见 useFocusGuard。
 			[CARD_MARK]: '1',
 			style: {
-				position: 'absolute', right: `${railWidth + 4}px`, top: `${y}px`,
+				position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 				transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
 				opacity: shown ? 1 : 0,
 				transition: 'opacity .14s ease, transform .14s ease',
@@ -703,7 +704,6 @@ export function Detail(props) {
 		!shown || !expanded || !merging || dirty ? null : h(MergeList, {
 			key: 'merge',
 			targets: props.targets || [],
-			railWidth,
 			onPick: (target) => {
 				setMerging(false)
 				props.onMerge(target)
@@ -724,13 +724,16 @@ export function Detail(props) {
  * 好在本 cwd 的全部对话本来就在 `/outlines` 的答复里，自己列就是了。
  */
 export function MergeList(props) {
-	const { targets, railWidth, onPick } = props
+	const { targets, onPick } = props
 	return h(
 		'div',
 		{
 			style: {
-				position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
-				width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
+				// ⚠️ 这张单子是**卡片的子元素**，包含块就是卡片本身 —— 所以是 `right: 0`
+				//    贴着卡片右缘挂在它下面，不是 `railWidth + 4`。后者是卡片自己相对
+				//    导轨的偏移，抄到这儿等于把单子又往左甩了一整条导轨那么宽。
+				position: 'absolute', right: 0, top: '100%', marginTop: '4px',
+				width: '100%', maxHeight: '40vh', overflowY: 'auto',
 				// 单子滑到头之后别把滚动传给底下的聊天区（iOS 上那一下是整页橡皮筋回弹，
 				// 手一松单子自己弹没了）；WebkitOverflowScrolling 给老 iOS 补惯性滚动。
 				overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch',

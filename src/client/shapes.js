@@ -360,6 +360,65 @@ export function iconUrl(id) {
  */
 export const STAR_COLOR = '#ffd43b'
 
+// ⚠️ 这一块**必须排在 `PALETTE` 前面**：亮色版的收藏色是 `readable(STAR_COLOR, false)`
+//    算出来的，而 `BACKDROP` / `CONTRAST_MIN` 是 const —— 排在后面就是 TDZ，
+//    整个 bundle 在加载时 ReferenceError。（踩过，好在炸得很响。）
+
+/**
+ * 算对比度用的参考底色。
+ *
+ * ⚠️ 真实底色是宿主的 CSS 变量（`--dsw-alias-bg-layer-1`），JS 读不到也算不了，
+ *    所以拿这两个当代表。偏一点无所谓：`fitContrast` 只用它定"往亮调还是往暗调、调到哪"。
+ */
+export const BACKDROP = { dark: '#0d1117', light: '#ffffff' }
+
+/** 图形类元素的对比度下限（WCAG 1.4.11 非文本对比度就是 3:1）。 */
+export const CONTRAST_MIN = 3
+
+/**
+ * 普通态下填充的不透明度。
+ *
+ * **全局只有这一个数**。以前四个角色各写一个（普通=不填、当前=0.18、压缩=0.3、
+ * 空=0.15），于是同一个色号挂到不同角色上深浅差一倍，谁都说不清"我设的颜色"
+ * 到底应该长什么样 —— John 报的"看起来有色差"就是这条。
+ */
+export const FILL_ALPHA = 0.18
+
+/**
+ * 把一个颜色推到对当前底色**至少 3:1**，方向按明暗定。
+ *
+ * 【为什么要有这一步】用户挑的色号是个绝对值，而它要落在两种底色上。亮黄
+ * `#ffd43b` 对深底 13:1（好看），对白底只有 1.4:1（基本看不见）。业界的做法是
+ * **令牌随主题解析**（Material 的 tonal palette、Primer 的 functional color）：
+ * 同一个语义色在亮暗两套里本来就是两个不同的明度，而不是画的时候临时补救。
+ * 这里就是那一步 —— 一个颜色上屏前先过它，之后描边和填充都从结果派生。
+ *
+ * ⚠️ 只推明度，色相和饱和度不动（`fitContrast` 保证）。推的是"刚好够"的那一档，
+ *    不是推到底 —— 调过头只会离用户挑的那个颜色越来越远。
+ * @param hex - 用户挑的颜色 `#rrggbb`
+ * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+ * @returns `#rrggbb`
+ */
+export function readable(hex, dark) {
+	const light = dark === false
+	const page = light ? BACKDROP.light : BACKDROP.dark
+	if (contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9) return hex
+	// 亮底上往深里推，深底上往亮里推 —— 反过来推只会撞进底色里
+	return fitContrast(hex, page, CONTRAST_MIN, light ? 'darker' : 'lighter')
+}
+
+/**
+ * 实心底上放什么颜色的内容（自定义的那个字）。
+ *
+ * 就是业界说的 on-color：底色实了之后，压在上面的字必须换成和底色对比最大的那个，
+ * 不然字会糊进底色里 —— **而且恰好是"正看着的这一轮"最糊**，因为它填得最实。
+ * @param hex - 底下那块实色
+ * @returns `#ffffff` 或 `#0d1117`
+ */
+export function onAccent(hex) {
+	return contrastRatio(hex, BACKDROP.light) >= contrastRatio(hex, BACKDROP.dark) ? BACKDROP.light : BACKDROP.dark
+}
+
 // ===== 配色：一套，亮色和暗色各一版 =====
 //
 // 为什么要分明暗两版：同一个色号在白底和深底上**观感完全不同**。亮蓝 `#58a6ff`
@@ -379,17 +438,25 @@ export const STAR_COLOR = '#ffd43b'
  * 虚线边才是它自己的记号（在 ROLES 里），不跟着颜色走。
  */
 export const PALETTE = {
-	dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff' },
+	// ⚠️ `favoriteColor` 的两版是**算出来的**：亮色那版由 `readable` 把同一个黄压到
+	//    白底上够 3:1。手抄一个十六进制的话，改了基色就得记得改它，而忘了不会报错。
+	dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff', favoriteColor: STAR_COLOR },
 	// 压缩色用的是宿主自己的 amber-600（`--dsw-static-amber-600`），
 	// 和界面其它"警示"语义同色；早先那个 #bc4c00 烧焦橙在白底上太闷。
-	light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#dd8629', emptyColor: '#1f6feb' },
+	// ⚠️ amber-600 原值在白底上只有 2.79:1，差一点点 —— 压到刚好够。
+	//    默认色必须自己扛住对比度：画的时候**不会**再有人替它兜底（见 `paint`）。
+	light: {
+		normalColor: '#8c959f', currentColor: '#1f6feb',
+		compactColor: readable('#dd8629', false), emptyColor: '#1f6feb',
+		favoriteColor: readable(STAR_COLOR, false),
+	},
 }
 
 /**
  * 形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。
  *
- * `favoriteShape` 在这儿而不在 PALETTE 里，是因为收藏的默认色**不分明暗**
- * （就一个 `STAR_COLOR`，明暗差别交给 `readable` 在上屏前统一处理）。
+ * `favoriteColor` **不在这儿，在 `PALETTE` 里**，和另外四个角色色一样分明暗两版 ——
+ * 明暗自适应属于"默认值"这一层。形状不分明暗，所以 `favoriteShape` 留在这儿。
  */
 const SHAPE_DEFAULTS = {
 	normalShape: 'circle',
@@ -397,7 +464,6 @@ const SHAPE_DEFAULTS = {
 	compactShape: 'triangle',
 	emptyShape: 'circle',
 	favoriteShape: 'star',
-	favoriteColor: STAR_COLOR,
 }
 
 /**
@@ -479,61 +545,6 @@ export function favShape(want) {
 	return spec.value === text ? spec : STAR
 }
 
-
-/**
- * 算对比度用的参考底色。
- *
- * ⚠️ 真实底色是宿主的 CSS 变量（`--dsw-alias-bg-layer-1`），JS 读不到也算不了，
- *    所以拿这两个当代表。偏一点无所谓：`fitContrast` 只用它定"往亮调还是往暗调、调到哪"。
- */
-export const BACKDROP = { dark: '#0d1117', light: '#ffffff' }
-
-/** 图形类元素的对比度下限（WCAG 1.4.11 非文本对比度就是 3:1）。 */
-export const CONTRAST_MIN = 3
-
-/**
- * 普通态下填充的不透明度。
- *
- * **全局只有这一个数**。以前四个角色各写一个（普通=不填、当前=0.18、压缩=0.3、
- * 空=0.15），于是同一个色号挂到不同角色上深浅差一倍，谁都说不清"我设的颜色"
- * 到底应该长什么样 —— John 报的"看起来有色差"就是这条。
- */
-export const FILL_ALPHA = 0.18
-
-/**
- * 把一个颜色推到对当前底色**至少 3:1**，方向按明暗定。
- *
- * 【为什么要有这一步】用户挑的色号是个绝对值，而它要落在两种底色上。亮黄
- * `#ffd43b` 对深底 13:1（好看），对白底只有 1.4:1（基本看不见）。业界的做法是
- * **令牌随主题解析**（Material 的 tonal palette、Primer 的 functional color）：
- * 同一个语义色在亮暗两套里本来就是两个不同的明度，而不是画的时候临时补救。
- * 这里就是那一步 —— 一个颜色上屏前先过它，之后描边和填充都从结果派生。
- *
- * ⚠️ 只推明度，色相和饱和度不动（`fitContrast` 保证）。推的是"刚好够"的那一档，
- *    不是推到底 —— 调过头只会离用户挑的那个颜色越来越远。
- * @param hex - 用户挑的颜色 `#rrggbb`
- * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
- * @returns `#rrggbb`
- */
-export function readable(hex, dark) {
-	const light = dark === false
-	const page = light ? BACKDROP.light : BACKDROP.dark
-	if (contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9) return hex
-	// 亮底上往深里推，深底上往亮里推 —— 反过来推只会撞进底色里
-	return fitContrast(hex, page, CONTRAST_MIN, light ? 'darker' : 'lighter')
-}
-
-/**
- * 实心底上放什么颜色的内容（自定义的那个字）。
- *
- * 就是业界说的 on-color：底色实了之后，压在上面的字必须换成和底色对比最大的那个，
- * 不然字会糊进底色里 —— **而且恰好是"正看着的这一轮"最糊**，因为它填得最实。
- * @param hex - 底下那块实色
- * @returns `#ffffff` 或 `#0d1117`
- */
-export function onAccent(hex) {
-	return contrastRatio(hex, BACKDROP.light) >= contrastRatio(hex, BACKDROP.dark) ? BACKDROP.light : BACKDROP.dark
-}
 
 /**
  * WCAG 相对亮度。
@@ -669,12 +680,13 @@ export function fitContrast(hex, backdrop, target, dir) {
  * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
  */
 export function starSkin(focused, dark, icon, want, theme) {
-	const skin = theme || THEME
+	// 给了 theme 就用它（它已经按明暗选好色了，见 `themeFrom`）；没给就按 dark 挑一版默认
+	const skin = theme || paletteOf(dark !== false)
 	// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 	// 认得严一点：这个字符串要直接进 CSS。
 	const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 	const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
-	return Object.assign(paint(seed, focused, dark), {
+	return Object.assign(paint(seed, focused), {
 		shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
 	})
 }
@@ -790,18 +802,17 @@ export function shapeSpec(want) {
  * @param color - 用什么颜色画
  * @param size - 边长
  * @param dashed - 画成虚线（空节点那一行用）
- * @param dark - 是不是暗色主题；省略按暗色算
  * @param override - 已经解析好的画法。收藏那排要用 `favShape` 解（`'star'` 在
  *                   `shapeSpec` 眼里是认不得的，会退回圆），所以给个口子让调用方
  *                   把解析权拿走 —— 而不是在这里再塞一个"是不是收藏"的开关。
  * @returns 一个 <span>
  */
-export function preview(want, color, size, dashed, override, dark) {
+export function preview(want, color, size, dashed, override) {
 	const spec = override === undefined || override === null ? shapeSpec(want) : override
 	// ⚠️ 选择器里看到的必须是**节点平时的样子**，所以走同一个 `paint`（非实心那一档）。
 	//    以前这里写死 0.3、树上普通节点又是不填 —— 于是选择器里挑的和树上画出来的
 	//    深浅对不上；收藏那排更离谱，选择器是半透明、树上是实心。
-	const skin = paint(color, false, dark)
+	const skin = paint(color, false)
 	const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
 	return h('span', {
 		style: {
@@ -850,13 +861,17 @@ export function shapeOf(kind, active, theme) {
  *
  * 实心态**只有一个含义：正看着这一轮**。别再往里塞第二个含义 —— 收藏、压缩、
  * 空节点靠颜色和形状表达自己，不靠填不填实。
- * @param color - 用户挑的颜色 `#rrggbb`
+ * @param color - 用来画的颜色 `#rrggbb`，**原样使用**
  * @param focused - 正看着这一轮
- * @param dark - 是不是暗色主题
  * @returns `{accent, ink, fill, solid}`
  */
-export function paint(color, focused, dark) {
-	const ink = readable(color, dark)
+export function paint(color, focused) {
+	// ⚠️ **颜色原样用，一个像素不动。** 这里一度会先过一遍 `readable`（对底色不足
+	//    3:1 就推深/推亮），结果是用户在设置里挑了 `#fff833`、树上画出来却是
+	//    `#9e9800` —— 设置卡和屏幕上两个色号对不上，John 当场就拿取色器抓到了。
+	//    那违反了 `themeFrom` 早就立下的规矩：**没改过的跟着明暗走，改过的钉死。**
+	//    明暗自适应属于"默认值"那一层（`PALETTE` 分两版），不属于"画"这一层。
+	const ink = color
 	const solid = focused === true
 	// accent（外发光）就用同一个色。以前它另取"这个 kind 在当前路径上的颜色"，
 	// 于是一个配成绿色的普通节点，滚到它那一轮时会发蓝光 —— 又一个对不上的颜色。
@@ -868,13 +883,14 @@ export function paint(color, focused, dark) {
  * @param kind - normal / compact / empty
  * @param active - 在当前路径上
  * @param focused - 正看着这一轮
- * @param theme - 颜色与形状，缺省用 THEME
- * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+ * @param theme - 颜色与形状；颜色本身已经按明暗选好了（见 `themeFrom`）
+ * @param dark - 没给 theme 时按它挑一版默认色；省略按暗色算
  * @returns `{accent, ink, fill, solid}`
  */
 export function inkOf(kind, active, focused, theme, dark) {
-	const skin = theme || THEME
-	return paint(skin[ROLES[roleOf(kind, active)].color], focused, dark)
+	// 给了 theme 就用它（颜色已经按明暗选好了，见 `themeFrom`）；没给就按 dark 挑一版默认
+	const skin = theme || paletteOf(dark !== false)
+	return paint(skin[ROLES[roleOf(kind, active)].color], focused)
 }
 
 /**

@@ -1782,6 +1782,65 @@ window.__ModuleLoader__.load({
 		 */
 		const STAR_COLOR = '#ffd43b'
 
+		// ⚠️ 这一块**必须排在 `PALETTE` 前面**：亮色版的收藏色是 `readable(STAR_COLOR, false)`
+		//    算出来的，而 `BACKDROP` / `CONTRAST_MIN` 是 const —— 排在后面就是 TDZ，
+		//    整个 bundle 在加载时 ReferenceError。（踩过，好在炸得很响。）
+
+		/**
+		 * 算对比度用的参考底色。
+		 *
+		 * ⚠️ 真实底色是宿主的 CSS 变量（`--dsw-alias-bg-layer-1`），JS 读不到也算不了，
+		 *    所以拿这两个当代表。偏一点无所谓：`fitContrast` 只用它定"往亮调还是往暗调、调到哪"。
+		 */
+		const BACKDROP = { dark: '#0d1117', light: '#ffffff' }
+
+		/** 图形类元素的对比度下限（WCAG 1.4.11 非文本对比度就是 3:1）。 */
+		const CONTRAST_MIN = 3
+
+		/**
+		 * 普通态下填充的不透明度。
+		 *
+		 * **全局只有这一个数**。以前四个角色各写一个（普通=不填、当前=0.18、压缩=0.3、
+		 * 空=0.15），于是同一个色号挂到不同角色上深浅差一倍，谁都说不清"我设的颜色"
+		 * 到底应该长什么样 —— John 报的"看起来有色差"就是这条。
+		 */
+		const FILL_ALPHA = 0.18
+
+		/**
+		 * 把一个颜色推到对当前底色**至少 3:1**，方向按明暗定。
+		 *
+		 * 【为什么要有这一步】用户挑的色号是个绝对值，而它要落在两种底色上。亮黄
+		 * `#ffd43b` 对深底 13:1（好看），对白底只有 1.4:1（基本看不见）。业界的做法是
+		 * **令牌随主题解析**（Material 的 tonal palette、Primer 的 functional color）：
+		 * 同一个语义色在亮暗两套里本来就是两个不同的明度，而不是画的时候临时补救。
+		 * 这里就是那一步 —— 一个颜色上屏前先过它，之后描边和填充都从结果派生。
+		 *
+		 * ⚠️ 只推明度，色相和饱和度不动（`fitContrast` 保证）。推的是"刚好够"的那一档，
+		 *    不是推到底 —— 调过头只会离用户挑的那个颜色越来越远。
+		 * @param hex - 用户挑的颜色 `#rrggbb`
+		 * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+		 * @returns `#rrggbb`
+		 */
+		function readable(hex, dark) {
+			const light = dark === false
+			const page = light ? BACKDROP.light : BACKDROP.dark
+			if (contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9) return hex
+			// 亮底上往深里推，深底上往亮里推 —— 反过来推只会撞进底色里
+			return fitContrast(hex, page, CONTRAST_MIN, light ? 'darker' : 'lighter')
+		}
+
+		/**
+		 * 实心底上放什么颜色的内容（自定义的那个字）。
+		 *
+		 * 就是业界说的 on-color：底色实了之后，压在上面的字必须换成和底色对比最大的那个，
+		 * 不然字会糊进底色里 —— **而且恰好是"正看着的这一轮"最糊**，因为它填得最实。
+		 * @param hex - 底下那块实色
+		 * @returns `#ffffff` 或 `#0d1117`
+		 */
+		function onAccent(hex) {
+			return contrastRatio(hex, BACKDROP.light) >= contrastRatio(hex, BACKDROP.dark) ? BACKDROP.light : BACKDROP.dark
+		}
+
 		// ===== 配色：一套，亮色和暗色各一版 =====
 		//
 		// 为什么要分明暗两版：同一个色号在白底和深底上**观感完全不同**。亮蓝 `#58a6ff`
@@ -1801,17 +1860,25 @@ window.__ModuleLoader__.load({
 		 * 虚线边才是它自己的记号（在 ROLES 里），不跟着颜色走。
 		 */
 		const PALETTE = {
-			dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff' },
+			// ⚠️ `favoriteColor` 的两版是**算出来的**：亮色那版由 `readable` 把同一个黄压到
+			//    白底上够 3:1。手抄一个十六进制的话，改了基色就得记得改它，而忘了不会报错。
+			dark: { normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657', emptyColor: '#58a6ff', favoriteColor: STAR_COLOR },
 			// 压缩色用的是宿主自己的 amber-600（`--dsw-static-amber-600`），
 			// 和界面其它"警示"语义同色；早先那个 #bc4c00 烧焦橙在白底上太闷。
-			light: { normalColor: '#8c959f', currentColor: '#1f6feb', compactColor: '#dd8629', emptyColor: '#1f6feb' },
+			// ⚠️ amber-600 原值在白底上只有 2.79:1，差一点点 —— 压到刚好够。
+			//    默认色必须自己扛住对比度：画的时候**不会**再有人替它兜底（见 `paint`）。
+			light: {
+				normalColor: '#8c959f', currentColor: '#1f6feb',
+				compactColor: readable('#dd8629', false), emptyColor: '#1f6feb',
+				favoriteColor: readable(STAR_COLOR, false),
+			},
 		}
 
 		/**
 		 * 形状默认值。颜色跟着 `PALETTE` 走，不写在这儿。
 		 *
-		 * `favoriteShape` 在这儿而不在 PALETTE 里，是因为收藏的默认色**不分明暗**
-		 * （就一个 `STAR_COLOR`，明暗差别交给 `readable` 在上屏前统一处理）。
+		 * `favoriteColor` **不在这儿，在 `PALETTE` 里**，和另外四个角色色一样分明暗两版 ——
+		 * 明暗自适应属于"默认值"这一层。形状不分明暗，所以 `favoriteShape` 留在这儿。
 		 */
 		const SHAPE_DEFAULTS = {
 			normalShape: 'circle',
@@ -1819,7 +1886,6 @@ window.__ModuleLoader__.load({
 			compactShape: 'triangle',
 			emptyShape: 'circle',
 			favoriteShape: 'star',
-			favoriteColor: STAR_COLOR,
 		}
 
 		/**
@@ -1901,61 +1967,6 @@ window.__ModuleLoader__.load({
 			return spec.value === text ? spec : STAR
 		}
 
-
-		/**
-		 * 算对比度用的参考底色。
-		 *
-		 * ⚠️ 真实底色是宿主的 CSS 变量（`--dsw-alias-bg-layer-1`），JS 读不到也算不了，
-		 *    所以拿这两个当代表。偏一点无所谓：`fitContrast` 只用它定"往亮调还是往暗调、调到哪"。
-		 */
-		const BACKDROP = { dark: '#0d1117', light: '#ffffff' }
-
-		/** 图形类元素的对比度下限（WCAG 1.4.11 非文本对比度就是 3:1）。 */
-		const CONTRAST_MIN = 3
-
-		/**
-		 * 普通态下填充的不透明度。
-		 *
-		 * **全局只有这一个数**。以前四个角色各写一个（普通=不填、当前=0.18、压缩=0.3、
-		 * 空=0.15），于是同一个色号挂到不同角色上深浅差一倍，谁都说不清"我设的颜色"
-		 * 到底应该长什么样 —— John 报的"看起来有色差"就是这条。
-		 */
-		const FILL_ALPHA = 0.18
-
-		/**
-		 * 把一个颜色推到对当前底色**至少 3:1**，方向按明暗定。
-		 *
-		 * 【为什么要有这一步】用户挑的色号是个绝对值，而它要落在两种底色上。亮黄
-		 * `#ffd43b` 对深底 13:1（好看），对白底只有 1.4:1（基本看不见）。业界的做法是
-		 * **令牌随主题解析**（Material 的 tonal palette、Primer 的 functional color）：
-		 * 同一个语义色在亮暗两套里本来就是两个不同的明度，而不是画的时候临时补救。
-		 * 这里就是那一步 —— 一个颜色上屏前先过它，之后描边和填充都从结果派生。
-		 *
-		 * ⚠️ 只推明度，色相和饱和度不动（`fitContrast` 保证）。推的是"刚好够"的那一档，
-		 *    不是推到底 —— 调过头只会离用户挑的那个颜色越来越远。
-		 * @param hex - 用户挑的颜色 `#rrggbb`
-		 * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
-		 * @returns `#rrggbb`
-		 */
-		function readable(hex, dark) {
-			const light = dark === false
-			const page = light ? BACKDROP.light : BACKDROP.dark
-			if (contrastRatio(hex, page) >= CONTRAST_MIN - 1e-9) return hex
-			// 亮底上往深里推，深底上往亮里推 —— 反过来推只会撞进底色里
-			return fitContrast(hex, page, CONTRAST_MIN, light ? 'darker' : 'lighter')
-		}
-
-		/**
-		 * 实心底上放什么颜色的内容（自定义的那个字）。
-		 *
-		 * 就是业界说的 on-color：底色实了之后，压在上面的字必须换成和底色对比最大的那个，
-		 * 不然字会糊进底色里 —— **而且恰好是"正看着的这一轮"最糊**，因为它填得最实。
-		 * @param hex - 底下那块实色
-		 * @returns `#ffffff` 或 `#0d1117`
-		 */
-		function onAccent(hex) {
-			return contrastRatio(hex, BACKDROP.light) >= contrastRatio(hex, BACKDROP.dark) ? BACKDROP.light : BACKDROP.dark
-		}
 
 		/**
 		 * WCAG 相对亮度。
@@ -2091,12 +2102,13 @@ window.__ModuleLoader__.load({
 		 * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
 		 */
 		function starSkin(focused, dark, icon, want, theme) {
-			const skin = theme || THEME
+			// 给了 theme 就用它（它已经按明暗选好色了，见 `themeFrom`）；没给就按 dark 挑一版默认
+			const skin = theme || paletteOf(dark !== false)
 			// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 			// 认得严一点：这个字符串要直接进 CSS。
 			const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 			const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
-			return Object.assign(paint(seed, focused, dark), {
+			return Object.assign(paint(seed, focused), {
 				shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
 			})
 		}
@@ -2212,18 +2224,17 @@ window.__ModuleLoader__.load({
 		 * @param color - 用什么颜色画
 		 * @param size - 边长
 		 * @param dashed - 画成虚线（空节点那一行用）
-		 * @param dark - 是不是暗色主题；省略按暗色算
 		 * @param override - 已经解析好的画法。收藏那排要用 `favShape` 解（`'star'` 在
 		 *                   `shapeSpec` 眼里是认不得的，会退回圆），所以给个口子让调用方
 		 *                   把解析权拿走 —— 而不是在这里再塞一个"是不是收藏"的开关。
 		 * @returns 一个 <span>
 		 */
-		function preview(want, color, size, dashed, override, dark) {
+		function preview(want, color, size, dashed, override) {
 			const spec = override === undefined || override === null ? shapeSpec(want) : override
 			// ⚠️ 选择器里看到的必须是**节点平时的样子**，所以走同一个 `paint`（非实心那一档）。
 			//    以前这里写死 0.3、树上普通节点又是不填 —— 于是选择器里挑的和树上画出来的
 			//    深浅对不上；收藏那排更离谱，选择器是半透明、树上是实心。
-			const skin = paint(color, false, dark)
+			const skin = paint(color, false)
 			const drawn = spec.poly !== undefined || spec.glyph !== undefined || spec.image !== undefined
 			return h('span', {
 				style: {
@@ -2272,13 +2283,17 @@ window.__ModuleLoader__.load({
 		 *
 		 * 实心态**只有一个含义：正看着这一轮**。别再往里塞第二个含义 —— 收藏、压缩、
 		 * 空节点靠颜色和形状表达自己，不靠填不填实。
-		 * @param color - 用户挑的颜色 `#rrggbb`
+		 * @param color - 用来画的颜色 `#rrggbb`，**原样使用**
 		 * @param focused - 正看着这一轮
-		 * @param dark - 是不是暗色主题
 		 * @returns `{accent, ink, fill, solid}`
 		 */
-		function paint(color, focused, dark) {
-			const ink = readable(color, dark)
+		function paint(color, focused) {
+			// ⚠️ **颜色原样用，一个像素不动。** 这里一度会先过一遍 `readable`（对底色不足
+			//    3:1 就推深/推亮），结果是用户在设置里挑了 `#fff833`、树上画出来却是
+			//    `#9e9800` —— 设置卡和屏幕上两个色号对不上，John 当场就拿取色器抓到了。
+			//    那违反了 `themeFrom` 早就立下的规矩：**没改过的跟着明暗走，改过的钉死。**
+			//    明暗自适应属于"默认值"那一层（`PALETTE` 分两版），不属于"画"这一层。
+			const ink = color
 			const solid = focused === true
 			// accent（外发光）就用同一个色。以前它另取"这个 kind 在当前路径上的颜色"，
 			// 于是一个配成绿色的普通节点，滚到它那一轮时会发蓝光 —— 又一个对不上的颜色。
@@ -2290,13 +2305,14 @@ window.__ModuleLoader__.load({
 		 * @param kind - normal / compact / empty
 		 * @param active - 在当前路径上
 		 * @param focused - 正看着这一轮
-		 * @param theme - 颜色与形状，缺省用 THEME
-		 * @param dark - 是不是暗色主题；省略按暗色算（`THEME` 就是暗色版）
+		 * @param theme - 颜色与形状；颜色本身已经按明暗选好了（见 `themeFrom`）
+		 * @param dark - 没给 theme 时按它挑一版默认色；省略按暗色算
 		 * @returns `{accent, ink, fill, solid}`
 		 */
 		function inkOf(kind, active, focused, theme, dark) {
-			const skin = theme || THEME
-			return paint(skin[ROLES[roleOf(kind, active)].color], focused, dark)
+			// 给了 theme 就用它（颜色已经按明暗选好了，见 `themeFrom`）；没给就按 dark 挑一版默认
+			const skin = theme || paletteOf(dark !== false)
+			return paint(skin[ROLES[roleOf(kind, active)].color], focused)
 		}
 
 		/**
@@ -2557,6 +2573,44 @@ window.__ModuleLoader__.load({
 		function railRight(box, railWidth, viewWidth, gap) {
 			const pad = Number.isFinite(gap) ? gap : Z.gap
 			return Math.max(0, viewWidth - box.right) + pad
+		}
+
+		/** 详情卡和它那个点之间留多少空白（px）。 */
+		const CARD_GAP = 8
+
+		/**
+		 * 详情卡的 `right`（离导轨**右**缘多远，值越大越靠左）。
+		 *
+		 * 规矩：**贴着那个点本身，不是贴着整条导轨的左缘。**
+		 *
+		 * 以前这里写死 `railWidth + 4`，也就是不管点在第几列，卡片一律甩到整棵树的
+		 * 左边去。树只有一列时看不出来；某个点一旦分出五个岔，`maxColumn` 变成 4，
+		 * 第 0 列（主干，也就是最常悬停的那一列）的卡片就被推到四个列距之外 ——
+		 * John 的原话是"中间隔了 4 个结点，有点太远了"。
+		 *
+		 * 业界做法就一条（Floating UI / Popper 的 `reference` + `offset`，
+		 * Material、Primer、Ant Design 的 popover 全是这个）：
+		 * **浮层锚在触发元素上**，中间只留一个固定的小 offset；容器只用来做碰撞检测
+		 * （flip / shift），不用来当锚点。这里的碰撞检测已经有了 —— 宽度 `maxWidth: 60vw`
+		 * 加上导轨自己的压列距（railRoom），所以只差"锚回点上"这一步。
+		 *
+		 * 代价是卡片会盖住它左边那几条岔路线。这是所有图形界面的 hover 卡片都在付的
+		 * 代价（GitKraken / VS Code Git Graph / GitHub 的提交图都盖），而且一行最多
+		 * 只有一个点，被盖住的基本是穿过去的连线，不是别的点。走开就还回去。
+		 *
+		 * 小例子（railWidth 116、edge 22、lane 23.4、hitW 23.4、点在第 0 列）：
+		 *   x = 116 - 11 = 105；right = 116 - 105 + 11.7 + 8 = 30.7
+		 *   —— 老写法是 116 + 4 = 120，整整近了 89px。
+		 *   同一棵树里最左那列（第 4 列）：x = 105 - 93.6 = 11.4；right = 124，
+		 *   和老写法的 120 差不多 —— 说明这一改**只把不该远的拉近，没把该远的推远**。
+		 *
+		 * @param railWidth - 导轨宽
+		 * @param x - 点的圆心 x（导轨内坐标系，左缘为 0）
+		 * @param hitW - 命中区宽度，卡片从命中区外缘再让 `CARD_GAP`
+		 * @returns CSS `right` 的像素值
+		 */
+		function cardAnchor(railWidth, x, hitW) {
+			return railWidth - x + hitW / 2 + CARD_GAP
 		}
 
 		/**
@@ -3371,7 +3425,7 @@ window.__ModuleLoader__.load({
 				color: 'favoriteColor',
 				shape: 'favoriteShape',
 				extra: ['star'],
-				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版；深浅由当前主题自动调。',
+				hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，不会再被自动调深调浅。',
 			},
 			// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 			// 一律从 ROLES 查，不在这儿重写一遍
@@ -3780,7 +3834,7 @@ window.__ModuleLoader__.load({
 		 * 所以 emoji 和自己传的图都能当收藏图标用。
 		 */
 		function FavIconRow(props) {
-			const { value, color, dark, onPick, onFail, onColor } = props
+			const { value, color, onPick, onFail, onColor } = props
 			const canHover = useHover()
 			const [held, setHeld] = react.useState(false)
 			const guard = useFocusGuard(held)
@@ -3822,7 +3876,7 @@ window.__ModuleLoader__.load({
 					cell('span', want, now === want, {
 						title: want === 'star' ? '恢复默认（五角星）' : want,
 						onClick: (event) => { event.stopPropagation(); onPick(want === 'star' ? '' : want) },
-					}, preview(want, color, PICK - 6, false, favShape(want), dark)),
+					}, preview(want, color, PICK - 6, false, favShape(want))),
 				),
 				// 填字：emoji 也行，于是"图标库"实际上是无限的。
 				// ⚠️ 它和这一排里所有格子**一样高**。以前特意做成两行高，结果整排被它撑起来、
@@ -3893,7 +3947,7 @@ window.__ModuleLoader__.load({
 				// 传图：和设置卡里那颗同一套 —— 浏览器里先光栅化成 PNG 再交给 host（见 shrink()）
 				cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 					String(now).startsWith(PICTURE)
-						? preview(now, color, PICK - 4, false, favShape(now), dark)
+						? preview(now, color, PICK - 4, false, favShape(now))
 						: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
 					h('input', {
 						key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
@@ -3954,6 +4008,9 @@ window.__ModuleLoader__.load({
 		 */
 		function Detail(props) {
 			const { node, y, railWidth, labels, hold, release } = props
+			// 卡片锚在那个点上（cardAnchor 算好了送过来），不是锚在整条导轨的左缘。
+			// 没人悬停时退回老位置，免得淡出那一下横向滑一段。
+			const anchor = Number.isFinite(props.anchor) ? props.anchor : railWidth + 4
 			const [expanded, setExpanded] = react.useState(false)
 			const [draft, setDraft] = react.useState(null)
 			const [merging, setMerging] = react.useState(false)
@@ -4126,8 +4183,6 @@ window.__ModuleLoader__.load({
 				key: 'favicon',
 				value: favIcons[key],
 				color: props.starInk || C.muted,
-				// ⚠️ 选择器里那几颗预览要按当前明暗算，否则亮色下画出来的是暗色那套色
-				dark: props.dark,
 				ownColor: (props.favColors || {})[key],
 				onColor: (want) => props.onFavColor(key, want),
 				onHold: () => setTyping(true),
@@ -4169,7 +4224,7 @@ window.__ModuleLoader__.load({
 					// 还是被外人抢走了"。见 useFocusGuard。
 					[CARD_MARK]: '1',
 					style: {
-						position: 'absolute', right: `${railWidth + 4}px`, top: `${y}px`,
+						position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 						transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
 						opacity: shown ? 1 : 0,
 						transition: 'opacity .14s ease, transform .14s ease',
@@ -4198,7 +4253,6 @@ window.__ModuleLoader__.load({
 				!shown || !expanded || !merging || dirty ? null : h(MergeList, {
 					key: 'merge',
 					targets: props.targets || [],
-					railWidth,
 					onPick: (target) => {
 						setMerging(false)
 						props.onMerge(target)
@@ -4219,13 +4273,16 @@ window.__ModuleLoader__.load({
 		 * 好在本 cwd 的全部对话本来就在 `/outlines` 的答复里，自己列就是了。
 		 */
 		function MergeList(props) {
-			const { targets, railWidth, onPick } = props
+			const { targets, onPick } = props
 			return h(
 				'div',
 				{
 					style: {
-						position: 'absolute', right: `${railWidth + 4}px`, top: '100%', marginTop: '4px',
-						width: `${Z.card}px`, maxWidth: '60vw', maxHeight: '40vh', overflowY: 'auto',
+						// ⚠️ 这张单子是**卡片的子元素**，包含块就是卡片本身 —— 所以是 `right: 0`
+						//    贴着卡片右缘挂在它下面，不是 `railWidth + 4`。后者是卡片自己相对
+						//    导轨的偏移，抄到这儿等于把单子又往左甩了一整条导轨那么宽。
+						position: 'absolute', right: 0, top: '100%', marginTop: '4px',
+						width: '100%', maxHeight: '40vh', overflowY: 'auto',
 						// 单子滑到头之后别把滚动传给底下的聊天区（iOS 上那一下是整页橡皮筋回弹，
 						// 手一松单子自己弹没了）；WebkitOverflowScrolling 给老 iOS 补惯性滚动。
 						overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch',
@@ -4533,14 +4590,14 @@ window.__ModuleLoader__.load({
 							key: one, type: 'button', disabled: !on, title: one,
 							style: S.chip(now === one, on),
 							onClick: () => put(field, one),
-						}, preview(one, color, 13, dashed, favShape(one), dark)),
+						}, preview(one, color, 13, dashed, favShape(one))),
 					),
 					...SHAPES.map((one) =>
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
 							style: S.chip(now === one.value, on),
 							onClick: () => put(field, one.value),
-						}, preview(one.value, color, 13, dashed, undefined, dark)),
+						}, preview(one.value, color, 13, dashed)),
 					),
 					// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 					h('label', {
@@ -4549,7 +4606,7 @@ window.__ModuleLoader__.load({
 						style: S.chip(String(now).startsWith(PICTURE), on),
 					}, [
 						String(now).startsWith(PICTURE)
-							? preview(now, color, 15, dashed, undefined, dark)
+							? preview(now, color, 15, dashed)
 							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
 						h('input', {
 							key: 'f', type: 'file', accept: 'image/*', disabled: !on,
@@ -5006,7 +5063,8 @@ window.__ModuleLoader__.load({
 							clearTimeout(restTimer.current)
 							const want = hoverNext(hover === null ? null : hover.node, at)
 							if (want === 'keep') return
-							const seat = () => setHover({ node: at, y: yOf(rowOfNode(at)) })
+							// ⚠️ x 也要记：详情卡锚在**这个点**上，不是锚在整条导轨的左缘（见 cardAnchor）
+							const seat = () => setHover({ node: at, x: xOf(at.column), y: yOf(rowOfNode(at)) })
 							if (want === 'now') seat()
 							else restTimer.current = setTimeout(seat, Z.restMs)
 						},
@@ -5026,13 +5084,13 @@ window.__ModuleLoader__.load({
 							const at = cutPointOf(node)
 							if (at !== undefined) reshape(shapeOps.cut(at.key))
 						},
+						// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
+						anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
 						railWidth, labels, hold, release, onLock,
 						favorites, favIcons, favColors,
 						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
 						starInk: starSkin(false, dark, undefined, hover === null ? undefined : favColors[hover.node.key], theme).ink,
-						// 图标选择器里那几颗预览要按当前明暗上色（`preview` → `paint`）
-						dark,
 						onRename: (key, value) => { writeLabel(key, value); setTick((value2) => value2 + 1) },
 						onFavorite: (key, on) => {
 							writeFavorite(key, on)
