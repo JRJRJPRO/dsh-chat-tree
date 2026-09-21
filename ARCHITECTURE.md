@@ -49,7 +49,7 @@ npm test          # 先构建再跑十个测试脚本
 | `graft.js` | 把外部引擎的记忆嫁接给新分支 | ⚠️ 里面记着一条**还没修**的同类风险 |
 | `adopt.js` | 新分支一出生就接管 | 全同步，不许有时间窗 |
 | `collect.js` | 组装 `/outlines` 的响应体 | |
-| `http.js` | 路由外壳 | 加路由走 `route()`，别自己 `webServer.register` |
+| `http.js` | 路由外壳 + 信任围栏 | 加路由走 `route()`，别自己 `webServer.register`（那样就绕过了鉴权）|
 
 ### 浏览器半（`src/client/`）
 
@@ -59,18 +59,19 @@ npm test          # 先构建再跑十个测试脚本
 |---|---|
 | `const.js` | 设置命名空间、滑杆档位、基准尺寸 `Z`、配色 `C` |
 | `runtime.js` | 宿主给的 react（**只有画界面的模块才 import 它**） |
-| `net.js` | 三个路由的地址 + `getJson` / `postJson` / `warn` |
-| `labels.js` | 节点改名（半成品，见文件头） |
+| `net.js` | 三个路由的地址 + `getJson` / `postJson` / `warn`；直连被围栏拒了改走 `/remote`（`apiPrefix()` 供 CSS url 用）|
+| `pointer.js` | 这块屏能不能悬停（`useHover`）、手指戳一下算什么（`tapNext`）、WebKit 必补的样式表 |
+| `labels.js` | 节点上的用户标注：改名 + 收藏 + 收藏图标（都存 localStorage，半成品，见文件头） |
 | `tree.js` | 选树、归组、节点 key、`shapeOps`、节点上能做什么 |
 | `graph.js` | `buildGraph` —— 唯一一处定义"图长什么样" |
 | `elide.js` | 省略 + 鱼眼淡出 |
-| `shapes.js` | 角色表 `ROLES`、形状、配色、`dotStyle` |
+| `shapes.js` | 角色表 `ROLES`、12 个预设形状、配色、`dotStyle`；收藏图标的解析 `favShape` |
 | `geometry.js` | 导轨尺寸 `railLayout`、连线分段、命中测试 |
 | `icon-upload.js` | 传图前在浏览器里光栅化 |
 | `diagnose.js` | `window.__dshTree()` 自诊断 |
 | `hooks.js` | 量聊天区、跟踪当前轮次、订阅宿主快照、拉大纲 |
 | `settings-model.js` | 设置项总表 + store |
-| `ui-detail.js` | 悬停详情卡、合并清单 |
+| `ui-detail.js` | 悬停详情卡（收起／展开两档）、改名框、收藏图标选择器、合并清单 |
 | `ui-settings.js` | 设置卡片 |
 | `rail.js` | 树本体 |
 | `pure.js` | 离线测试出口 `__pure` |
@@ -118,6 +119,7 @@ npm test          # 先构建再跑十个测试脚本
 - 改合并/分离 → `tree.js`（浏览器）+ `shape.js`（host）
 - 改设置卡片 → `ui-settings.js`
 - 改撤回 → `rewind.js`
+- 改触摸／Safari 上的行为 → `pointer.js`（判据和两张样式表只此一份）
 
 三个文件是**公共地**，改之前先问一句是不是真的非改不可：
 

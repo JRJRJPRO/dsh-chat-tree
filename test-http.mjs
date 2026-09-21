@@ -13,7 +13,8 @@
  */
 
 import { check, report } from './test-kit.mjs'
-import { HttpError, raw, route } from './src/host/http.js'
+import { inject } from './index.js'
+import { HttpError, MAX_BODY_BYTES, raw, rejectionOf, route } from './src/host/http.js'
 
 /**
  * 假 ctx：把注册进来的 handler 按路径收起来。
@@ -21,8 +22,12 @@ import { HttpError, raw, route } from './src/host/http.js'
  */
 function fakeCtx() {
 	const handlers = new Map()
+	// 宿主 connection 的替身。`fence.verdict` 就是 requestRejection 的返回值：
+	// undefined = 放行，数字 = 该回的状态码。用例随时改它。
+	const fence = { verdict: undefined }
 	const ctx = {
 		effect: (run) => run(),
+		connection: { requestRejection: () => fence.verdict },
 		webServer: {
 			register: (spec) => {
 				handlers.set(spec.path, spec.handler)
@@ -30,7 +35,7 @@ function fakeCtx() {
 			},
 		},
 	}
-	return { ctx, handlers }
+	return { ctx, handlers, fence }
 }
 
 /**
@@ -39,13 +44,21 @@ function fakeCtx() {
  * @param method - HTTP 方法
  * @param url - 请求行里的 url
  * @param body - 请求体原文
+ * @param headers - 请求头覆盖项（键名小写，Node 就是这么给的）
  * @returns `{status, headers, text, json}`
  */
-async function call(handler, method, url, body) {
+async function call(handler, method, url, body, headers) {
 	const chunks = body === undefined ? [] : [Buffer.from(body)]
 	const req = {
 		method,
 		url,
+		// 默认补一个本机 Host 和 JSON content-type：信任围栏要求它们在场，
+		// 而用例 1-5 测的是别的事。专门测围栏的用例自己传 headers 覆盖。
+		headers: {
+			host: '127.0.0.1:3080',
+			...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
+			...headers,
+		},
 		async *[Symbol.asyncIterator]() {
 			for (const chunk of chunks) yield chunk
 		},
@@ -69,7 +82,7 @@ async function call(handler, method, url, body) {
 	return out
 }
 
-const { ctx, handlers } = fakeCtx()
+const { ctx, handlers, fence } = fakeCtx()
 const seen = []
 route(ctx, '/demo', {
 	GET: ({ query }) => ({ cwd: query.get('cwd'), who: 'get' }),
@@ -148,6 +161,65 @@ console.log('用例 5：图片走原样字节，不许被 JSON 编码')
 	check(answer.headers['content-type'] === 'image/png', `content-type 是 ${answer.headers['content-type']}`)
 	check(answer.text === '\x89P', `字节被动过了：${JSON.stringify(answer.text)}`)
 	console.log('  PNG 头两个字节原样出去，content-type 是 image/png')
+}
+
+console.log('用例 6：鉴权交给宿主的 connection，判决原样照办')
+{
+	// 【为什么不自己判】这里一度手写过 Host/Origin 两道闸，判据是"它不可能是
+	// DNS rebinding"，于是放行**所有 IP 字面量**。那挡住了浏览器替人发起的攻击，
+	// 却挡不住同网段的人直接 curl ——	lanBind 开着时，会话预览就是这么漏出去的。
+	// 现在这一层只做一件事：把 connection 的判决原样执行。
+	fence.verdict = undefined
+	const open = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	check(open.status === 200, `放行时应该 200，实际 ${open.status}`)
+
+	fence.verdict = 403
+	const fenced = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	check(fenced.status === 403, `围栏说 403 就得是 403，实际 ${fenced.status}`)
+	check(fenced.json.error.includes('trustedHosts'), '报错里要写清楚怎么放行，否则走隧道的人只会看到"导轨没了"')
+
+	fence.verdict = 401
+	const anon = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	check(anon.status === 401, `围栏说 401 就得是 401，实际 ${anon.status}`)
+	// ⚠️ 401 的提示要指向 /remote：局域网页面撞上的就是这个码，
+	//    浏览器半靠它改走通道（src/client/net.js 的 send）。
+	check(anon.json.error.includes('/remote'), '401 的提示必须指向 /remote 通道')
+
+	// GET 也要过闸 —— /outlines 是读接口，泄露的就是它
+	fence.verdict = 403
+	check((await call(demo, 'GET', '/plugins/dsh-tree/demo')).status === 403, 'GET 必须同样受围栏管')
+	fence.verdict = undefined
+	console.log('  放行/403/401 原样照办；GET 同样受管；报错分别指向 trustedHosts 和 /remote')
+}
+
+console.log('用例 7：拿不到 connection 就一律拒绝，绝不裸奔')
+{
+	// fail-open 等于整道围栏白写。宁可树画不出来，也不能把会话预览挂出去。
+	check(rejectionOf({}, {}) === 503, '没有 connection 服务时必须拒绝')
+	check(rejectionOf({ connection: {} }, {}) === 503, 'connection 在但没有 requestRejection 也必须拒绝')
+	check(rejectionOf({ connection: { requestRejection: () => undefined } }, {}) === undefined, '正常的 connection 该放行')
+	// ⚠️ 这条钉着"别把 connection 从顶层 inject 里拿掉"。拿掉之后 cordis 给的 ctx 上
+	//    没有这个服务，上面那条 503 就会变成线上行为：树整个空白，而日志里什么都不会说。
+	check(inject.includes('connection'), 'connection 必须在顶层 inject 里，否则线上拿不到判决，三条路由会全部 503')
+	console.log('  没有 connection / 接口对不上 → 503；正常的照常放行；connection 在顶层 inject 里')
+}
+
+console.log('用例 8：只收 JSON，且 body 有上限')
+{
+	const form = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', {
+		'content-type': 'application/x-www-form-urlencoded',
+	})
+	check(form.status === 415, `form 的 content-type 应该 415，实际 ${form.status}`)
+	const noType = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', { 'content-type': '' })
+	check(noType.status === 200, '没写 content-type 的（curl 默认就不写）不该被拦')
+	const charset = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', {
+		'content-type': 'application/json; charset=utf-8',
+	})
+	check(charset.status === 200, '带 charset 的 application/json 应该放行')
+	// ⚠️ 上限必须在收的过程中判。等收完再数就晚了 —— 内存那时已经吃进去了。
+	const huge = await call(demo, 'POST', '/plugins/dsh-tree/demo', 'x'.repeat(MAX_BODY_BYTES + 1))
+	check(huge.status === 413, `超长 body 应该 413，实际 ${huge.status}`)
+	console.log(`  非 JSON → 415；无 content-type 放行；超 ${MAX_BODY_BYTES} 字节 → 413`)
 }
 
 report()

@@ -40,7 +40,7 @@ export const name = 'tree'
  * 写进**顶层** inject 而不是 `ctx.inject` 是有意的：没有它就没有鉴权，
  * 那这三条路由宁可不开 —— 少个树，总好过把全部会话的提问预览挂在局域网上。
  */
-export const inject = ['webServer', 'sessionPersistence', 'agents']
+export const inject = ['webServer', 'sessionPersistence', 'agents', 'connection']
 
 // 对外出口。测试和别人从这里取，别直接 import src/ 里的文件 ——
 // 那些是内部结构，哪天拆了合了不该惊动外面。
