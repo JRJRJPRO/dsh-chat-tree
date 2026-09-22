@@ -1,7 +1,7 @@
 {
   "name": "dsh-tree",
   "version": "0.1.0",
-  "description": "DeepSeek Harness 对话树：把一个对话的所有分支画成一棵可点击的树",
+  "description": "Conversation trees for DeepSeek Harness: every branch of a conversation drawn as a clickable tree beside the chat / 把一个对话的所有分支画成一棵可点击的树",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -19,15 +19,12 @@
     "index.js",
     "client.js",
     "src",
-    "docs",
     "build.mjs",
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
-    "AGENTS.md", "tools",
-    "ARCHITECTURE.md",
-    "DESIGN.md",
-    "NATIVE-BASELINE.md",
+    "AGENTS.md",
+    "tools",
     "LICENSE"
   ],
   "keywords": [

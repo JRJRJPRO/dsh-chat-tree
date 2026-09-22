@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="dsh-tree — 把对话画成一棵树" width="860">
+  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/banner.png" alt="dsh-tree — 把对话画成一棵树" width="860">
 </p>
 
 <h1 align="center">dsh-tree</h1>
@@ -29,7 +29,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 ## 树会自己出现
 
-<img src="docs/rail.png" alt="对话树" width="300" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/rail.png" alt="对话树" width="300" align="right">
 
 刷新页面，树已经在正文右边了。
 
@@ -42,7 +42,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 ## 每个节点都有一张卡片
 
-<img src="docs/card.png" alt="节点详情卡" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/card.png" alt="节点详情卡" width="470" align="right">
 
 悬浮到节点上出缩略卡，**双击卡片展开** —— 改名、挑形状、挑颜色、传张图都在这一档。
 
@@ -70,7 +70,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 ## 调成你喜欢的样子
 
-<img src="docs/settings.png" alt="设置卡片" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/settings.png" alt="设置卡片" width="470" align="right">
 
 **设置 → 插件 → 对话树**。
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="dsh-tree — Conversation trees for dsh" width="860">
+  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/banner.png" alt="dsh-tree — Conversation trees for dsh" width="860">
 </p>
 
 <h1 align="center">dsh-tree</h1>
@@ -29,7 +29,7 @@ To remove it: `dsh plugin --profile web remove dsh-tree`. It also shows up under
 
 ## The tree draws itself
 
-<img src="docs/rail.png" alt="The conversation tree" width="300" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/rail.png" alt="The conversation tree" width="300" align="right">
 
 Refresh the page and it's already there, next to your chat.
 
@@ -43,7 +43,7 @@ and which path you're on. Named nodes carry their label right on the tree.
 
 ## Every node has a card
 
-<img src="docs/card.png" alt="Node detail card" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/card.png" alt="Node detail card" width="470" align="right">
 
 Hover a dot for a preview. **Double-click the card to expand it** — rename the
 node, pick a shape, pick a color, or upload an image.
@@ -72,7 +72,7 @@ A greyed-out button means you can't do it right now — hover it and it will say
 
 ## Make it yours
 
-<img src="docs/settings.png" alt="Settings card" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/settings.png" alt="Settings card" width="470" align="right">
 
 **Settings → Plugins → Conversation tree**.
 
