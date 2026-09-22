@@ -344,9 +344,23 @@ claude             seq24 assistant/message  content=[]          ← 一个字都
 真正的对话在 Claude Code 自己的会话里，dsh 只存一个指针（sidecar 的
 `binding.claudeSessionId`）。指针没跟过去，新分支就拿到一个全新的空会话。
 
-**修法**：用桥接自己的机制。给 SDK 传 `resume:<父会话>` + `resumeSessionAt:<那一轮的锚点>`，
-SDK 会分叉出一个新的 Claude Code 会话而不是改写父会话（原生 `/rewind` 走的就是这条路）。
+**修法**：用桥接自己的机制。给 SDK 传 `resume:<父会话>` + `resumeSessionAt:<那一轮的锚点>`。
 触发开关是 sidecar 里的 `rewind.pending = { resumeAt }`。所以接管时替新分支把 sidecar 写好：
+
+> ⚠️ **`resumeSessionAt` 单独并不会另开一个 Claude 会话** —— 这句话第一版写反了，
+> 真实后果是 2026-09-22 盘上数出 8 个 Claude 会话被 36 条 DSH 会话共用（一个被 14 条共用）。
+> CLI 只是从锚点开始往**同一个** jsonl 里续写；新分支第一次起进程没事，可之后父或子任何
+> 一方的进程被重启（空闲回收、重启 dsh）都是不带 `resumeSessionAt` 的 `resume`，从那个文件
+> 的**最新叶子**续 —— 也就是另一支的尾巴。John 报的"明明分叉了，记忆却互通"就是它。
+>
+> 另开会话要靠 SDK 的 `forkSession: true`，而那一行只能在 dsh-claude 拼 options 的地方加，
+> graft 够不着。所以这件事分两半：
+> · **以后**：`$DSH_HOME/profiles/web/patches/@norman-else__dsh-claude@0.1.54.patch`
+>   给 dsh-claude 加上 `forkSession: true`（`pnpm-workspace.yaml` 的 `patchedDependencies`
+>   让 pnpm 每次装都重放）。上游发了带 `forkSession` 的版本就删掉这条。
+> · **过去**：`node split-shared-claude.mjs --apply`（dsh 停着时跑）给每条"共用且没武装
+>   pending"的会话武装 `resumeAt = 它自己最后一个锚点`，下次起进程各自分叉出自己的会话。
+>   逻辑在 `src/host/split.js`，用例在 `test-split.mjs`。
 
 ```
 binding         ← 抄父分支的（指向同一个 Claude Code 会话）

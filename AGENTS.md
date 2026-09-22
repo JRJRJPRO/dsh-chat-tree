@@ -95,6 +95,11 @@ node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 300
    拦合并时 `unknown` 当成空闲（fail-open）—— 压成布尔必然有一头是错的。
 5. **删继承来的待办要精确到 id，不能 `inbox.clear()`**。dsh 重启会 resume 每个会话、
    同样触发 `agent/created`，那时队列里可能躺着用户自己排的待办。
+6. **graft 依赖 dsh-claude 传 `forkSession: true`**（DESIGN.md §4 缺陷二的警告框）。
+   没有它，父子分支共用一个 Claude 会话文件，进程一重启就互相串记忆。补丁在
+   `$DSH_HOME/profiles/web/patches/`，由 `pnpm-workspace.yaml` 的 `patchedDependencies`
+   重放；升级 dsh-claude 后先确认上游是否已带 `forkSession`，没带就把补丁改成新版本号。
+   已经共用的旧会话用 `split-shared-claude.mjs` 拆（**dsh 停着时**）。
 
 ## 5. 已知问题（按优先级）
 
