@@ -17,7 +17,7 @@ import { h, react } from './runtime.js'
 import { C, Z } from './const.js'
 import { branchAction, forkBlockedWhy, isBranchHead } from './tree.js'
 import { NO_ZOOM, TAPPABLE, useHover } from './pointer.js'
-import { CUSTOM, GLYPH_MAX, PICTURE, SHAPES, favShape, preview } from './shapes.js'
+import { CUSTOM, GLYPH_STORE_MAX, PICTURE, RARE_SHAPES, SHAPES, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
 import { hexOf } from './settings-model.js'
 
@@ -96,7 +96,7 @@ export const LEAVE_MS = 350
  * @returns 裁过的字；最多 GLYPH_MAX 个码点
  */
 export function clampGlyph(text) {
-	return [...String(text === undefined || text === null ? '' : text)].slice(0, GLYPH_MAX).join('')
+	return [...String(text === undefined || text === null ? '' : text)].slice(0, GLYPH_STORE_MAX).join('')
 }
 
 /**
@@ -335,8 +335,8 @@ export function favSwatch(hex, defaultInk, ownColor) {
 }
 
 /** 收藏选择器里每一格多大、格与格之间留多少。全在一行里挤，所以比设置卡那排小一圈。 */
-export const PICK = 18
-export const GAP = 3
+export const PICK = 24
+export const GAP = 5
 
 /**
  * 收藏图标能挑哪几种形状。
@@ -347,7 +347,7 @@ export const GAP = 3
  *    设置卡那边**不删**：那是给节点配形状的，格子宽松，而且删掉会让已经
  *    存了 hexagon 的设置读出来不合法。
  */
-export const FAV_DROP = ['chevron', 'pentagon', 'hexagon']
+export const FAV_DROP = RARE_SHAPES
 
 /** 实际列出来的那几格。`'star'` 排头 —— 它是默认，也是"恢复默认"那一格。 */
 export const FAV_SHAPES = ['star', ...SHAPES.map((one) => one.value).filter((one) => !FAV_DROP.includes(one))]
@@ -401,7 +401,7 @@ export function FavIconRow(props) {
 	// 形状、字、传图、颜色**全在同一个 flex 里**，挤不下就自己换行。
 	// 拆成"图标一排、颜色一排"的话，光两个标题就占掉两行 —— 而卡片总共才十几行高。
 	return h('div', {
-		style: { display: 'flex', alignItems: 'center', gap: GAP + 'px', flexWrap: 'wrap', width: '100%', marginTop: '6px' },
+		style: { display: 'flex', alignItems: 'center', gap: GAP + 'px', flexWrap: 'wrap', width: '100%', marginTop: '10px' },
 	}, [
 		// ⚠️ 预览一律走 `favShape` 解，不走 `shapeSpec`：`'star'` 不在 SHAPES 里，
 		//    交给 shapeSpec 会退回圆 —— 那一格就成了"默认是个圆点"，正好说反。
@@ -421,7 +421,7 @@ export function FavIconRow(props) {
 			//    "zhongguo" 八个字符才换来两个字 —— 挂上 5 的上限，拼音打到第六个字母
 			//    就被截断，汉字根本拼不出来。上限改成在拼字**落地之后**裁（见 land）。
 			value: draft === null ? stored : draft,
-			placeholder: '字', title: `填几个字当图标，emoji 也行，最多 ${GLYPH_MAX} 个`,
+			placeholder: '字', title: '填字当图标，emoji 也行，多少个都收 —— 画不下的会截断加省略号，全文在这个框里',
 			spellCheck: false, autoCapitalize: 'off', autoCorrect: 'off',
 			style: {
 				width: '40px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
@@ -481,7 +481,10 @@ export function FavIconRow(props) {
 		cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 			String(now).startsWith(PICTURE)
 				? preview(now, color, PICK - 4, false, favShape(now))
-				: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
+				// ⚠️ 别再放 emoji。这里一度是 🖼，而它在 John 这台 Windows 上渲染成豆腐块
+				//    —— 图标格子里摆一个认不出的字符，比什么都不摆更糟。
+				//    `+` 是"加一个"的通用写法，任何字体都有。
+				: h('span', { key: 'p', style: { fontSize: `${Math.round(PICK * 0.72)}px`, lineHeight: 1, color: C.muted } }, '+'),
 			h('input', {
 				key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
 				onChange: (event) => {
@@ -738,9 +741,15 @@ export function Detail(props) {
 	})
 
 	// ===== 展开档：名字框 + 收藏图标 =====
+	//
+	// ⚠️ 展开档的留白**故意比收起时大一截**。收起的那条是扫一眼就走的，挤是对的；
+	//    而双击展开是个明确动作，这时候注意力全在卡片上，还按"别占地方"的尺寸排，
+	//    就成了 John 说的"畏手畏脚" —— 输入框、图标格子挤成一堆，反倒更难点中。
+	//    浮层一旦被用户主动打开，就该给足操作空间。
+	const ROOM = 10
 	// 动作按钮不在这儿 —— 它们全在第一行，展开与否都不动。
 	const body = !shown || !expanded ? null : [
-		h('div', { key: 'name', style: { display: 'flex', width: '100%', marginTop: '6px' } },
+		h('div', { key: 'name', style: { display: 'flex', width: '100%', marginTop: `${ROOM}px` } },
 			h(NameField, {
 				value: draft === null ? text : draft,
 				placeholder: fallback,
@@ -755,7 +764,7 @@ export function Detail(props) {
 		// 不写"名字改过了"：框变蓝、这两颗冒出来，已经把话说完了。
 		!dirty ? null : h('div', {
 			key: 'acts',
-			style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', width: '100%', marginTop: '6px' },
+			style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: `${ROOM}px`, width: '100%', marginTop: `${ROOM}px` },
 		}, [
 			word('不保存', '丢掉这次改名', () => { setDraft(null); setTyping(false); setExpanded(false) }),
 			word('保存', '保存这个名字（回车也行）', () => { commit(draft); setTyping(false); setExpanded(false) }, true),
@@ -773,12 +782,13 @@ export function Detail(props) {
 				position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 				transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
 				opacity: shown ? 1 : 0,
-				transition: 'opacity .14s ease, transform .14s ease',
 				pointerEvents: shown ? 'auto' : 'none',
-				width: `${Z.card}px`, maxWidth: '60vw',
+				// 展开时加宽加厚（见上面 ROOM 那段）；收起时维持原来的紧凑尺寸
+				width: `${expanded ? Z.cardOpen : Z.card}px`, maxWidth: '72vw',
+				transition: 'opacity .14s ease, transform .14s ease, width .14s ease, padding .14s ease',
 				display: 'flex', flexDirection: 'column', alignItems: 'stretch',
 				background: C.card, borderWidth: '1px', borderStyle: 'solid', borderColor: dirty ? C.accent : C.line, borderRadius: '7px',
-				boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
+				boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: expanded ? '11px 13px' : '6px 8px',
 				font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 				// ⚠️ 这里只能上 NO_ZOOM，不能上整套 TAPPABLE：卡片里有改名输入框，
 				//    祖先一旦 user-select:none，iOS 上那个框里的字就选不中、放不了光标。

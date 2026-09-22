@@ -4,7 +4,7 @@
  * 容器归我们自己画：宿主只铺一个 `<ul>` 再按 namespace 派发，所以根元素**必须是 `<li>`**。
  */
 import { h, react } from './runtime.js'
-import { CUSTOM, GLYPH_MAX, ICON_EDGE, PICTURE, favShape, preview } from './shapes.js'
+import { CUSTOM, GLYPH_STORE_MAX, ICON_EDGE, PICK_SHAPES, PICTURE, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
 import { HexField } from './ui-detail.js'
 import { useObservable } from './hooks.js'
@@ -184,7 +184,9 @@ export function SettingsCard(props) {
 		const changed = fields.some((field) => user[field] === true)
 		return h('div', { key: 'hd', style: S.fieldHead }, [
 			h('label', { key: 'l', style: S.label }, label),
-			h('span', { key: 'v', style: S.value }, text),
+			// 空字符串 = 这一项的值已经在控件里看得见了，标题栏不再重复一遍。
+			// 颜色行就是这种：右边那个框里写着 #FFD43B，标题栏再写一遍纯属冗余（John 提的）。
+			text === '' ? null : h('span', { key: 'v', style: S.value }, text),
 			changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
 			changed
 				? h('button', {
@@ -262,7 +264,7 @@ export function SettingsCard(props) {
 	const composing = react.useRef(false)
 	/** 拼字落地：按码点裁到上限再写进设置。空了就清掉这一项，回到默认。 */
 	const land = (field, raw) => {
-		const cut = [...String(raw)].slice(0, GLYPH_MAX).join('').trim()
+		const cut = [...String(raw)].slice(0, GLYPH_STORE_MAX).join('').trim()
 		setGlyph(cut)
 		if (cut === '') clear([field])
 		else put(field, CUSTOM + cut)
@@ -280,7 +282,7 @@ export function SettingsCard(props) {
 					onClick: () => put(field, one),
 				}, preview(one, color, 13, dashed, favShape(one))),
 			),
-			...SHAPES.map((one) =>
+			...PICK_SHAPES.map((one) =>
 				h('button', {
 					key: one.value, type: 'button', disabled: !on, title: one.value,
 					style: S.chip(now === one.value, on),
@@ -295,7 +297,9 @@ export function SettingsCard(props) {
 			}, [
 				String(now).startsWith(PICTURE)
 					? preview(now, color, 15, dashed)
-					: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
+					// ⚠️ 别放 emoji —— 这里一度是 🖼，在 John 那台 Windows 上是个豆腐块。
+					//    详情卡里那颗同理，两处要一起改。
+					: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '+'),
 				h('input', {
 					key: 'f', type: 'file', accept: 'image/*', disabled: !on,
 					style: { display: 'none' },
@@ -317,7 +321,7 @@ export function SettingsCard(props) {
 			h('input', {
 				key: 'own', type: 'text', disabled: !on,
 				value: glyph === null ? (String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '') : glyph,
-				placeholder: '填字', title: `填几个字当节点，emoji 也行，最多 ${GLYPH_MAX} 个`,
+				placeholder: '填字', title: '填字当节点，emoji 也行，多少个都收 —— 画不下的会截断加省略号',
 				autoCapitalize: 'off', autoCorrect: 'off',
 				style: Object.assign({}, S.own(String(now).startsWith(CUSTOM), on), canHover ? {} : { fontSize: '16px' }),
 				onCompositionStart: () => { composing.current = true },
@@ -337,7 +341,7 @@ export function SettingsCard(props) {
 	const pair = (spot) => {
 		const color = valueOf(spot.color)
 		return h('div', { key: spot.key, style: S.field }, [
-			head(spot.label, String(color).toUpperCase(), [spot.color, spot.shape]),
+			head(spot.label, '', [spot.color, spot.shape]),
 			h('div', { key: 'bd', style: S.pair }, [
 				h('input', {
 					key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),

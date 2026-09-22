@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
 		 * 代价是各项相对老基准差 ±2% 以内。
 		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
 		 */
-		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, cardOpen: 340, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -1447,13 +1447,15 @@ window.__ModuleLoader__.load({
 		const ICON_EDGE = 96
 
 		/**
-		 * 自定义字最多几个字符（按**码点**数，emoji 算一个）。
+		 * 自定义字**存**多少个字符封顶（按码点数，emoji 算一个）。
 		 *
-		 * ⚠️ 这个数是**输入框和渲染共用**的唯一一份。以前输入框写 `maxLength: 4`、
-		 *    `shapeSpec` 只认 2 个，于是打到第 3 个字时框里明明有字、树上的图标却悄悄
-		 *    退回了默认 —— "能输入，但不生效"是最难查的那种（John 报的就是这条）。
+		 * ⚠️ 这不是给用户看的限制，是条**存储护栏** —— 设置值要进 JSON、进 URL、
+		 *    每帧参与排版，不设上界等于允许往里粘一整篇文章。64 个码点谁也够不着。
+		 *    真正决定"画出来几个字"的是 `glyphFit`（画不下就截断加省略号），
+		 *    和这个数没关系：**能打多少和能画多少是两件事**，别再合成一件。
+		 *    （以前合成一件，上限 5 个 —— John 要求去掉，就是去掉这条。）
 		 */
-		const GLYPH_MAX = 5
+		const GLYPH_STORE_MAX = 64
 
 		/**
 		 * 字最多摊到点的几倍宽（**只算字，不含外面那圈框**）。
@@ -1462,6 +1464,20 @@ window.__ModuleLoader__.load({
 		 * 不封的话，某一个节点挂个 5 字标签，**整棵树**的列距都会被它撑开。
 		 */
 		const GLYPH_SPAN = 3
+
+		/**
+		 * 字最多缩到基准字号的多少倍。
+		 *
+		 * 只有 `GLYPH_SPAN` 封顶、没有这条下限的话，字数一多就是"框不变、字越缩越小"，
+		 * 二十个字挤进三个汉字宽 —— 画得出来，但没人认得出那是什么。所以缩到这儿为止，
+		 * 剩下的交给 `glyphFit` 截断。
+		 */
+		const GLYPH_MIN_SCALE = 0.6
+
+		/**
+		 * 在那个字号下限上，一个框最多装得下几个全角宽。超出的由 `glyphFit` 截掉。
+		 */
+		const GLYPH_FIT_EM = GLYPH_SPAN / GLYPH_MIN_SCALE
 
 		/**
 		 * 字左右两边各留多少空，单位是点直径的倍数（也就是一个方块字的宽）。
@@ -1563,6 +1579,49 @@ window.__ModuleLoader__.load({
 		 * @param glyph - 那几个字
 		 * @returns 倍数
 		 */
+		/**
+		 * 截到画得下为止，截了就加省略号。
+		 *
+		 * 【为什么是截断而不是"避免碰撞"】
+		 * 横向根本不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
+		 * 而列距按"这棵树上画得最宽的那个形状"留（geometry.js 的 railLayout），
+		 * 所以框再多字也只有那么宽，列距自动让开。纵向同理：框高恒为 `GLYPH_BOX`
+		 * 倍点直径，而点直径本来就卡在 `rowH - dotPad` 以内。
+		 * 真正的问题从来不是"会叠上"，而是"缩到看不清"。
+		 *
+		 * 业界对"格子里塞不下的文本"就这一条成熟做法：**截断 + 省略号，全文放在
+		 * 悬停出来的那张卡片里**（IDE 的面包屑、git 客户端的提交行、文件管理器的
+		 * 长文件名，全是这么干的）。标签避让那一套是给地图用的 —— 那里标签可以挪，
+		 * 这里标签就是节点本身，挪不了。
+		 *
+		 * 小例子（FIT_EM = 5）：
+		 *   `甲乙丙` → 3 em，原样；
+		 *   `甲乙丙丁戊己` → 6 em 放不下，留出省略号那 1 em → `甲乙丙丁…`；
+		 *   `abcdefghij` → 6 em（字母各 0.6）→ `abcdefg…`。
+		 * @param glyph - 原文
+		 * @returns 画出来的那几个字
+		 */
+		function glyphFit(glyph) {
+			const chars = [...String(glyph === undefined || glyph === null ? '' : glyph)]
+			const wide = (ch) => emWidth(ch.codePointAt(0))
+			let sum = 0
+			for (let at = 0; at < chars.length; at += 1) {
+				if (sum + wide(chars[at]) <= GLYPH_FIT_EM + 1e-9) {
+					sum += wide(chars[at])
+					continue
+				}
+				// 放不下了：省略号自己也要占一格，所以往回吐到腾得出位置为止
+				const kept = chars.slice(0, at)
+				let width = sum
+				while (kept.length > 0 && width + wide('…') > GLYPH_FIT_EM + 1e-9) {
+					width -= wide(kept[kept.length - 1])
+					kept.pop()
+				}
+				return `${kept.join('')}…`
+			}
+			return chars.join('')
+		}
+
 		function glyphGrow(glyph) {
 			const em = glyphEm(glyph)
 			const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD_X
@@ -1607,6 +1666,21 @@ window.__ModuleLoader__.load({
 			// 老老实实带个腰画成简单多边形。
 			poly('bowtie', [[0, 0.02], [1, 0.02], [0.58, 0.5], [1, 0.98], [0, 0.98], [0.42, 0.5]]),
 		]
+
+		/**
+		 * 画得出来、但**不摆进选择器**的那几个。
+		 *
+		 * 它们仍然在 `SHAPES` 里 —— 存量设置、手填的值都照画，只是不占选择器的格子。
+		 * 选择器是一排横着的小方块，格子一多就换行，而换行之后"一种节点一行"就散了。
+		 * 判据是**小尺寸下认不认得出**：右箭头在 11px 上就是个歪三角，五边形和六边形
+		 * 跟圆几乎没区别 —— 摆上去只是让人多扫三格。
+		 *
+		 * ⚠️ 加形状时想清楚要不要进这张单子；别反过来从 `SHAPES` 里删，删了存量设置会退回圆点。
+		 */
+		const RARE_SHAPES = ['chevron', 'pentagon', 'hexagon']
+
+		/** 选择器里真正摆出来的那些。 */
+		const PICK_SHAPES = SHAPES.filter((one) => !RARE_SHAPES.includes(one.value))
 
 		/**
 		 * 一个多边形形状的条目。`grow` 一律**算出来**，不手抄小数。
@@ -2192,11 +2266,15 @@ window.__ModuleLoader__.load({
 		function shapeSpec(want) {
 			const text = typeof want === 'string' ? want : ''
 			if (text.startsWith(CUSTOM)) {
-				const glyph = text.slice(CUSTOM.length).trim()
-				// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
-				// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
-				if (glyph !== '' && [...glyph].length <= GLYPH_MAX)
+				const raw = text.slice(CUSTOM.length).trim()
+				// ⚠️ `value` 一律是**原文**，不是截断后的那几个字 —— 它是存进设置里的那个值，
+				//    截了就存不回去、`isShape` 也会当场认不得自己。截断只发生在 `glyph` 上。
+				if (raw !== '' && [...raw].length <= GLYPH_STORE_MAX) {
+					const glyph = glyphFit(raw)
+					// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
+					// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
 					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
+				}
 			}
 			if (text.startsWith(PICTURE)) {
 				// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于
@@ -3648,7 +3726,7 @@ window.__ModuleLoader__.load({
 		 * @returns 裁过的字；最多 GLYPH_MAX 个码点
 		 */
 		function clampGlyph(text) {
-			return [...String(text === undefined || text === null ? '' : text)].slice(0, GLYPH_MAX).join('')
+			return [...String(text === undefined || text === null ? '' : text)].slice(0, GLYPH_STORE_MAX).join('')
 		}
 
 		/**
@@ -3887,8 +3965,8 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 收藏选择器里每一格多大、格与格之间留多少。全在一行里挤，所以比设置卡那排小一圈。 */
-		const PICK = 18
-		const GAP = 3
+		const PICK = 24
+		const GAP = 5
 
 		/**
 		 * 收藏图标能挑哪几种形状。
@@ -3899,7 +3977,7 @@ window.__ModuleLoader__.load({
 		 *    设置卡那边**不删**：那是给节点配形状的，格子宽松，而且删掉会让已经
 		 *    存了 hexagon 的设置读出来不合法。
 		 */
-		const FAV_DROP = ['chevron', 'pentagon', 'hexagon']
+		const FAV_DROP = RARE_SHAPES
 
 		/** 实际列出来的那几格。`'star'` 排头 —— 它是默认，也是"恢复默认"那一格。 */
 		const FAV_SHAPES = ['star', ...SHAPES.map((one) => one.value).filter((one) => !FAV_DROP.includes(one))]
@@ -3953,7 +4031,7 @@ window.__ModuleLoader__.load({
 			// 形状、字、传图、颜色**全在同一个 flex 里**，挤不下就自己换行。
 			// 拆成"图标一排、颜色一排"的话，光两个标题就占掉两行 —— 而卡片总共才十几行高。
 			return h('div', {
-				style: { display: 'flex', alignItems: 'center', gap: GAP + 'px', flexWrap: 'wrap', width: '100%', marginTop: '6px' },
+				style: { display: 'flex', alignItems: 'center', gap: GAP + 'px', flexWrap: 'wrap', width: '100%', marginTop: '10px' },
 			}, [
 				// ⚠️ 预览一律走 `favShape` 解，不走 `shapeSpec`：`'star'` 不在 SHAPES 里，
 				//    交给 shapeSpec 会退回圆 —— 那一格就成了"默认是个圆点"，正好说反。
@@ -3973,7 +4051,7 @@ window.__ModuleLoader__.load({
 					//    "zhongguo" 八个字符才换来两个字 —— 挂上 5 的上限，拼音打到第六个字母
 					//    就被截断，汉字根本拼不出来。上限改成在拼字**落地之后**裁（见 land）。
 					value: draft === null ? stored : draft,
-					placeholder: '字', title: `填几个字当图标，emoji 也行，最多 ${GLYPH_MAX} 个`,
+					placeholder: '字', title: '填字当图标，emoji 也行，多少个都收 —— 画不下的会截断加省略号，全文在这个框里',
 					spellCheck: false, autoCapitalize: 'off', autoCorrect: 'off',
 					style: {
 						width: '40px', height: PICK + 'px', boxSizing: 'border-box', flex: '0 0 auto',
@@ -4033,7 +4111,10 @@ window.__ModuleLoader__.load({
 				cell('label', 'img', String(now).startsWith(PICTURE), { title: '传一张图当图标。png / jpg / webp / svg 都行，尺寸不限' }, [
 					String(now).startsWith(PICTURE)
 						? preview(now, color, PICK - 4, false, favShape(now))
-						: h('span', { key: 'p', style: { fontSize: '12px', lineHeight: 1, color: C.muted } }, '🖼'),
+						// ⚠️ 别再放 emoji。这里一度是 🖼，而它在 John 这台 Windows 上渲染成豆腐块
+						//    —— 图标格子里摆一个认不出的字符，比什么都不摆更糟。
+						//    `+` 是"加一个"的通用写法，任何字体都有。
+						: h('span', { key: 'p', style: { fontSize: `${Math.round(PICK * 0.72)}px`, lineHeight: 1, color: C.muted } }, '+'),
 					h('input', {
 						key: 'f', type: 'file', accept: 'image/*', style: { display: 'none' },
 						onChange: (event) => {
@@ -4290,9 +4371,15 @@ window.__ModuleLoader__.load({
 			})
 
 			// ===== 展开档：名字框 + 收藏图标 =====
+			//
+			// ⚠️ 展开档的留白**故意比收起时大一截**。收起的那条是扫一眼就走的，挤是对的；
+			//    而双击展开是个明确动作，这时候注意力全在卡片上，还按"别占地方"的尺寸排，
+			//    就成了 John 说的"畏手畏脚" —— 输入框、图标格子挤成一堆，反倒更难点中。
+			//    浮层一旦被用户主动打开，就该给足操作空间。
+			const ROOM = 10
 			// 动作按钮不在这儿 —— 它们全在第一行，展开与否都不动。
 			const body = !shown || !expanded ? null : [
-				h('div', { key: 'name', style: { display: 'flex', width: '100%', marginTop: '6px' } },
+				h('div', { key: 'name', style: { display: 'flex', width: '100%', marginTop: `${ROOM}px` } },
 					h(NameField, {
 						value: draft === null ? text : draft,
 						placeholder: fallback,
@@ -4307,7 +4394,7 @@ window.__ModuleLoader__.load({
 				// 不写"名字改过了"：框变蓝、这两颗冒出来，已经把话说完了。
 				!dirty ? null : h('div', {
 					key: 'acts',
-					style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', width: '100%', marginTop: '6px' },
+					style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: `${ROOM}px`, width: '100%', marginTop: `${ROOM}px` },
 				}, [
 					word('不保存', '丢掉这次改名', () => { setDraft(null); setTyping(false); setExpanded(false) }),
 					word('保存', '保存这个名字（回车也行）', () => { commit(draft); setTyping(false); setExpanded(false) }, true),
@@ -4325,12 +4412,13 @@ window.__ModuleLoader__.load({
 						position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 						transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
 						opacity: shown ? 1 : 0,
-						transition: 'opacity .14s ease, transform .14s ease',
 						pointerEvents: shown ? 'auto' : 'none',
-						width: `${Z.card}px`, maxWidth: '60vw',
+						// 展开时加宽加厚（见上面 ROOM 那段）；收起时维持原来的紧凑尺寸
+						width: `${expanded ? Z.cardOpen : Z.card}px`, maxWidth: '72vw',
+						transition: 'opacity .14s ease, transform .14s ease, width .14s ease, padding .14s ease',
 						display: 'flex', flexDirection: 'column', alignItems: 'stretch',
 						background: C.card, borderWidth: '1px', borderStyle: 'solid', borderColor: dirty ? C.accent : C.line, borderRadius: '7px',
-						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
+						boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: expanded ? '11px 13px' : '6px 8px',
 						font: '12.5px/1.45 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.text,
 						// ⚠️ 这里只能上 NO_ZOOM，不能上整套 TAPPABLE：卡片里有改名输入框，
 						//    祖先一旦 user-select:none，iOS 上那个框里的字就选不中、放不了光标。
@@ -4599,7 +4687,9 @@ window.__ModuleLoader__.load({
 				const changed = fields.some((field) => user[field] === true)
 				return h('div', { key: 'hd', style: S.fieldHead }, [
 					h('label', { key: 'l', style: S.label }, label),
-					h('span', { key: 'v', style: S.value }, text),
+					// 空字符串 = 这一项的值已经在控件里看得见了，标题栏不再重复一遍。
+					// 颜色行就是这种：右边那个框里写着 #FFD43B，标题栏再写一遍纯属冗余（John 提的）。
+					text === '' ? null : h('span', { key: 'v', style: S.value }, text),
 					changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
 					changed
 						? h('button', {
@@ -4677,7 +4767,7 @@ window.__ModuleLoader__.load({
 			const composing = react.useRef(false)
 			/** 拼字落地：按码点裁到上限再写进设置。空了就清掉这一项，回到默认。 */
 			const land = (field, raw) => {
-				const cut = [...String(raw)].slice(0, GLYPH_MAX).join('').trim()
+				const cut = [...String(raw)].slice(0, GLYPH_STORE_MAX).join('').trim()
 				setGlyph(cut)
 				if (cut === '') clear([field])
 				else put(field, CUSTOM + cut)
@@ -4695,7 +4785,7 @@ window.__ModuleLoader__.load({
 							onClick: () => put(field, one),
 						}, preview(one, color, 13, dashed, favShape(one))),
 					),
-					...SHAPES.map((one) =>
+					...PICK_SHAPES.map((one) =>
 						h('button', {
 							key: one.value, type: 'button', disabled: !on, title: one.value,
 							style: S.chip(now === one.value, on),
@@ -4710,7 +4800,9 @@ window.__ModuleLoader__.load({
 					}, [
 						String(now).startsWith(PICTURE)
 							? preview(now, color, 15, dashed)
-							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '🖼'),
+							// ⚠️ 别放 emoji —— 这里一度是 🖼，在 John 那台 Windows 上是个豆腐块。
+							//    详情卡里那颗同理，两处要一起改。
+							: h('span', { key: 'p', style: { fontSize: '13px', lineHeight: 1, color: 'var(--dsw-alias-label-secondary)' } }, '+'),
 						h('input', {
 							key: 'f', type: 'file', accept: 'image/*', disabled: !on,
 							style: { display: 'none' },
@@ -4732,7 +4824,7 @@ window.__ModuleLoader__.load({
 					h('input', {
 						key: 'own', type: 'text', disabled: !on,
 						value: glyph === null ? (String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '') : glyph,
-						placeholder: '填字', title: `填几个字当节点，emoji 也行，最多 ${GLYPH_MAX} 个`,
+						placeholder: '填字', title: '填字当节点，emoji 也行，多少个都收 —— 画不下的会截断加省略号',
 						autoCapitalize: 'off', autoCorrect: 'off',
 						style: Object.assign({}, S.own(String(now).startsWith(CUSTOM), on), canHover ? {} : { fontSize: '16px' }),
 						onCompositionStart: () => { composing.current = true },
@@ -4752,7 +4844,7 @@ window.__ModuleLoader__.load({
 			const pair = (spot) => {
 				const color = valueOf(spot.color)
 				return h('div', { key: spot.key, style: S.field }, [
-					head(spot.label, String(color).toUpperCase(), [spot.color, spot.shape]),
+					head(spot.label, '', [spot.color, spot.shape]),
 					h('div', { key: 'bd', style: S.pair }, [
 						h('input', {
 							key: 'c', type: 'color', value: color, disabled: !on, style: S.swatch(on),
@@ -5267,7 +5359,7 @@ window.__ModuleLoader__.load({
 			polyArea, growOf, regularPoly, crossPoly,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 			// 自定义字：上限、占几倍宽、该用多大字号
-			GLYPH_MAX, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
+			GLYPH_STORE_MAX, GLYPH_MIN_SCALE, GLYPH_FIT_EM, glyphFit, RARE_SHAPES, PICK_SHAPES, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
 			// 收藏：五角星的形状、配色、以及点下去那一下的动画
 			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版

@@ -25,13 +25,15 @@ export const ICON_URL = `${API}/icon`
 export const ICON_EDGE = 96
 
 /**
- * 自定义字最多几个字符（按**码点**数，emoji 算一个）。
+ * 自定义字**存**多少个字符封顶（按码点数，emoji 算一个）。
  *
- * ⚠️ 这个数是**输入框和渲染共用**的唯一一份。以前输入框写 `maxLength: 4`、
- *    `shapeSpec` 只认 2 个，于是打到第 3 个字时框里明明有字、树上的图标却悄悄
- *    退回了默认 —— "能输入，但不生效"是最难查的那种（John 报的就是这条）。
+ * ⚠️ 这不是给用户看的限制，是条**存储护栏** —— 设置值要进 JSON、进 URL、
+ *    每帧参与排版，不设上界等于允许往里粘一整篇文章。64 个码点谁也够不着。
+ *    真正决定"画出来几个字"的是 `glyphFit`（画不下就截断加省略号），
+ *    和这个数没关系：**能打多少和能画多少是两件事**，别再合成一件。
+ *    （以前合成一件，上限 5 个 —— John 要求去掉，就是去掉这条。）
  */
-export const GLYPH_MAX = 5
+export const GLYPH_STORE_MAX = 64
 
 /**
  * 字最多摊到点的几倍宽（**只算字，不含外面那圈框**）。
@@ -40,6 +42,20 @@ export const GLYPH_MAX = 5
  * 不封的话，某一个节点挂个 5 字标签，**整棵树**的列距都会被它撑开。
  */
 export const GLYPH_SPAN = 3
+
+/**
+ * 字最多缩到基准字号的多少倍。
+ *
+ * 只有 `GLYPH_SPAN` 封顶、没有这条下限的话，字数一多就是"框不变、字越缩越小"，
+ * 二十个字挤进三个汉字宽 —— 画得出来，但没人认得出那是什么。所以缩到这儿为止，
+ * 剩下的交给 `glyphFit` 截断。
+ */
+export const GLYPH_MIN_SCALE = 0.6
+
+/**
+ * 在那个字号下限上，一个框最多装得下几个全角宽。超出的由 `glyphFit` 截掉。
+ */
+export const GLYPH_FIT_EM = GLYPH_SPAN / GLYPH_MIN_SCALE
 
 /**
  * 字左右两边各留多少空，单位是点直径的倍数（也就是一个方块字的宽）。
@@ -141,6 +157,49 @@ export function glyphFont(glyph, size) {
  * @param glyph - 那几个字
  * @returns 倍数
  */
+/**
+ * 截到画得下为止，截了就加省略号。
+ *
+ * 【为什么是截断而不是"避免碰撞"】
+ * 横向根本不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
+ * 而列距按"这棵树上画得最宽的那个形状"留（geometry.js 的 railLayout），
+ * 所以框再多字也只有那么宽，列距自动让开。纵向同理：框高恒为 `GLYPH_BOX`
+ * 倍点直径，而点直径本来就卡在 `rowH - dotPad` 以内。
+ * 真正的问题从来不是"会叠上"，而是"缩到看不清"。
+ *
+ * 业界对"格子里塞不下的文本"就这一条成熟做法：**截断 + 省略号，全文放在
+ * 悬停出来的那张卡片里**（IDE 的面包屑、git 客户端的提交行、文件管理器的
+ * 长文件名，全是这么干的）。标签避让那一套是给地图用的 —— 那里标签可以挪，
+ * 这里标签就是节点本身，挪不了。
+ *
+ * 小例子（FIT_EM = 5）：
+ *   `甲乙丙` → 3 em，原样；
+ *   `甲乙丙丁戊己` → 6 em 放不下，留出省略号那 1 em → `甲乙丙丁…`；
+ *   `abcdefghij` → 6 em（字母各 0.6）→ `abcdefg…`。
+ * @param glyph - 原文
+ * @returns 画出来的那几个字
+ */
+export function glyphFit(glyph) {
+	const chars = [...String(glyph === undefined || glyph === null ? '' : glyph)]
+	const wide = (ch) => emWidth(ch.codePointAt(0))
+	let sum = 0
+	for (let at = 0; at < chars.length; at += 1) {
+		if (sum + wide(chars[at]) <= GLYPH_FIT_EM + 1e-9) {
+			sum += wide(chars[at])
+			continue
+		}
+		// 放不下了：省略号自己也要占一格，所以往回吐到腾得出位置为止
+		const kept = chars.slice(0, at)
+		let width = sum
+		while (kept.length > 0 && width + wide('…') > GLYPH_FIT_EM + 1e-9) {
+			width -= wide(kept[kept.length - 1])
+			kept.pop()
+		}
+		return `${kept.join('')}…`
+	}
+	return chars.join('')
+}
+
 export function glyphGrow(glyph) {
 	const em = glyphEm(glyph)
 	const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD_X
@@ -185,6 +244,21 @@ export const SHAPES = [
 	// 老老实实带个腰画成简单多边形。
 	poly('bowtie', [[0, 0.02], [1, 0.02], [0.58, 0.5], [1, 0.98], [0, 0.98], [0.42, 0.5]]),
 ]
+
+/**
+ * 画得出来、但**不摆进选择器**的那几个。
+ *
+ * 它们仍然在 `SHAPES` 里 —— 存量设置、手填的值都照画，只是不占选择器的格子。
+ * 选择器是一排横着的小方块，格子一多就换行，而换行之后"一种节点一行"就散了。
+ * 判据是**小尺寸下认不认得出**：右箭头在 11px 上就是个歪三角，五边形和六边形
+ * 跟圆几乎没区别 —— 摆上去只是让人多扫三格。
+ *
+ * ⚠️ 加形状时想清楚要不要进这张单子；别反过来从 `SHAPES` 里删，删了存量设置会退回圆点。
+ */
+export const RARE_SHAPES = ['chevron', 'pentagon', 'hexagon']
+
+/** 选择器里真正摆出来的那些。 */
+export const PICK_SHAPES = SHAPES.filter((one) => !RARE_SHAPES.includes(one.value))
 
 /**
  * 一个多边形形状的条目。`grow` 一律**算出来**，不手抄小数。
@@ -770,11 +844,15 @@ export function fade(hex, alpha) {
 export function shapeSpec(want) {
 	const text = typeof want === 'string' ? want : ''
 	if (text.startsWith(CUSTOM)) {
-		const glyph = text.slice(CUSTOM.length).trim()
-		// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
-		// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
-		if (glyph !== '' && [...glyph].length <= GLYPH_MAX)
+		const raw = text.slice(CUSTOM.length).trim()
+		// ⚠️ `value` 一律是**原文**，不是截断后的那几个字 —— 它是存进设置里的那个值，
+		//    截了就存不回去、`isShape` 也会当场认不得自己。截断只发生在 `glyph` 上。
+		if (raw !== '' && [...raw].length <= GLYPH_STORE_MAX) {
+			const glyph = glyphFit(raw)
+			// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
+			// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
 			return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
+		}
 	}
 	if (text.startsWith(PICTURE)) {
 		// id 是内容哈希，样子固定。不肯宽松认是因为它要拼进 URL —— 认宽了等于

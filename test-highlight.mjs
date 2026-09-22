@@ -733,17 +733,41 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(!shapeField.accept('八边形'), '认不得的预设名不该算数')
 	check(pure.shapeSpec('char:★').glyph === '★', '自定义形状没把字取出来')
 
-	// 上限是 GLYPH_MAX（5 个**码点**），输入框和渲染共用同一份 —— 以前输入框写 4、
-	// shapeSpec 只认 2，于是打到第 3 个字时框里有字、树上却悄悄退回默认。
+	// ⚠️ **能打多少和能画多少是两件事。** 以前合成一件（上限 5 个码点），
+	//    John 要求去掉；现在存储只剩一条够不着的护栏，画不下的交给 glyphFit 截断。
 	const full = '一二三四五'
-	check([...full].length === pure.GLYPH_MAX, '这条用例按 GLYPH_MAX 写的，上限改了就该改它')
-	check(shapeField.accept(`char:${full}`), `正好 ${pure.GLYPH_MAX} 个字该收`)
-	check(pure.shapeSpec(`char:${full}`).glyph === full, `正好 ${pure.GLYPH_MAX} 个字该照原样画出来`)
-	check(!shapeField.accept(`char:${full}六`), `超过 ${pure.GLYPH_MAX} 个不该算数`)
-	check(pure.shapeSpec(`char:${full}六`).value === 'circle', '超长的自定义值该退回圆形')
-	// 裁的那一手按码点算：emoji 的 .length 是 2，按它算一个 emoji 就吃掉两格配额
-	check(pure.clampGlyph('🙂🙂🙂🙂🙂🙂') === '🙂🙂🙂🙂🙂', '裁字该按码点数，不是 .length')
-	check(pure.clampGlyph('一二三') === '一二三', '没超上限的不该被动')
+	check(shapeField.accept(`char:${full}`), '五个字该收')
+	check(pure.shapeSpec(`char:${full}`).glyph === full, '正好装得下的该原样画出来')
+
+	// 超长照收 —— 这一条就是"去掉上限"本身，改回去会当场红
+	const long = '一二三四五六七八九十'
+	check(shapeField.accept(`char:${long}`), '十个字也该收，上限已经去掉了')
+	check(pure.shapeSpec(`char:${long}`).value === `char:${long}`,
+		'value 必须是原文：它要存回设置、还要过 isShape，截了就认不得自己')
+	check(pure.shapeSpec(`char:${long}`).glyph.endsWith('…'), '画不下的该截断加省略号')
+	check([...pure.shapeSpec(`char:${long}`).glyph].length < [...long].length, '截断之后该真的变短')
+
+	// 护栏：够不着，但得在
+	const huge = '甲'.repeat(pure.GLYPH_STORE_MAX + 1)
+	check(!shapeField.accept(`char:${huge}`), `超过存储护栏 ${pure.GLYPH_STORE_MAX} 个不该算数`)
+	check(pure.shapeSpec(`char:${huge}`).value === 'circle', '超过护栏的值该退回圆形')
+
+	// glyphFit 的两条不变式：截完一定装得下，且字号不许掉到下限以下
+	// （"缩到看不清"才是长标签真正的毛病，横向从来不会碰撞 —— 宽度被 GLYPH_SPAN 焊死）
+	for (const text of ['甲', '甲乙丙', long, 'abcdefghijklmnop', '🙂'.repeat(9)]) {
+		const fit = pure.glyphFit(text)
+		check(pure.glyphEm(fit) <= pure.GLYPH_FIT_EM + 1e-9,
+			`「${text}」截完还有 ${pure.glyphEm(fit)} em，超出上限 ${pure.GLYPH_FIT_EM}`)
+		check(pure.glyphFont(fit, 10) >= 10 * pure.GLYPH_MIN_SCALE - 1e-9,
+			`「${text}」字号缩到了下限 ${pure.GLYPH_MIN_SCALE} 以下`)
+	}
+	check(pure.glyphFit('甲乙丙') === '甲乙丙', '装得下的不该被动')
+	check(pure.glyphFit('') === '' && pure.glyphFit(undefined) === '', '空值不该炸')
+
+	// clampGlyph 现在只是那条护栏，不再是"几个字"
+	check(pure.clampGlyph('🙂🙂🙂🙂🙂🙂') === '🙂🙂🙂🙂🙂🙂', '六个 emoji 不该再被裁 —— 上限去掉了')
+	check([...pure.clampGlyph('甲'.repeat(200))].length === pure.GLYPH_STORE_MAX, '护栏该按码点数裁，不是 .length')
+	check(pure.clampGlyph('一二三') === '一二三', '没到护栏的不该被动')
 	check(pure.clampGlyph('') === '' && pure.clampGlyph(undefined) === '', '空值不该炸')
 
 	// 字是横着摊开的：宽度跟着内容长，高度**所有带框的字一律相同**。
@@ -1340,8 +1364,20 @@ console.log('用例 25：收藏能换图标，但换不掉那个黄')
 		for (const want of pure.FAV_SHAPES) {
 			check(pure.favShape(want).value === want, `「${want}」解不出自己，那一格会画成别的形状`)
 		}
-		// 尺寸：一行里放得下 20 格的前提是格子够小
-		check(pure.PICK <= 20 && pure.GAP <= 4, `格子 ${pure.PICK}px / 间距 ${pure.GAP}px 太大，挤不进两行`)
+		// 尺寸：这一排要在**展开档**的卡片宽度里排得下，最多两行。
+		// ⚠️ 格子是特意调大的（展开是用户主动做的动作，该给足操作空间），
+		//    所以这条不再钉死"格子 ≤ 20px"，改成钉真正在乎的那件事：排不排得下。
+		const chips = pure.FAV_SHAPES.length + 2 // 还有「填字」和「传图」两格
+		const usable = pure.Z.cardOpen - 26 // 展开时左右各 13px 内边距
+		const perRow = Math.floor((usable + pure.GAP) / (pure.PICK + pure.GAP))
+		check(perRow >= 1 && Math.ceil(chips / perRow) <= 2,
+			`${chips} 格 × ${pure.PICK}px 在 ${usable}px 里要排 ${Math.ceil(chips / perRow)} 行`)
+
+		// 选择器只摆常用的，但**冷门形状仍然画得出来** —— 存量设置不能退回圆点
+		for (const gone of pure.RARE_SHAPES) {
+			check(!pure.PICK_SHAPES.some((one) => one.value === gone), `「${gone}」不该出现在选择器里`)
+			check(pure.shapeSpec(gone).value === gone, `「${gone}」被摘出选择器之后画不出来了 —— 存量设置会退回圆点`)
+		}
 	}
 
 	// 颜色**不跟着形状走**：换了图标还是那个黄，不然"哪个是收藏"当场失效
