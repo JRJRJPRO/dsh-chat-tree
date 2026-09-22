@@ -2,6 +2,14 @@
  * 把一个分支的事件折成轮次大纲。**全部的日志格式知识都在这个文件里。**
  *
  * 宿主对 seeded 会话不给投影，而 fork 出来的会话正是"分支"，只能自己折。
+ *
+ * 【一轮"还在不在对话里"有两个真相来源，这里只管其中一个】
+ *   · **surface**（宿主原生）：每条产生消息的事件都带 `surfaceOp`，就地撤回就是一次
+ *     `{op:'replace'}` 把一段 surface 节点遮掉（dsh-rewind-plugin / dsh-retrace 都走这条）。
+ *     它在日志里，所以在这儿折，随大纲一起按 revision 缓存。
+ *   · **dsh-claude 的旁车 `ranges`**：它的对话在 Claude 那边，撤回不写日志，只记旁车。
+ *     不在这儿折 —— 见 rewind.js（读旁车有打断正在跑的那一轮的风险，规矩全在那边）。
+ *   两条最后在 collect.js 里汇成同一个 `rewound` 戳，成图那边不分来源。
  */
 
 /** 提问预览截断长度。宿主 turnOutline 也是这个量级，保持一致。 */
@@ -29,6 +37,68 @@ export function textOf(data) {
  */
 export function isHumanPrompt(data) {
 	return !!(data && data.source && data.source.kind === 'user')
+}
+
+/**
+ * 折宿主的 surface，得到被 replace 遮掉的 seq 集合。
+ *
+ * 宿主的规则（dsh-session/surface）：带 `surfaceOp:'append'` 的事件接在 surface 尾部；
+ * `{op:'replace', startSeq, endSeq}` 把 surface 里从 startSeq 到 endSeq（含）那一段节点
+ * 换成这一条自己。模型看到的历史就是折完之后的节点序列 —— 被遮掉的节点，模型不记得。
+ *
+ * ⚠️ 这是宿主 `foldSurface` 的**宽容版**，不 import 它：官方那份对任何不一致都 throw
+ *    （seq 不连续、replace 指到不存在的节点……），而我们折的是从盘上读回来的整份日志，
+ *    一条坏事件不该让整棵树消失。这里遇到认不得的 replace 就当它没发生。
+ *    宿主每次刷新系统提示也是一次 replace（换 surface 第 0 个节点），遮掉的是
+ *    system/message，不会命中任何一轮的提问行 —— 所以不用特意排除。
+ *
+ * 小例子（seq → 事件）：
+ *   5 user(append)  6 assistant(append)  9 user(append)  10 assistant(append)
+ *   12 user(plugin 标记, replace 9..10)
+ *   折：[5,6] → [5,6,9,10] → replace 找到 9、10 在位置 2..3 → 遮掉 {9,10}，surface 变 [5,6,12]
+ * @param events - 该会话的全部事件
+ * @returns 被遮掉的 seq 集合
+ */
+export function shadowedSeqs(events) {
+	const nodes = []
+	const shadowed = new Set()
+	for (const event of events) {
+		const op = event && event.surfaceOp
+		if (op === undefined || op === null || typeof event.seq !== 'number') continue
+		if (op === 'append') {
+			nodes.push(event.seq)
+			continue
+		}
+		if (typeof op !== 'object' || op.op !== 'replace') continue
+		const startIdx = nodes.indexOf(op.startSeq)
+		const endIdx = nodes.indexOf(op.endSeq)
+		if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) continue // 认不得就当没发生
+		for (const seq of nodes.slice(startIdx, endIdx + 1)) shadowed.add(seq)
+		nodes.splice(startIdx, endIdx - startIdx + 1, event.seq)
+	}
+	return shadowed
+}
+
+/**
+ * 岔路点在父分支的第几轮 —— **按这条分支自己的眼光算**。
+ *
+ * 原来的算法是"继承前缀里最后一轮"。可分支可以撤回它继承来的轮：从父分支第 3 轮岔出来，
+ * 然后把 3 撤掉、重发一句 —— 这时它的对话是 1-2-4，岔路点是 2，不是 3。
+ * 还按 3 算的话，新发的 4 就挂在一个在这条分支里已经不存在的节点底下：
+ * John 报的"1-2-3-4，可 3 已经被删了"就是这么画出来的。盘上带撤回记录的分支，
+ * 两条都是撤到了继承段里。
+ *
+ * 全撤光了就 undefined：成图那边找不到挂载点会退到父分支自己的挂载点，
+ * 也就是"从头再来"。
+ * @param turns - 已经盖过撤回戳的轮次（含继承的）
+ * @returns 最后一个在本分支里还活着的继承轮，或 undefined
+ */
+export function effectiveForkTurn(turns) {
+	let at
+	for (const entry of turns || []) {
+		if (entry.inherited === true && entry.rewound !== true) at = entry.turn
+	}
+	return at
 }
 
 /**
@@ -103,10 +173,21 @@ export function foldOutline(events) {
 
 	// 标出哪些轮是从父分支抄来的 —— 树上只画自己的那部分，
 	// 否则父子两条链都把继承段画一遍，看着像"直线中间拐个弯"而不是分叉。
+	//
+	// ⚠️ 这里的 forkTurn 是**继承前缀的最后一轮**，是"日志说的"岔路点。
+	//    真正拿去成图的岔路点要等旁车 ranges 也盖完戳之后再算（effectiveForkTurn），
+	//    在 collect.js。这一个留着给 outlineOf 判"半成品"用。
 	let forkTurn
 	for (const entry of turns) {
 		entry.inherited = seedSeq !== undefined && entry.seq < seedSeq
-		if (entry.inherited) forkTurn = entry.turn // 最后一个继承轮 = 岔路点在父分支的第几轮
+		if (entry.inherited) forkTurn = entry.turn
+	}
+
+	// 就地撤回（宿主原生的 surface replace）：提问行被遮掉的那一轮就不在对话里了。
+	// 只认提问行：回答被单独换掉（重新生成）的轮，问题还在，不算撤回。
+	const shadowed = shadowedSeqs(events)
+	if (shadowed.size > 0) {
+		for (const entry of turns) if (entry.promptSeq !== undefined && shadowed.has(entry.promptSeq)) entry.rewound = true
 	}
 
 	return { turns, title, model, forkTurn }

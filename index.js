@@ -21,6 +21,7 @@
 
 import { adoptBranch, agentOf, cancelPendingGrafts, forkTurnOf, inheritedPendingIds, scheduleGraftRetry } from './src/host/adopt.js'
 import { collect } from './src/host/collect.js'
+import { effectiveForkTurn, shadowedSeqs } from './src/host/outline.js'
 import { graft } from './src/host/graft.js'
 import { HttpError, raw, route } from './src/host/http.js'
 import { ICON_KEEP, ICON_MAX, isIconId, putIcon, readIcon } from './src/host/icons.js'
@@ -52,7 +53,7 @@ export const __test = {
 	adoptBranch, forkTurnOf, inheritedPendingIds, lineage, scheduleGraftRetry, cancelPendingGrafts,
 	putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX,
 	statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS,
-	collect,
+	collect, shadowedSeqs, effectiveForkTurn,
 }
 
 /**

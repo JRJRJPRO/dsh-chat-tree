@@ -25,6 +25,7 @@
  *   第4步  用例 4-6：client 半（成图）
  *   第5步  用例 7-8：拿盘上真实的撤回过的会话兜一遍 + 旁车读写
  *   第6步  用例 9-10：**读旁车不许打断正在跑的那一轮**（最要命的一条）+ 整条管线
+ *   第7步  用例 12-14：宿主原生的就地撤回（surface replace）+ 岔路点按分支自己的眼光算
  *
  * 跑法：node test-rewind.mjs
  *
@@ -45,7 +46,7 @@ const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 
 const pure = await loadClientPure()
 
-const { markRewound, turnHidden, rewindStateOf, statusProbe, SIDECAR_QUIET_MS, collect } = __test
+const { markRewound, turnHidden, rewindStateOf, statusProbe, SIDECAR_QUIET_MS, collect, shadowedSeqs, effectiveForkTurn } = __test
 const Z = pure.Z
 
 // ===== 第 2 步：造数据的小工具 =====
@@ -549,6 +550,92 @@ console.log('用例 11：哪条分支该标成「无上下文」')
 		else process.env.DSH_HOME = was
 		fs.rmSync(home, { recursive: true, force: true })
 	}
+}
+
+// ===== 第 7 步：surface replace + 有效岔路点 =====
+//
+// 撤回的第二个真相来源：宿主原生的 surface。dsh-rewind-plugin / dsh-retrace 的就地撤回
+// 都是往日志里追加一条 `{op:'replace'}` 的标记，把一段 surface 节点遮掉。它在日志里，
+// 所以在 foldOutline 里折，和旁车 ranges 那条最后汇成同一个 `rewound` 戳。
+
+console.log('用例 12：surface replace 遮掉提问行的那一轮就是撤回了')
+{
+	/** 一轮带 surface 标记的事件：提问行和回答行都是 append。 */
+	const surfaced = (turn, from) => [
+		{ seq: from, type: 'turn/start', time: turn, data: { turn } },
+		{ seq: from + 1, type: 'user/message', surfaceOp: 'append', data: { content: [{ type: 'text', text: `问题 ${turn}` }], source: { kind: 'user' } } },
+		{ seq: from + 2, type: 'user/message', surfaceOp: 'append', data: { content: [{ type: 'text', text: 'runtime context' }], source: { kind: 'system' } } },
+		{ seq: from + 3, type: 'assistant/message', surfaceOp: 'append', data: { content: [{ type: 'text', text: `回答 ${turn}` }] } },
+		{ seq: from + 4, type: 'turn/end', data: { turn, reason: { kind: 'completed' } } },
+	]
+	// dsh-rewind-plugin 的标记长这样：user/message，source.kind 是 plugin，replace 盖住 3 的提问行到回答行
+	const marker = (seq, startSeq, endSeq) => ({
+		seq, type: 'user/message', surfaceOp: { op: 'replace', startSeq, endSeq }, sourceEventSeqs: [startSeq, endSeq],
+		data: { content: [{ type: 'text', text: '(empty message)' }], source: { kind: 'plugin', plugin: 'dsh-rewind' } },
+	})
+	const base = [...surfaced(1, 10), ...surfaced(2, 20), ...surfaced(3, 30)]
+
+	// ① 遮掉第 3 轮（提问行 31 到回答行 33）→ 只有 3 被撤回
+	const gone = foldOutline([...base, marker(40, 31, 33)]).turns
+	check(shadowedSeqs([...base, marker(40, 31, 33)]).size === 3, '该遮掉 31、32、33 三个节点')
+	check(gone[2].rewound === true, '第 3 轮的提问行被遮了，该盖上撤回戳')
+	check(gone[0].rewound !== true && gone[1].rewound !== true, '前两轮没被遮，不该盖戳')
+	check(gone.length === 3 && gone[2].prompt === '问题 3', '标记那条 user/message 被当成了提问 —— 它的 source.kind 不是 user')
+
+	// ② 只换掉回答（重新生成那类）：问题还在，不算撤回
+	const regen = foldOutline([...base, marker(40, 33, 33)]).turns
+	check(regen[2].rewound !== true, '只换回答不该算撤回 —— 问题还在对话里')
+
+	// ③ 连撤两轮（2 的提问行到 3 的回答行）
+	const two = foldOutline([...base, marker(40, 21, 33)]).turns
+	check(two[1].rewound === true && two[2].rewound === true && two[0].rewound !== true, '一次 replace 盖住两轮，该两轮都盖戳')
+
+	// ④ 认不得的 replace（指到不在 surface 里的 seq）当没发生，别让整棵树消失
+	const bad = foldOutline([...base, marker(40, 999, 33)]).turns
+	check(bad.every((entry) => entry.rewound !== true), '坏 replace 该被忽略，而不是乱盖戳')
+	check(shadowedSeqs([...base, { seq: 41, type: 'user/message', surfaceOp: { op: 'replace' }, data: {} }]).size === 0, '缺 startSeq/endSeq 的 replace 该被忽略')
+
+	// ⑤ 宿主刷新系统提示也是一次 replace（换 surface 第 0 个节点），不能误伤任何一轮
+	const sys = [{ seq: 5, type: 'system/message', surfaceOp: 'append', data: {} }, ...base, { seq: 40, type: 'system/message', surfaceOp: { op: 'replace', startSeq: 5, endSeq: 5 }, sourceEventSeqs: [5], data: {} }]
+	check(foldOutline(sys).turns.every((entry) => entry.rewound !== true), '系统提示的 replace 误伤了轮次')
+
+	// ⑥ 旁车 ranges 和 surface 两条路汇成同一个戳：surface 盖过的，markRewound 不会抹掉
+	const both = markRewound(gone, [{ start: 11, end: 14 }])
+	check(both[0].rewound === true && both[2].rewound === true, '两条真相来源该叠加，而不是谁后来谁说了算')
+	console.log('  遮提问行 → 撤回；只换回答 → 不算；坏 replace / 系统提示 replace → 不误伤；与旁车 ranges 叠加')
+}
+
+console.log('用例 13：岔路点按这条分支自己的眼光算')
+{
+	const turn = (n, inherited, rewound) => ({ turn: n, inherited, ...(rewound ? { rewound: true } : {}) })
+	check(effectiveForkTurn([turn(1, true), turn(2, true), turn(3, true), turn(4, false)]) === 3, '没撤回时就是继承前缀的最后一轮')
+	check(effectiveForkTurn([turn(1, true), turn(2, true), turn(3, true, true), turn(4, false)]) === 2, '撤掉继承来的 3，岔路点该退到 2')
+	check(effectiveForkTurn([turn(1, true), turn(2, true, true), turn(3, true, true), turn(4, false)]) === 1, '撤掉 2、3，岔路点该退到 1')
+	check(effectiveForkTurn([turn(1, true, true), turn(2, true, true), turn(3, false)]) === undefined, '继承的全撤光了该是 undefined（从头再来）')
+	check(effectiveForkTurn([turn(1, false), turn(2, false)]) === undefined, '不是分支就没有岔路点')
+	check(effectiveForkTurn([turn(1, true), turn(2, true), turn(3, false, true)]) === 2, '撤的是自有轮，不影响岔路点')
+	check(effectiveForkTurn([]) === undefined && effectiveForkTurn(undefined) === undefined, '空输入不该炸')
+	console.log('  3 撤回 → 2；2、3 撤回 → 1；全撤 → undefined；撤自有轮不影响')
+}
+
+console.log('用例 14：John 报的那张图 —— 1-2-3，分支里撤了 3 再发，4 该挂在 2 下面')
+{
+	// 父分支 A：1-2-3 都在。子分支 B 从 3 岔出（继承 1-2-3），然后在 B 里撤回了 3，再发 4。
+	const A = session('A', [{ turn: 1 }, { turn: 2 }, { turn: 3 }])
+	const bTurns = [
+		{ turn: 1, inherited: true }, { turn: 2, inherited: true }, { turn: 3, inherited: true, rewound: true },
+		{ turn: 4, inherited: false },
+	].map((spec) => ({ turn: spec.turn, seq: spec.turn * 10, promptSeq: spec.turn * 10 + 1, endSeq: spec.turn * 10 + 3, time: spec.turn, prompt: `#${spec.turn}`, compact: false, done: true, inherited: spec.inherited, ...(spec.rewound ? { rewound: true } : {}) }))
+	const B = { id: 'B', cwd: '/x', parentId: 'A', createdAt: 2, forkTurn: effectiveForkTurn(bTurns), turns: bTurns }
+	check(B.forkTurn === 2, `B 的岔路点该是 2，实际 ${B.forkTurn}`)
+	const { byKey } = build([A, B], 'B')
+	check(parentKey(byKey.get('B:4')) === 'A:2', `B 的 4 该挂在 A:2 下面，实际挂在 ${parentKey(byKey.get('B:4'))}`)
+	check(parentKey(byKey.get('A:3')) === 'A:2', 'A 自己的 3 还在对话里，该仍挂在 A:2 下面')
+	check(byKey.get('A:3').rewound !== true, 'A 没撤回 3，A:3 不该被 B 的撤回连累')
+	// 对照：老算法（继承前缀最后一轮 = 3）会把 4 挂到 3 下面 —— 正是那张错图
+	const old = { ...B, forkTurn: 3 }
+	check(parentKey(build([A, old], 'B').byKey.get('B:4')) === 'A:3', '对照组没复现出老 bug，这条用例抓不到回归')
+	console.log('  1-2-3 与 1-2-4 两条；A:3 不受 B 的撤回影响；老算法确实画成 1-2-3-4')
 }
 
 report()

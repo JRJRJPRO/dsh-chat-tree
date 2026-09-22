@@ -124,9 +124,11 @@ node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 300
 
 **功能盲点**
 
-`session.surface`（压缩之后模型实际还记得哪几轮）完全没用上。树现在画的是
-"日志里有哪几轮"，一次压缩之后这两者就分叉了。要做是两层：日志仍然是唯一的正文来源
-（官方明确说 surface 不能当 transcript），surface 只用来给节点盖一层记号。
+`session.surface` 只用了一半：**replace 遮掉的提问行 → 撤回戳**（`outline.js` 的
+`shadowedSeqs`，DESIGN.md 撤回一节），这样 dsh-rewind-plugin / dsh-retrace 的就地撤回
+树上认得出来。没用的另一半是**压缩**：一次 compaction 之后模型实际只记得摘要，树上却
+仍把压缩前的轮画成普通节点。要做的话仍是两层：日志是唯一的正文来源（官方明确说 surface
+不能当 transcript），surface 只用来盖记号。
 
 ## 6. 提交规矩
 

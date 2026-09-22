@@ -151,6 +151,12 @@ resume: binding.claudeSessionId,
    hidden ranges 是 per-session 的旁车状态，fork 出的新会话继承不到（或继承到指向不存在 seq 的区间）。
 2. **rewind 会动文件系统。** 任何「跳分支」的交互都得想清楚工作树归谁管——
    原生 rewind 至少给了 `restoreFiles` 开关，我们自己造的 fork 路径什么都没有。
+3. **宿主自己有一套"就地撤回"的原语：surface replace。** 每条产生消息的事件都带
+   `surfaceOp`，`{op:'replace', startSeq, endSeq}` 把一段 surface 节点遮掉（`dsh-session/surface`，
+   `foldSurface` 可重放）。dsh-rewind-plugin 和 dsh-retrace 的撤回走的都是它；宿主每次刷新
+   系统提示也是一次 replace。**这条和 dsh-claude 的 `ranges` 是两套互不知道的真相**：
+   在 claude 会话里用 rewind-plugin 撤回，surface 遮了、Claude 那边没撤。树上两条都认
+   （DESIGN.md 撤回一节），但那种错配本身不是树能修的。
 
 ---
 

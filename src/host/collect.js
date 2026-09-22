@@ -3,7 +3,7 @@
  */
 import { isClaudeSession } from './graft.js'
 import { lineage } from './lineage.js'
-import { cache, outlineOf } from './outline.js'
+import { cache, effectiveForkTurn, outlineOf } from './outline.js'
 import { hiddenCache, markRewound, rewindStateOf, statusProbe } from './rewind.js'
 
 /**
@@ -55,8 +55,10 @@ export async function collect(ctx, cwd) {
 		known.add(header.id)
 		if (cwd && header.cwd !== cwd) continue
 		const outline = await outlineOf(ctx, snapshot)
-		// 撤回过的轮次在日志里原样留着，得靠旁车才认得出来（rewind.js）
+		// 撤回有两个真相来源：surface replace 在日志里，outline 折的时候已经盖了戳；
+		// dsh-claude 的撤回只在旁车里，这儿再盖一次（rewind.js）。
 		const rewind = rewindStateOf(busy, header.id)
+		const turns = markRewound(outline.turns, rewind.ranges)
 		sessions.push({
 			id: header.id,
 			cwd: header.cwd,
@@ -64,9 +66,10 @@ export async function collect(ctx, cwd) {
 			isSeeded: !!header.isSeeded,
 			createdAt: header.createdAt,
 			title: outline.title,
-			forkTurn: outline.forkTurn,
+			// 岔路点按**这条分支自己的眼光**算：它撤掉了继承来的轮，岔路点就往前挪
+			forkTurn: effectiveForkTurn(turns),
 			model: outline.model,
-			turns: markRewound(outline.turns, rewind.ranges),
+			turns,
 			// 这一轮没敢读旁车（它正在跑）。前端据此给个提示，并等它跑完再来拉一次。
 			...(rewind.pending ? { rewindPending: true } : {}),
 			// 正在跑的对话不给合并 —— 合并本身只写 shape.json 不危险，但那棵树的形状
