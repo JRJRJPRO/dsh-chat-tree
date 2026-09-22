@@ -1,89 +1,107 @@
 <p align="center">
-  <img src="docs/banner.jpg" alt="dsh-tree — Conversation trees for dsh" width="860">
+  <img src="docs/banner.png" alt="dsh-tree — Conversation trees for dsh" width="860">
 </p>
 
 <h1 align="center">dsh-tree</h1>
 
 <p align="center">
-  把一个对话的所有分支画成一棵树，贴在 <a href="https://github.com/deepseek-ai">DeepSeek Harness</a> 聊天区右缘。<br>
-  点节点跳到那一轮，点 <b>＋</b> 从那儿接着问。
+  Every branch of a conversation, drawn as a tree down the right edge of
+  <a href="https://github.com/deepseek-ai">DeepSeek Harness</a>.<br>
+  Click a dot to jump to that turn. Click <b>＋</b> to continue from it.
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">中文</a>
 </p>
 
 ---
 
-## 安装
+## Install
 
 ```sh
 dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 ```
 
-刷新浏览器就能用，**不用重启 dsh**，也不依赖任何其它插件。
-卸载：`dsh plugin --profile web remove dsh-tree`。
+Refresh your browser and it's live — no dsh restart, no other plugins needed.
 
-装完它会出现在**插件市场的「已安装」**里，那儿的开关就是启用 / 停用，约 1 秒生效。
+To remove it: `dsh plugin --profile web remove dsh-tree`. It also shows up under
+**Installed** in the plugin market, where the toggle turns it on and off in about a second.
 
-## 用起来
+## The tree draws itself
 
-安装插件后刷新页面，对话树自动出现在正文右边：
+<img src="docs/rail.png" alt="The conversation tree" width="300" align="right">
 
-<img src="docs/rail.png" alt="对话树导轨" width="300">
+Refresh the page and it's already there, next to your chat.
 
-一个点就是一轮对话。**单击跳到那一轮**，滚动时当前这一轮会填实。
+Every dot is one turn. **Click one to jump to it** — the turn you're looking at
+is filled in solid as you scroll.
 
-悬浮到某个节点上，左边出一张缩略卡片；**双击卡片展开**，改名、挑形状、挑颜色、传张图都在这一档。收藏过的节点还能单独定义样式：
+Branches sit side by side, so you can see at a glance where a conversation split
+and which path you're on. Named nodes carry their label right on the tree.
 
-<img src="docs/card.png" alt="节点详情卡" width="470">
+<br clear="right">
 
-没有悬停的设备（手机、平板）上，「悬浮」就是点一下。
+## Every node has a card
 
-## 能做什么
+<img src="docs/card.png" alt="Node detail card" width="470" align="right">
 
-| | |
-|---|---|
-| **＋** | 从这一轮之后接着问，开一条新支线；在树根的空节点上则是在同一棵树里新开一条对话 |
-| **☆** | 收藏。这个点变成黄色五角星，图标和颜色都能单独换 |
-| **起名字** | 展开卡片就能给节点改名，名字直接写在树上 |
-| **⇥ / ⇤** | 把一条支线拆成独立的树 / 再接回去 |
-| **⊕ / ⊖** | 把本目录下别的对话整棵合并进来 / 拆回去 |
+Hover a dot for a preview. **Double-click the card to expand it** — rename the
+node, pick a shape, pick a color, or upload an image.
 
-灰掉的按钮表示现在做不了，鼠标停上去会写明原因。
+On touch devices, a tap does what hovering does.
 
-### 收藏图标
-
-收藏过的节点，展开卡片后多出两排：
-
-- **12 个形状** —— 圆 / 圆角方 / 方 / 菱形 / 三角 / 倒三角 / 箭头 / 五边形 / 六边形 / 十字 / 四角星 / 沙漏。按钮上直接画出形状本身，看到什么样节点就是什么样
-- **一个字** —— 填一个字或 emoji，节点画成它外加一个圆角描边框（不填底，免得糊住字）。框的松紧按字的实际宽度算，汉字、字母、emoji 看起来一样齐
-- **一张图** —— png / jpg / webp / svg 都行，尺寸不限，自动等比缩好。存在 `$DSH_HOME` 里，换浏览器也还在
-- **颜色** —— 6 个预设 + 一格「恢复默认」（画的就是默认那个色）+ 一个取色盘。**挑什么色就画什么色**，不会被自动调深调浅
-
-### 看得出状态
+<br clear="right">
 
 | | |
 |---|---|
-| 边框蓝 | 这个节点在你当前的对话里 |
-| 填充蓝 | 你正看着这一轮 |
-| 橙色倒三角 | 这一轮做过压缩 |
-| 灰掉的支线 | 撤回掉的轮次，不再假装还在对话里 |
+| **＋** | Continue from this turn as a new branch. On the empty root node, starts a fresh conversation in the same tree |
+| **☆** | Favorite. The dot becomes a gold star, and you can give it its own icon and color |
+| **⇥ / ⇤** | Split a branch off into its own tree, or put it back |
+| **⊕ / ⊖** | Merge another conversation from this folder into the tree, or pull it back out |
 
-## 调一调
+A greyed-out button means you can't do it right now — hover it and it will say why.
 
-**设置 → 插件 → 插件配置 → 对话树**：
+## The colors mean something
 
-- **配色** —— 一行一种（普通 / 当前路径 / 压缩 / 空节点 / 收藏），左边挑颜色右边挑形状。默认跟着宿主主题走，切浅色 / 深色树立刻跟着换；单独改过的那一项就钉死了，按「重置」交还回去
+| | |
+|---|---|
+| Blue outline | This node is part of your current conversation |
+| Solid blue | The turn you're looking at |
+| Orange triangle | This turn was compacted |
+| Faded branch | Turns you rewound — no longer pretending to be part of the conversation |
 
-  > 一个节点的「颜色」含义是固定的：**描边就是这个颜色，填充是它的半透明版**。
-  > 滚到某一轮时那个点会填实 —— 填实只表示「你正看着这一轮」，没有别的意思。
-  > 默认色分浅色 / 深色两版，跟着主题换；**你自己挑过的色就钉死了**，一个像素不会被改。
-- **显示范围** —— 只画离当前这一轮足够近的节点，两种量法**二选一**（设置里左右各一半）：
-  - **按层数**（1–30 层，默认 10）—— 和当前这一轮差几层以内。同一层要么整排都在、要么整排都不在，看着最齐整
-  - **按步数**（5–30 步，默认 12）—— 在树上走几步以内。父节点 1 步、父节点的另一个孩子 2 步，所以隔壁分支上和你同层的节点可能差很多步
-  - 两种量法都有「不省略」这一档。边界不硬切，最外两圈越画越小越淡；鼠标滑上去就恢复，照样能点
-- **节点大小**（50%–250%）—— 点、连线、列间距一起等比缩放
+## Make it yours
+
+<img src="docs/settings.png" alt="Settings card" width="470" align="right">
+
+**Settings → Plugins → Conversation tree**.
+
+**Visible range** keeps big trees readable by drawing only what's near your
+current turn — by depth or by distance, whichever you prefer. Either one has an
+"off" setting. Nodes at the edge shrink and fade rather than vanishing, and come
+back the moment you hover them.
+
+**Node size** scales dots, lines and spacing together, 50%–250%.
+
+**Colors** are one row per kind of node, color on the left and shape on the
+right. They follow your light/dark theme until you pick something yourself —
+then that choice sticks. **Reset** hands it back.
+
+<br clear="right">
+
+## Favorite icons
+
+Once a node is starred, its card offers two more rows:
+
+- **12 shapes** — circle, rounded square, square, diamond, triangle, inverted
+  triangle, arrow, pentagon, hexagon, cross, four-point star, hourglass
+- **A character** — any letter or emoji, drawn inside a rounded outline
+- **An image** — png / jpg / webp / svg, any size, scaled for you. Stored in
+  `$DSH_HOME`, so it survives a change of browser
+- **A color** — 6 presets, a reset swatch, and a full picker
 
 ---
 
-改代码、跑测试，或者让 AI 帮你改：[AGENTS.md](AGENTS.md)。
-设计与取舍：[DESIGN.md](DESIGN.md)。宿主原生能力清单：[NATIVE-BASELINE.md](NATIVE-BASELINE.md)。
+Want to hack on it? [AGENTS.md](AGENTS.md) · [DESIGN.md](DESIGN.md) · [NATIVE-BASELINE.md](NATIVE-BASELINE.md)
 
 MIT

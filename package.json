@@ -23,6 +23,7 @@
     "build.mjs",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "AGENTS.md",
     "ARCHITECTURE.md",
     "DESIGN.md",
