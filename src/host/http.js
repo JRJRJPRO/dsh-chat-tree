@@ -15,7 +15,7 @@
  */
 
 /** host 半三个路由的公共前缀。改这里要连着改 `src/client/net.js` 的 `API`。 */
-export const API = '/plugins/dsh-tree'
+export const API = '/plugins/dsh-chat-tree'
 
 // ===== 信任围栏 =====
 //
@@ -185,6 +185,6 @@ export function route(ctx, path, handlers) {
 					}
 				},
 			}),
-		`dsh-tree: ${path}`,
+		`dsh-chat-tree: ${path}`,
 	)
 }

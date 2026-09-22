@@ -1,8 +1,8 @@
 /**
- * dsh-tree —— 自定义节点图片的落盘用例。
+ * dsh-chat-tree —— 自定义节点图片的落盘用例。
  *
  * 【导读】
- * 干嘛的：设置里能传一张图当节点。图存在 host 半（`$DSH_HOME/plugins/dsh-tree/icons/`），
+ * 干嘛的：设置里能传一张图当节点。图存在 host 半（`$DSH_HOME/plugins/dsh-chat-tree/icons/`），
  * 前端存的形状值只是 `img:<id>`。这份用例钉住三件事：
  *   · **只收 PNG**。浏览器半已经把任意格式过了一遍 canvas，到 host 的必然是纯像素；
  *     这里验魔数是防着有人绕开前端直接 POST 一个带脚本的 SVG 上来。
@@ -78,7 +78,7 @@ function crc32(bytes) {
 
 // ===== 第 2 步：临时 home =====
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-icon-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-icon-'))
 process.env.DSH_HOME = home
 
 const host = await import(new URL('../index.js', import.meta.url))

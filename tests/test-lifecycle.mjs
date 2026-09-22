@@ -4,7 +4,7 @@
  * 【为什么要测这个】插件市场的「停用」干两件事：往 `cordis.patch.yml` 写
  * `disabled: true`，以及把包从 `dsh.profile.bundles` 里摘掉。两件事合起来 =
  * 我们的 fiber 被 dispose。**没有断言盯着的话，少收一个东西是完全静默的**：
- *   · 路由没摘 → 停用后 `/plugins/dsh-tree/outlines` 还在答，用户以为没停掉
+ *   · 路由没摘 → 停用后 `/plugins/dsh-chat-tree/outlines` 还在答，用户以为没停掉
  *   · 监听没摘 → 停用后还在接管别人的分支
  *   · 设置 namespace 没释放 → **再启用时抛 "already registered"，插件直接起不来**
  * 最后这条最要命，而它只在"停用再启用"这一条路径上才出现 —— 正常开发从不经过。
@@ -152,11 +152,11 @@ console.log('用例 1：装上之后该有的都在')
 	const paths = [...host.state.routes.keys()].sort()
 	check(paths.length === 4, `注册了 ${paths.length} 个路由，应该是 4 个：${paths.join(' ')}`)
 	check(
-		paths.join(' ') === '/plugins/dsh-tree/icon /plugins/dsh-tree/labels /plugins/dsh-tree/outlines /plugins/dsh-tree/shape',
+		paths.join(' ') === '/plugins/dsh-chat-tree/icon /plugins/dsh-chat-tree/labels /plugins/dsh-chat-tree/outlines /plugins/dsh-chat-tree/shape',
 		`路由不对：${paths.join(' ')}`,
 	)
 	check(host.state.listeners.length === 1 && host.state.listeners[0].event === 'agent/created', '没接管 agent/created')
-	check(world.namespaces.has('dsh-tree'), '设置 namespace 没注册上')
+	check(world.namespaces.has('dsh-chat-tree'), '设置 namespace 没注册上')
 	console.log(`  3 个路由 + agent/created 监听 + 设置 namespace`)
 	host.dispose()
 	check(host.state.routes.size === 0, `停用后还剩 ${host.state.routes.size} 个路由 —— 界面没了但接口还在答`)
@@ -179,7 +179,7 @@ console.log('用例 2：停用 → 再启用（市场里点两下就会走这条
 	}
 	check(failure === undefined, `再启用抛了：${failure && failure.message}`)
 	check(second.state.routes.size === 4, `再启用后只剩 ${second.state.routes.size} 个路由`)
-	check(world.namespaces.has('dsh-tree'), '再启用后设置 namespace 没回来')
+	check(world.namespaces.has('dsh-chat-tree'), '再启用后设置 namespace 没回来')
 	console.log('  第二次装上照样是 3 个路由 + namespace')
 	second.dispose()
 }

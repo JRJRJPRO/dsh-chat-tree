@@ -1,11 +1,11 @@
-# dsh 原生能力盘点（dsh-tree 的地基）
+# dsh 原生能力盘点（dsh-chat-tree 的地基）
 
 > 2026-09-19 实探，对象：`E:\Programs\deepseek-harness`，`@deepseek-ai/dsh` 0.1.5-rc.2，
 > web profile（dsh-base + dsh-web-app + @norman-else/dsh-claude 0.1.54 + dshmarket + remote-web-ui）。
 > **本文只记「已经验证为真」的东西。每条都带证据位置，方便版本升级后复查。**
 
 一句话结论：**「对话树」想要的东西，dsh 已经做了大半，而且是第一方实现。
-dsh-tree 的正确定位是「把这些散在各处的原生能力收进一个树视图」，不是重新实现它们。**
+dsh-chat-tree 的正确定位是「把这些散在各处的原生能力收进一个树视图」，不是重新实现它们。**
 
 ---
 
@@ -75,7 +75,7 @@ interface SessionListEntry {
 ```
 
 **它是缩进平铺列表，不是树形图** —— 看不出「这个分支是从父会话第几轮岔出去的」。
-这正是 dsh-tree 的增量价值所在。
+这正是 dsh-chat-tree 的增量价值所在。
 
 ---
 
@@ -203,7 +203,7 @@ v3 事件目录里有：`compaction/start`、`compaction/end`、`compaction/summ
 但**没有任何现成投影把压缩边界暴露给前端**，前端只有
 `contextPressure`（`{surfaceTokens, contextWindow, pressureTokens}`）这种压力指标。
 
-→ 这是 dsh-tree **唯一需要自己写 host 侧逻辑**的地方，而且有正规扩展位（见 DESIGN.md §3.2）。
+→ 这是 dsh-chat-tree **唯一需要自己写 host 侧逻辑**的地方，而且有正规扩展位（见 DESIGN.md §3.2）。
 
 ---
 
@@ -214,7 +214,7 @@ v3 事件目录里有：`compaction/start`、`compaction/end`、`compaction/summ
 ```js
 ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
   name: 'sidebar.right.pane.tab',
-  key: 'dsh-tree',
+  key: 'dsh-chat-tree',
   children: { /* kind: 'keyed' | 'list' | 'chain' | 'single', scope: 'session' */ },
 }, TreeBody))
 ```
@@ -244,7 +244,7 @@ profile 的 `patchReload: live` 使改了即生效。
 
 **B. 包依赖（带 client 半 / 要发布时）**
 ```
-dsh plugin --profile web pnpm add file:D:/JRJ/Internship/dsh-tree
+dsh plugin --profile web pnpm add file:D:/JRJ/Internship/dsh-chat-tree
 ```
 进 profile 的 `package.json` dependencies + `dsh.profile.bundles`。
 带浏览器半的插件必须在 package.json 里声明：

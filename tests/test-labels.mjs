@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 标注（改名 / 收藏 / 图标 / 颜色）存在宿主这边。
+ * dsh-chat-tree —— 标注（改名 / 收藏 / 图标 / 颜色）存在宿主这边。
  *
  * 【导读】钉住 host 半 labels.json 的读写：坏文件退回空白、补丁按四种语义合并、
  * 恢复默认是删掉那一条、原子写不留半截。全在临时 DSH_HOME 里跑。
@@ -13,7 +13,7 @@ import path from 'node:path'
 import { check, report } from './test-kit.mjs'
 
 const was = process.env.DSH_HOME
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-labels-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-labels-'))
 process.env.DSH_HOME = home
 const { readLabels, patchLabels, labelsPath, EMPTY_LABELS } = await import('../src/host/labels.js')
 
@@ -42,6 +42,21 @@ try {
 	check(!fs.readdirSync(path.dirname(labelsPath())).some((name) => name.endsWith('.tmp')), '原子写留下了 .tmp')
 	check(patchLabels({ labels: { '': 'x' }, favorites: { '': true } }).favorites.join() === 'S:1', '空 key 该被无视')
 	console.log('  改名 / 收藏 / 图标 / 颜色各自合并；恢复默认 = 删条目；坏输入不崩')
+
+	console.log('用例 3：插件改名前存在 plugins/dsh-tree 的数据，第一次读时整个搬到 plugins/dsh-chat-tree')
+	const oldHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-legacy-'))
+	try {
+		const legacy = path.join(oldHome, 'plugins', 'dsh-tree')
+		fs.mkdirSync(legacy, { recursive: true })
+		fs.writeFileSync(path.join(legacy, 'labels.json'), JSON.stringify({ version: 1, labels: { 'S:9': '老标注' }, favorites: [], favIcons: {}, favColors: {} }))
+		process.env.DSH_HOME = oldHome
+		check(readLabels().labels['S:9'] === '老标注', '老目录里的标注该被搬过来读到')
+		check(!fs.existsSync(legacy) && fs.existsSync(path.join(oldHome, 'plugins', 'dsh-chat-tree', 'labels.json')), '老目录该整个改名成新目录')
+		console.log('  老目录整个改名，标注不丢')
+	} finally {
+		process.env.DSH_HOME = home
+		fs.rmSync(oldHome, { recursive: true, force: true })
+	}
 } finally {
 	if (was === undefined) delete process.env.DSH_HOME
 	else process.env.DSH_HOME = was

@@ -1,4 +1,4 @@
 # Inserts this plugin into a profile's layer stack.
 - insert:
-    - id: dsh-tree
-      name: dsh-tree
+    - id: dsh-chat-tree
+      name: dsh-chat-tree

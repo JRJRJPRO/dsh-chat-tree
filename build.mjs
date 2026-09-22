@@ -61,7 +61,7 @@ const PARTS = [
 
 /** 生成物顶部那段导读。写在这儿是因为它说的是**整个 bundle**，不属于任何一个 part。 */
 const BANNER = `/**
- * dsh-tree 浏览器半：贴着聊天区右缘的对话树。
+ * dsh-chat-tree 浏览器半：贴着聊天区右缘的对话树。
  *
  * ⚠️ 这个文件是 \`node build.mjs\` 从 \`src/client/*.js\` 拼出来的，**别手改**：
  *    下一次构建就会把你的改动冲掉。要改去改 src/client/ 里对应的那个 part。
@@ -255,7 +255,7 @@ function bundle() {
 			BANNER,
 			'',
 			"window.__ModuleLoader__.load({",
-			"\tid: 'dsh-tree',",
+			"\tid: 'dsh-chat-tree',",
 			'\tfactory: (require) => {',
 			'\t\tvar module = { exports: {} }',
 			'\t\tvar exports = module.exports',

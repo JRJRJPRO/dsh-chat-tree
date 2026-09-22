@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 拿**真实会话**跑合并 / 分离的端到端用例。
+ * dsh-chat-tree —— 拿**真实会话**跑合并 / 分离的端到端用例。
  *
  * 【导读】
  * 干嘛的：`test-merge.mjs` 用手捏的小树钉逻辑，这里换成盘上真实的会话
@@ -85,7 +85,7 @@ function readSession(file) {
 // ===== 第 2 步：取真函数 =====
 
 // reshape 要落盘，先把家挪到临时目录 —— 绝不动真的 shape.json
-const lab = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-shape-'))
+const lab = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-shape-'))
 process.env.DSH_HOME = lab
 
 const { foldOutline, reshape, __test } = await import('../index.js')

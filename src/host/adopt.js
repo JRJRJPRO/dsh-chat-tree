@@ -113,21 +113,21 @@ export function scheduleGraftRetry(ctx, childId, parentId, turn, opts) {
 		try {
 			result = graft(childId, parentId, turn, (id) => status(id) !== 'idle')
 		} catch (error) {
-			ctx.logger?.warn?.(`dsh-tree: ${childId} 补接上下文失败：${String(error)}`)
+			ctx.logger?.warn?.(`dsh-chat-tree: ${childId} 补接上下文失败：${String(error)}`)
 			return
 		}
 		if (result.grafted) {
-			ctx.logger?.info?.(`dsh-tree: ${childId} 等到父会话空闲，已补接上下文 ${JSON.stringify(result)}`)
+			ctx.logger?.info?.(`dsh-chat-tree: ${childId} 等到父会话空闲，已补接上下文 ${JSON.stringify(result)}`)
 			return
 		}
 		// 不是"还在忙"就没必要再等了 —— 比如新分支自己已经跑起来并建了旁车
 		// （child-already-bound），那时候补做只会添乱。
 		if (result.reason !== 'parent-busy') {
-			ctx.logger?.info?.(`dsh-tree: ${childId} 不再等待补接（${result.reason}）`)
+			ctx.logger?.info?.(`dsh-chat-tree: ${childId} 不再等待补接（${result.reason}）`)
 			return
 		}
 		if (left <= 0) {
-			ctx.logger?.warn?.(`dsh-tree: ${childId} 等了太久父会话还在跑，放弃补接上下文`)
+			ctx.logger?.warn?.(`dsh-chat-tree: ${childId} 等了太久父会话还在跑，放弃补接上下文`)
 			return
 		}
 		arm()
@@ -162,9 +162,9 @@ export function adoptBranch(ctx, agent) {
 		for (const id of inheritedPendingIds(session)) {
 			if (agent.inbox !== undefined && agent.inbox.remove(id) === true) dropped += 1
 		}
-		if (dropped > 0) ctx.logger?.info?.(`dsh-tree: ${session.id} 删掉 ${dropped} 条继承来的待办`)
+		if (dropped > 0) ctx.logger?.info?.(`dsh-chat-tree: ${session.id} 删掉 ${dropped} 条继承来的待办`)
 	} catch (error) {
-		ctx.logger?.warn?.(`dsh-tree: ${session.id} 删待办失败：${String(error)}`)
+		ctx.logger?.warn?.(`dsh-chat-tree: ${session.id} 删待办失败：${String(error)}`)
 	}
 
 	// ② 需要的话把外部引擎的记忆接上（普通 provider 什么都不会发生）
@@ -174,14 +174,14 @@ export function adoptBranch(ctx, agent) {
 		const status = statusProbe(ctx)
 		const turn = forkTurnOf(session)
 		const result = graft(session.id, header.parentSession, turn, (id) => status(id) !== 'idle')
-		if (result.grafted) ctx.logger?.info?.(`dsh-tree: ${session.id} 已接上上下文 ${JSON.stringify(result)}`)
+		if (result.grafted) ctx.logger?.info?.(`dsh-chat-tree: ${session.id} 已接上上下文 ${JSON.stringify(result)}`)
 		else if (result.reason === 'parent-busy') {
 			// 现在不读，但也不放弃 —— 排队等它跑完再补（见上面那段）
 			scheduleGraftRetry(ctx, session.id, header.parentSession, turn)
-			ctx.logger?.info?.(`dsh-tree: ${session.id} 父会话正在跑，读它会打断那一轮 —— 已排队，等它空下来再接`)
-		} else if (result.reason !== 'native-context-is-enough') ctx.logger?.info?.(`dsh-tree: ${session.id} 未接上下文（${result.reason}）`)
+			ctx.logger?.info?.(`dsh-chat-tree: ${session.id} 父会话正在跑，读它会打断那一轮 —— 已排队，等它空下来再接`)
+		} else if (result.reason !== 'native-context-is-enough') ctx.logger?.info?.(`dsh-chat-tree: ${session.id} 未接上下文（${result.reason}）`)
 	} catch (error) {
-		ctx.logger?.warn?.(`dsh-tree: ${session.id} 接上下文失败：${String(error)}`)
+		ctx.logger?.warn?.(`dsh-chat-tree: ${session.id} 接上下文失败：${String(error)}`)
 	}
 }
 

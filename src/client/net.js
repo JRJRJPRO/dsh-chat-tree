@@ -11,15 +11,15 @@
  */
 
 /** host 半三个路由的公共前缀。改路由只改这一行（host 的 `src/host/http.js` 里有同一个常量）。 */
-export const API = '/plugins/dsh-tree'
+export const API = '/plugins/dsh-chat-tree'
 
 /**
- * 统一的告警。前缀固定成 `[dsh-tree]`，好在一屏控制台里一眼捞出来是谁在叫。
+ * 统一的告警。前缀固定成 `[dsh-chat-tree]`，好在一屏控制台里一眼捞出来是谁在叫。
  * @param what - 人话，说清楚是哪件事没成
  * @param error - 原始错误
  */
 export function warn(what, error) {
-	console.warn(`[dsh-tree] ${what}`, error)
+	console.warn(`[dsh-chat-tree] ${what}`, error)
 }
 
 /**

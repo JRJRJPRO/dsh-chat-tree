@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 合并 / 接回来的用例。
+ * dsh-chat-tree —— 合并 / 接回来的用例。
  *
  * 【导读】
  * 干嘛的：分离（⇥）一直是单向的，拆出去就回不来；两条独立的对话也只能在创建那一刻
@@ -31,8 +31,8 @@ import path from 'node:path'
 
 // ===== 第 1 步：取两半的真函数 =====
 
-// reshape 直接读写 $DSH_HOME/plugins/dsh-tree/shape.json，先把家挪到临时目录
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-merge-'))
+// reshape 直接读写 $DSH_HOME/plugins/dsh-chat-tree/shape.json，先把家挪到临时目录
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-merge-'))
 process.env.DSH_HOME = home
 
 const { reshape } = await import('../index.js')
@@ -151,7 +151,7 @@ console.log('用例 2：合并两次，先合进来的那条不许掉队')
 	check(already.groupOf.B === 'C', `B 本来就在 C 那棵树里，该原样不动，实际 ${already.groupOf.B}`)
 
 	// ⑥ 手改坏的 shape.json 不许把写入这一步挂死 —— settleGroup 沿着链走，必须有 guard
-	const shapeFile = path.join(home, 'plugins', 'dsh-tree', 'shape.json')
+	const shapeFile = path.join(home, 'plugins', 'dsh-chat-tree', 'shape.json')
 	fs.writeFileSync(shapeFile, JSON.stringify({ version: 1, groupOf: { X: 'Y', Y: 'X' }, detached: [] }))
 	const healed = reshape({ session: 'W', group: 'X' })
 	check(typeof healed.groupOf.W === 'string', '环形的登记表把合并写挂了')

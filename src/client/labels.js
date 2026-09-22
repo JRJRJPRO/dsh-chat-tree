@@ -1,7 +1,7 @@
 /**
  * 节点上的用户标注：**改名**、**收藏**、收藏图标、收藏颜色。
  *
- * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-tree/labels.json`，见 src/host/labels.js），
+ * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-chat-tree/labels.json`，见 src/host/labels.js），
  * 换浏览器、上手机都还在。这里的 localStorage 只是**缓存**：每次拉到 `/outlines`
  * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
  * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
@@ -12,7 +12,7 @@
 
 import { postJson, warn } from './net.js'
 
-export const LS_KEY = 'dsh-tree.labels'
+export const LS_KEY = 'dsh-chat-tree.labels'
 
 /** 把补丁送给宿主。失败只记一笔：本地缓存已经改了，界面照常。 */
 function push(patch) {
@@ -61,7 +61,7 @@ export function seedFromLocal(doc) {
 }
 
 /** 收藏清单存哪。和改名分开存：改名是一张字典，收藏是一个集合，混在一起迟早要判类型。 */
-export const FAVORITES_KEY = 'dsh-tree.favorites'
+export const FAVORITES_KEY = 'dsh-chat-tree.favorites'
 
 /** @returns {Record<string,string>} */
 export function readLabels() {
@@ -140,7 +140,7 @@ export function writeFavorite(key, on) {
 // 不用重挑一遍。一个字符串的代价，换掉一次"我刚才选的呢"。
 
 /** 收藏图标存哪。值是形状值：预设 id / `char:<字>` / `img:<id>`。 */
-export const FAVICONS_KEY = 'dsh-tree.favicons'
+export const FAVICONS_KEY = 'dsh-chat-tree.favicons'
 
 /**
  * 每个收藏点自己挑的图标。
@@ -201,7 +201,7 @@ export function writeFavIcon(key, value) {
 // 取消收藏同样**不删颜色**，收藏回来还是上次那个。
 
 /** 收藏颜色存哪。值是 `#rrggbb`。 */
-export const FAVCOLORS_KEY = 'dsh-tree.favcolors'
+export const FAVCOLORS_KEY = 'dsh-chat-tree.favcolors'
 
 /** 认不认这个颜色。只收六位十六进制 —— 它要直接进 CSS，认宽了等于开个注入口子。 */
 export function isColor(value) {

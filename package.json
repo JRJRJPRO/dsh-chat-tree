@@ -1,5 +1,5 @@
 {
-  "name": "dsh-tree",
+  "name": "dsh-chat-tree",
   "version": "0.1.0",
   "description": "Conversation trees for DeepSeek Harness: every branch of a conversation drawn as a clickable tree beside the chat / 把一个对话的所有分支画成一棵可点击的树",
   "type": "module",
@@ -40,11 +40,11 @@
   "author": "Rongjie Jiang",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JRJRJPRO/dsh-tree.git"
+    "url": "git+https://github.com/JRJRJPRO/dsh-chat-tree.git"
   },
-  "homepage": "https://github.com/JRJRJPRO/dsh-tree#readme",
+  "homepage": "https://github.com/JRJRJPRO/dsh-chat-tree#readme",
   "bugs": {
-    "url": "https://github.com/JRJRJPRO/dsh-tree/issues"
+    "url": "https://github.com/JRJRJPRO/dsh-chat-tree/issues"
   },
   "engines": {
     "node": ">=20"

@@ -4,7 +4,7 @@
 import Schema from 'schemastery'
 
 /** 设置命名空间。client.js 里的 SETTINGS_NS 必须和它一字不差。 */
-export const SETTINGS_NS = 'dsh-tree'
+export const SETTINGS_NS = 'dsh-chat-tree'
 
 /**
  * 显示范围是**三个字段**：量法 + 两种量法各自的上限。

@@ -1,5 +1,5 @@
 /**
- * dsh-tree host 半的入口。**只负责装配**，逻辑都在 `src/host/` 里。
+ * dsh-chat-tree host 半的入口。**只负责装配**，逻辑都在 `src/host/` 里。
  *
  * 干三件事：
  *   ① 听 `agent/created`，每条新分支一出生就接管（修掉原生 fork 的两个缺陷）→ src/host/adopt.js
@@ -16,7 +16,7 @@
  *
  * 浏览器半在 `client.js`，那是 `node build.mjs` 从 `src/client/` 拼出来的**生成物**。
  * 背景和踩坑记录见 DESIGN.md。
- * @module dsh-tree
+ * @module dsh-chat-tree
  */
 
 import { adoptBranch, agentOf, cancelPendingGrafts, forkTurnOf, inheritedPendingIds, scheduleGraftRetry } from './src/host/adopt.js'
@@ -64,11 +64,11 @@ export const __test = {
 export function apply(ctx) {
 	ctx.effect(() => {
 		// 开机报到：看不到这行就说明监听没装上
-		ctx.logger?.info?.('dsh-tree: 已接管分支创建（agent/created）')
+		ctx.logger?.info?.('dsh-chat-tree: 已接管分支创建（agent/created）')
 		const off = ctx.on('agent/created', (...args) => {
 			const agent = agentOf(args)
 			if (agent === undefined) {
-				ctx.logger?.warn?.('dsh-tree: agent/created 的参数里没认出 agent，分支不会被接管')
+				ctx.logger?.warn?.('dsh-chat-tree: agent/created 的参数里没认出 agent，分支不会被接管')
 				return
 			}
 			adoptBranch(ctx, agent)
@@ -78,19 +78,19 @@ export function apply(ctx) {
 		return () => {
 			off()
 			const dropped = cancelPendingGrafts()
-			if (dropped > 0) ctx.logger?.info?.(`dsh-tree: 取消了 ${dropped} 个等待中的上下文补接`)
+			if (dropped > 0) ctx.logger?.info?.(`dsh-chat-tree: 取消了 ${dropped} 个等待中的上下文补接`)
 		}
-	}, 'dsh-tree: 接管新分支')
+	}, 'dsh-chat-tree: 接管新分支')
 
 	// 设置 namespace。ctx.settings 是可选服务，所以走 ctx.inject 而不是顶层 inject
 	// —— 写进顶层 inject 的话，没挂设置提供方的部署会让整个 fiber 永远 pending。
 	try {
 		ctx.inject(['settings'], (scoped) => {
 			scoped.settings.register(SETTINGS_NS, SETTINGS_SCHEMA)
-			scoped.logger?.info?.(`dsh-tree: 设置 namespace ${SETTINGS_NS} 已注册`)
+			scoped.logger?.info?.(`dsh-chat-tree: 设置 namespace ${SETTINGS_NS} 已注册`)
 		})
 	} catch (error) {
-		ctx.logger?.warn?.(`dsh-tree: 注册设置失败，前端会按默认半径画（${error}）`)
+		ctx.logger?.warn?.(`dsh-chat-tree: 注册设置失败，前端会按默认半径画（${error}）`)
 	}
 
 	// 画树要的全部数据。形状跟大纲一起发：少一个往返，也不会出现

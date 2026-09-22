@@ -119,7 +119,7 @@ export function keepsCard(dirty, typing) {
 }
 
 /** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
-export const CARD_MARK = 'data-dsh-tree-card'
+export const CARD_MARK = 'data-dsh-chat-tree-card'
 
 /**
  * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。

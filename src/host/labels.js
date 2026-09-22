@@ -2,7 +2,7 @@
  * 节点标注（改名、收藏、收藏图标、收藏颜色）的落盘。
  *
  * 以前这四样全存浏览器 localStorage：换浏览器、上手机、清缓存就全没了。
- * 现在存 `$DSH_HOME/plugins/dsh-tree/labels.json`，和 shape.json 放一块，
+ * 现在存 `$DSH_HOME/plugins/dsh-chat-tree/labels.json`，和 shape.json 放一块，
  * 浏览器那份只当缓存（见 src/client/labels.js）。
  *
  * 集合算术（加一个 / 去一个 / 恢复默认）复用浏览器半的那几个纯函数，

@@ -1,4 +1,4 @@
-# dsh-tree
+# dsh-chat-tree
 
 把一个对话的所有分支画成一棵树，贴在聊天区右缘。点一个节点跳到那一轮，点 ＋ 从那儿接着问。
 
@@ -17,8 +17,8 @@
 
 ```yaml
 - insert:
-    - id: dsh-tree
-      name: 'file:///绝对路径/dsh-tree/index.js'
+    - id: dsh-chat-tree
+      name: 'file:///绝对路径/dsh-chat-tree/index.js'
 ```
 
 **卸**：把这三行删掉，重启 dsh。
@@ -30,11 +30,11 @@
 | 什么 | 在哪 | 卸载后 |
 |---|---|---|
 | 安装条目 | `cordis.patch.yml` 的三行 | 自己删 |
-| 节点自定义名字 | 浏览器 `localStorage['dsh-tree.labels']` | 留着，无害（MVP 妥协，以后该挪到 `ctx.storage.domain`） |
+| 节点自定义名字 | 浏览器 `localStorage['dsh-chat-tree.labels']` | 留着，无害（MVP 妥协，以后该挪到 `ctx.storage.domain`） |
 
 另外，**只有在装了 `dsh-claude` 的情况下**，插件会往
 `$DSH_HOME/plugins/dsh-claude/sessions/<会话id>.json` 写文件（见 §4）。写的是那个插件
-自己也会写的东西，只是提前写好；卸载 dsh-tree 后这些文件照常被 dsh-claude 使用。
+自己也会写的东西，只是提前写好；卸载 dsh-chat-tree 后这些文件照常被 dsh-claude 使用。
 
 ---
 
@@ -236,7 +236,7 @@ header.isSeeded ? undefined : cache?.cachedSnapshot(header, SessionLogOffset(0))
 所以 host 半自己折一遍日志，用一条路由喂给前端：
 
 ```
-GET /plugins/dsh-tree/outlines?cwd=<工作目录>
+GET /plugins/dsh-chat-tree/outlines?cwd=<工作目录>
 ```
 
 按 persistence 给的 `revision` 缓存，没变就不重读盘。
@@ -258,7 +258,7 @@ GET /plugins/dsh-tree/outlines?cwd=<工作目录>
 DNS rebinding（Host 只认 IP 字面量，因为 rebinding 必须靠域名才能换掉解析结果）。
 逻辑本身没错，**但它默认了攻击者是一个浏览器**。真实的局面里还有第三种，而且最省事：
 
-> 同网段的人直接 `curl http://192.168.x.x:3080/plugins/dsh-tree/outlines`。
+> 同网段的人直接 `curl http://192.168.x.x:3080/plugins/dsh-chat-tree/outlines`。
 > 没有浏览器参与，Origin 和 Host 都随他填，而"放行所有 IP 字面量"正好给他开着门。
 > 一次请求就能读走全部工作目录、全部会话的标题和每一轮的提问预览。
 
@@ -576,9 +576,9 @@ rail 和设置卡共用这一个出口，免得两边各兜各的（用例 13 �
 
 ### 设置
 
-host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-tree`（**不能**写进顶层
+host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-chat-tree`（**不能**写进顶层
 `inject`——没挂设置提供方的部署会让整个 fiber 永远 pending）。浏览器半用
-`ctx.settingsScope.bind({namespace:'dsh-tree'})` 读写，并把卡片注册到 `settings.plugin.item`。
+`ctx.settingsScope.bind({namespace:'dsh-chat-tree'})` 读写，并把卡片注册到 `settings.plugin.item`。
 
 宿主只在「host 服务了这个 namespace」**且**「有卡片认领它」时才渲染，所以 host 半没重启时
 卡片整个不出现，前端自动退回默认的「按层数 10」—— 这也是为什么改完 `index.js` 必须重启 dsh。
@@ -1002,7 +1002,7 @@ antd 的 rc-input、Slate、CodeMirror 的 React 封装用的都是同一套）�
 > 另外 `'star'` 故意**不在 `SHAPES` 里** —— 进了就会出现在四个角色的形状选择器里，
 > "哪个是收藏"同样当场失效。
 
-存盘在 `dsh-tree.favicons`，和收藏清单**分开**（一个是集合、一个是字典，混着迟早判类型）。
+存盘在 `dsh-chat-tree.favicons`，和收藏清单**分开**（一个是集合、一个是字典，混着迟早判类型）。
 **取消收藏时故意不删图标**：取消再收藏回来还是上次那个，不用重挑一遍。
 而"恢复默认"是**删掉那一条**，不是存一个 `'star'` —— 存进去的话，哪天默认记号换了样子，
 所有"没改过"的点会被陈年记录钉在旧样子上。
@@ -1011,7 +1011,7 @@ antd 的 rc-input、Slate、CodeMirror 的 React 封装用的都是同一套）�
 线会在点外面凭空断一截。所以 `reachFor` 的最后一个参数既认 `true`（默认星），
 也认一个算好的 `shapeSpec`。
 
-收藏清单和改名一样存 localStorage（`dsh-tree.favorites`），存的是**字符串数组**
+收藏清单和改名一样存 localStorage（`dsh-chat-tree.favorites`），存的是**字符串数组**
 而不是 `{key: true}`：它本来就是个集合，存成字典早晚有人写出
 `favorites[key] === false` 这种"取消收藏"的假动作，于是清单里躺满取消过的键。
 
@@ -1052,7 +1052,7 @@ antd 的 rc-input、Slate、CodeMirror 的 React 封装用的都是同一套）�
 
 dsh 只记 fork 血缘（`parentSession`）。"两条互不相干的对话算同一棵树"和"这条支线被
 手动拆出去了"是**我们自己的概念**，任何日志里都没有，只能自己存：
-`$DSH_HOME/plugins/dsh-tree/shape.json`。
+`$DSH_HOME/plugins/dsh-chat-tree/shape.json`。
 
 ```json
 { "version": 1, "groupOf": { "<会话>": "<树编号>" }, "detached": ["<会话>"] }
@@ -1353,7 +1353,7 @@ settings 里。
 ### 自定义节点图片
 
 用户挑一个文件 → **浏览器半 `shrink()` 过一遍 canvas** → 96×96 的 PNG → POST 给 host 半
-存进 `$DSH_HOME/plugins/dsh-tree/icons/<内容哈希>.png` → 设置里存 `img:<哈希>`。
+存进 `$DSH_HOME/plugins/dsh-chat-tree/icons/<内容哈希>.png` → 设置里存 `img:<哈希>`。
 
 > ⚠️ **绝不能直接落用户原文件。** SVG 里可以写 `<script>`，原样挂到同源地址上再当图片
 > 引就是个后门。过一遍 canvas 就只剩像素了；host 半再验一次 PNG 魔数，防着有人绕开

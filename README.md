@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/banner.png" alt="dsh-tree — Conversation trees for dsh" width="860">
+  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/banner.png" alt="dsh-chat-tree — Conversation trees for dsh" width="860">
 </p>
 
-<h1 align="center">dsh-tree</h1>
+<h1 align="center">dsh-chat-tree</h1>
 
 <p align="center">
   Every branch of a conversation, drawn as a tree down the right edge of
@@ -19,17 +19,17 @@
 ## Install
 
 ```sh
-dsh plugin --profile web add github:JRJRJPRO/dsh-tree
+dsh plugin --profile web add github:JRJRJPRO/dsh-chat-tree
 ```
 
 Refresh your browser and it's live — no dsh restart, no other plugins needed.
 
-To remove it: `dsh plugin --profile web remove dsh-tree`. It also shows up under
+To remove it: `dsh plugin --profile web remove dsh-chat-tree`. It also shows up under
 **Installed** in the plugin market, where the toggle turns it on and off in about a second.
 
 ## The tree draws itself
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/rail.png" alt="The conversation tree" width="300" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/rail.png" alt="The conversation tree" width="300" align="right">
 
 Refresh the page and it's already there, next to your chat.
 
@@ -43,7 +43,7 @@ and which path you're on. Named nodes carry their label right on the tree.
 
 ## Every node has a card
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/card.png" alt="Node detail card" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/card.png" alt="Node detail card" width="470" align="right">
 
 Hover a dot for a preview. **Double-click the card to expand it** — rename the
 node, pick a shape, pick a color, or upload an image.
@@ -72,7 +72,7 @@ A greyed-out button means you can't do it right now — hover it and it will say
 
 ## Make it yours
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/settings.png" alt="Settings card" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/settings.png" alt="Settings card" width="470" align="right">
 
 **Settings → Plugins → Conversation tree**.
 

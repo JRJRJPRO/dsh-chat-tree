@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/banner.png" alt="dsh-tree — 把对话画成一棵树" width="860">
+  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/banner.png" alt="dsh-chat-tree — 把对话画成一棵树" width="860">
 </p>
 
-<h1 align="center">dsh-tree</h1>
+<h1 align="center">dsh-chat-tree</h1>
 
 <p align="center">
   把一个对话的所有分支画成一棵树，贴在
@@ -19,17 +19,17 @@
 ## 安装
 
 ```sh
-dsh plugin --profile web add github:JRJRJPRO/dsh-tree
+dsh plugin --profile web add github:JRJRJPRO/dsh-chat-tree
 ```
 
 刷新浏览器就能用 —— 不用重启 dsh，也不依赖任何其它插件。
 
-卸载：`dsh plugin --profile web remove dsh-tree`。它也会出现在**插件市场的「已安装」**里，
+卸载：`dsh plugin --profile web remove dsh-chat-tree`。它也会出现在**插件市场的「已安装」**里，
 那儿的开关就是启用 / 停用，约 1 秒生效。
 
 ## 树会自己出现
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/rail.png" alt="对话树" width="300" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/rail.png" alt="对话树" width="300" align="right">
 
 刷新页面，树已经在正文右边了。
 
@@ -42,7 +42,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 ## 每个节点都有一张卡片
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/card.png" alt="节点详情卡" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/card.png" alt="节点详情卡" width="470" align="right">
 
 悬浮到节点上出缩略卡，**双击卡片展开** —— 改名、挑形状、挑颜色、传张图都在这一档。
 
@@ -70,7 +70,7 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 ## 调成你喜欢的样子
 
-<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-tree/main/docs/settings.png" alt="设置卡片" width="470" align="right">
+<img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/settings.png" alt="设置卡片" width="470" align="right">
 
 **设置 → 插件 → 对话树**。
 

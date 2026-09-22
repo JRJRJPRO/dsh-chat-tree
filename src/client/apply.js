@@ -94,7 +94,7 @@ export function apply(ctx) {
 	// 而看的人完全不知道它已经不更新了 —— 调试工具骗人比没有更糟。
 	ctx.effect(() => () => {
 		if (typeof window !== 'undefined') delete window.__dshTree
-	}, 'dsh-tree: 自诊断钩子')
+	}, 'dsh-chat-tree: 自诊断钩子')
 
 	// ⚠️ 必须挂 `shell.overlay`，**不能**挂 `conversation.session.*`。
 	//    宿主把 conversation.session.header.utilities 声明成 `scope: 'session'`
@@ -105,9 +105,9 @@ export function apply(ctx) {
 	ctx.effect(
 		() =>
 			ctx.slots.inject('shell.overlay', () =>
-				ctx.slots.register({ name: 'shell.overlay', id: 'dsh-tree', order: 90, inject: () => ({ api }) }, Rail),
+				ctx.slots.register({ name: 'shell.overlay', id: 'dsh-chat-tree', order: 90, inject: () => ({ api }) }, Rail),
 			),
-		'dsh-tree: rail',
+		'dsh-chat-tree: rail',
 	)
 
 	// 设置卡片。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。

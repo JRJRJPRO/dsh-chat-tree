@@ -241,7 +241,7 @@ export function settingsStore(ctx) {
 			}
 			pull()
 			// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
-			scoped.effect(() => scope.subscribe(pull), 'dsh-tree: 设置订阅')
+			scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
 		})
 	} catch (error) {
 		warn('设置服务不可用，按默认值画', error)

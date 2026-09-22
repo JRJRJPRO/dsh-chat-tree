@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 撤回（rewind）的用例。
+ * dsh-chat-tree —— 撤回（rewind）的用例。
  *
  * 【导读】
  * 干嘛的：John 报的 bug —— 「1-2-3-4，4 发到一半我撤回了，又发了 5，
@@ -319,7 +319,7 @@ console.log('用例 7：真实日志 + 真实旁车')
 console.log('用例 8：旁车读得对、读坏了也不崩、撤回后能刷新')
 {
 	const was = process.env.DSH_HOME
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-rewind-'))
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-rewind-'))
 	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 	fs.mkdirSync(folder, { recursive: true })
 	const fileOf = (id) => path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
@@ -370,7 +370,7 @@ console.log('用例 8：旁车读得对、读坏了也不崩、撤回后能刷�
 console.log('用例 9：会话在跑就不碰旁车（读它会打死那一轮）')
 {
 	const was = process.env.DSH_HOME
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-busy-'))
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-busy-'))
 	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 	fs.mkdirSync(folder, { recursive: true })
 	const fileOf = (id) => path.join(folder, `${Buffer.from(id).toString('base64url')}.json`)
@@ -444,7 +444,7 @@ console.log('用例 9：会话在跑就不碰旁车（读它会打死那一轮�
 console.log('用例 10：整条 /outlines 管线（假 ctx）')
 {
 	const was = process.env.DSH_HOME
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-route-'))
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-route-'))
 	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 	fs.mkdirSync(folder, { recursive: true })
 	const id = 'session-route-0001'
@@ -509,7 +509,7 @@ console.log('用例 10：整条 /outlines 管线（假 ctx）')
 console.log('用例 11：哪条分支该标成「无上下文」')
 {
 	const was = process.env.DSH_HOME
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-amnesia-'))
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-amnesia-'))
 	const folder = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 	fs.mkdirSync(folder, { recursive: true })
 	/**

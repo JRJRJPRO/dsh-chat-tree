@@ -6,7 +6,7 @@
  */
 
 /** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
-export const SETTINGS_NS = 'dsh-tree'
+export const SETTINGS_NS = 'dsh-chat-tree'
 
 /** 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
 export const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }

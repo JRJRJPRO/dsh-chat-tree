@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 「接管新分支」回归测试。
+ * dsh-chat-tree —— 「接管新分支」回归测试。
  *
  * 【导读】
  * 干嘛的：把**真实踩过坑的那几个会话**倒带到"分支刚被造出来"的那一刻，
@@ -99,7 +99,7 @@ for (const bucket of fs.readdirSync(SESSIONS)) {
 }
 
 // 临时 home：graft 会往这里写，绝不碰真实的那份
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-branch-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-branch-'))
 process.env.DSH_HOME = home
 const sidecarDir = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 fs.mkdirSync(sidecarDir, { recursive: true })

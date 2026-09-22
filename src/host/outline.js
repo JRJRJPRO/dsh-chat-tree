@@ -217,12 +217,12 @@ export async function outlineOf(ctx, snapshot) {
 		// ⚠️ 半成品不许进缓存：分支刚建出来时 end-seed 可能还没落盘，这时继承轮会被
 		// 全当成"自有"。缓存住的话要等它下次写日志才刷得掉，闲着就一直错。
 		const halfBaked = snapshot.header.isSeeded === true && outline.forkTurn === undefined
-		if (halfBaked) ctx.logger?.warn?.(`dsh-tree: ${id} 的日志还没写完（找不到岔路点），这次不缓存`)
+		if (halfBaked) ctx.logger?.warn?.(`dsh-chat-tree: ${id} 的日志还没写完（找不到岔路点），这次不缓存`)
 		else cache.set(id, { revision: snapshot.revision, outline })
 		return outline
 	} catch (error) {
 		// 失败降级成空大纲：这个分支在树上只是没有轮次，不影响其它分支。
-		ctx.logger?.warn?.(`dsh-tree: outline for ${id} failed: ${String(error)}`)
+		ctx.logger?.warn?.(`dsh-chat-tree: outline for ${id} failed: ${String(error)}`)
 		return { turns: [], title: undefined, model: undefined, forkTurn: undefined }
 	} finally {
 		if (handle !== undefined) await handle.close().catch(() => {})

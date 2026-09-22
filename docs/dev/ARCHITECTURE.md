@@ -144,7 +144,7 @@ npm test          # 先构建再跑十个测试脚本
 | 它做什么 | 对我们的要求 |
 |---|---|
 | 热挂载 / 卸载我们的 fiber | `apply()` 登记的每样东西都必须挂在 fiber 上，dispose 时自动收 |
-| 往 `cordis.patch.yml` 写 `- id: dsh-tree / disabled: true\|false` | 我们的 `cordis.patch.yml` 只 `insert` 自己这一个 id |
+| 往 `cordis.patch.yml` 写 `- id: dsh-chat-tree / disabled: true\|false` | 我们的 `cordis.patch.yml` 只 `insert` 自己这一个 id |
 
 第二条不只是整洁问题：市场按 `bundlePatchInsertedIds()` 决定给哪些 id 写
 `disabled`，**只认 `insert:` 底下的行**。要是我们的 patch 还去 `config` 别人的行，

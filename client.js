@@ -1,5 +1,5 @@
 /**
- * dsh-tree 浏览器半：贴着聊天区右缘的对话树。
+ * dsh-chat-tree 浏览器半：贴着聊天区右缘的对话树。
  *
  * ⚠️ 这个文件是 `node build.mjs` 从 `src/client/*.js` 拼出来的，**别手改**：
  *    下一次构建就会把你的改动冲掉。要改去改 src/client/ 里对应的那个 part。
@@ -18,7 +18,7 @@
  */
 
 window.__ModuleLoader__.load({
-	id: 'dsh-tree',
+	id: 'dsh-chat-tree',
 	factory: (require) => {
 		var module = { exports: {} }
 		var exports = module.exports
@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
 		 */
 
 		/** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
-		const SETTINGS_NS = 'dsh-tree'
+		const SETTINGS_NS = 'dsh-chat-tree'
 
 		/** 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
 		const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
@@ -158,15 +158,15 @@ window.__ModuleLoader__.load({
 		 */
 
 		/** host 半三个路由的公共前缀。改路由只改这一行（host 的 `src/host/http.js` 里有同一个常量）。 */
-		const API = '/plugins/dsh-tree'
+		const API = '/plugins/dsh-chat-tree'
 
 		/**
-		 * 统一的告警。前缀固定成 `[dsh-tree]`，好在一屏控制台里一眼捞出来是谁在叫。
+		 * 统一的告警。前缀固定成 `[dsh-chat-tree]`，好在一屏控制台里一眼捞出来是谁在叫。
 		 * @param what - 人话，说清楚是哪件事没成
 		 * @param error - 原始错误
 		 */
 		function warn(what, error) {
-			console.warn(`[dsh-tree] ${what}`, error)
+			console.warn(`[dsh-chat-tree] ${what}`, error)
 		}
 
 		/**
@@ -495,7 +495,7 @@ window.__ModuleLoader__.load({
 		/**
 		 * 节点上的用户标注：**改名**、**收藏**、收藏图标、收藏颜色。
 		 *
-		 * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-tree/labels.json`，见 src/host/labels.js），
+		 * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-chat-tree/labels.json`，见 src/host/labels.js），
 		 * 换浏览器、上手机都还在。这里的 localStorage 只是**缓存**：每次拉到 `/outlines`
 		 * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
 		 * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
@@ -505,7 +505,7 @@ window.__ModuleLoader__.load({
 		 */
 
 
-		const LS_KEY = 'dsh-tree.labels'
+		const LS_KEY = 'dsh-chat-tree.labels'
 
 		/** 把补丁送给宿主。失败只记一笔：本地缓存已经改了，界面照常。 */
 		function push(patch) {
@@ -554,7 +554,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 收藏清单存哪。和改名分开存：改名是一张字典，收藏是一个集合，混在一起迟早要判类型。 */
-		const FAVORITES_KEY = 'dsh-tree.favorites'
+		const FAVORITES_KEY = 'dsh-chat-tree.favorites'
 
 		/** @returns {Record<string,string>} */
 		function readLabels() {
@@ -633,7 +633,7 @@ window.__ModuleLoader__.load({
 		// 不用重挑一遍。一个字符串的代价，换掉一次"我刚才选的呢"。
 
 		/** 收藏图标存哪。值是形状值：预设 id / `char:<字>` / `img:<id>`。 */
-		const FAVICONS_KEY = 'dsh-tree.favicons'
+		const FAVICONS_KEY = 'dsh-chat-tree.favicons'
 
 		/**
 		 * 每个收藏点自己挑的图标。
@@ -694,7 +694,7 @@ window.__ModuleLoader__.load({
 		// 取消收藏同样**不删颜色**，收藏回来还是上次那个。
 
 		/** 收藏颜色存哪。值是 `#rrggbb`。 */
-		const FAVCOLORS_KEY = 'dsh-tree.favcolors'
+		const FAVCOLORS_KEY = 'dsh-chat-tree.favcolors'
 
 		/** 认不认这个颜色。只收六位十六进制 —— 它要直接进 CSS，认宽了等于开个注入口子。 */
 		function isColor(value) {
@@ -3124,7 +3124,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 导轨最外层那个 div 身上的记号。`isCovered` 靠它认出"这是我自己"。 */
-		const RAIL_MARK = 'data-dsh-tree-rail'
+		const RAIL_MARK = 'data-dsh-chat-tree-rail'
 
 		/**
 		 * 聊天区是不是被别的东西整个盖住了。
@@ -3385,7 +3385,7 @@ window.__ModuleLoader__.load({
 		const STAR_ANIM_MS = 340
 
 		/** 关键帧的名字。收藏和取消各一条 —— 取消那下要"缩回去"，不是把收藏倒放。 */
-		const STAR_ANIM = { on: 'dsh-tree-star-on', off: 'dsh-tree-star-off' }
+		const STAR_ANIM = { on: 'dsh-chat-tree-star-on', off: 'dsh-chat-tree-star-off' }
 
 		/**
 		 * 把那两条关键帧塞进页面。整页只需要一份，Rail 挂载时调一次。
@@ -3393,7 +3393,7 @@ window.__ModuleLoader__.load({
 		 */
 		function installStarAnimation() {
 			try {
-				if (document.querySelector('style[data-dsh-tree="star-anim"]') !== null) return () => {}
+				if (document.querySelector('style[data-dsh-chat-tree="star-anim"]') !== null) return () => {}
 				const tag = document.createElement('style')
 				tag.dataset.dshTree = 'star-anim'
 				tag.textContent =
@@ -3668,7 +3668,7 @@ window.__ModuleLoader__.load({
 					}
 					pull()
 					// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
-					scoped.effect(() => scope.subscribe(pull), 'dsh-tree: 设置订阅')
+					scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
 				})
 			} catch (error) {
 				warn('设置服务不可用，按默认值画', error)
@@ -3792,7 +3792,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
-		const CARD_MARK = 'data-dsh-tree-card'
+		const CARD_MARK = 'data-dsh-chat-tree-card'
 
 		/**
 		 * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。
@@ -5530,7 +5530,7 @@ window.__ModuleLoader__.load({
 			// 而看的人完全不知道它已经不更新了 —— 调试工具骗人比没有更糟。
 			ctx.effect(() => () => {
 				if (typeof window !== 'undefined') delete window.__dshTree
-			}, 'dsh-tree: 自诊断钩子')
+			}, 'dsh-chat-tree: 自诊断钩子')
 
 			// ⚠️ 必须挂 `shell.overlay`，**不能**挂 `conversation.session.*`。
 			//    宿主把 conversation.session.header.utilities 声明成 `scope: 'session'`
@@ -5541,9 +5541,9 @@ window.__ModuleLoader__.load({
 			ctx.effect(
 				() =>
 					ctx.slots.inject('shell.overlay', () =>
-						ctx.slots.register({ name: 'shell.overlay', id: 'dsh-tree', order: 90, inject: () => ({ api }) }, Rail),
+						ctx.slots.register({ name: 'shell.overlay', id: 'dsh-chat-tree', order: 90, inject: () => ({ api }) }, Rail),
 					),
-				'dsh-tree: rail',
+				'dsh-chat-tree: rail',
 			)
 
 			// 设置卡片。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。

@@ -20,17 +20,17 @@ DeepSeek Harness（dsh）的插件，一个 npm 包，靠 `package.json` 里的 
 > `client.js` **别手改**，下一次构建就冲掉了。它是 `node build.mjs` 把
 > `src/client/*.js` 拼出来的 —— 浏览器半必须是一个文件，这是 dsh 的规矩。
 
-host 半通过四条路由和浏览器半说话：`/plugins/dsh-tree/{outlines,shape,icon,labels}`。
+host 半通过四条路由和浏览器半说话：`/plugins/dsh-chat-tree/{outlines,shape,icon,labels}`。
 两边的约定只有一条：**出错一律 `{error: string}`**。
 
 ## 2. 装成可开发的样子
 
 ```sh
 npm install                                        # 只有一个依赖：schemastery
-dsh plugin --profile web add link:D:/绝对路径/dsh-tree
+dsh plugin --profile web add link:D:/绝对路径/dsh-chat-tree
 ```
 
-`node_modules/dsh-tree` 会是一个指向工作目录的符号链接：插件市场照样把它列进「已安装」，
+`node_modules/dsh-chat-tree` 会是一个指向工作目录的符号链接：插件市场照样把它列进「已安装」，
 而你改完 `npm run build` 刷新页面就见效，不用重装。
 
 ⚠️ **别再往 `cordis.patch.yml` 里写 `file:///…` 的 `insert`** —— 和上面的装法同时用，
@@ -43,7 +43,7 @@ dsh plugin --profile web add link:D:/绝对路径/dsh-tree
 启用 / 停用写的是 profile 的 `cordis.patch.yml`：
 
 ```yaml
-- id: dsh-tree
+- id: dsh-chat-tree
   disabled: true
 ```
 
@@ -105,7 +105,7 @@ node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图
 
 **给用 dsh-claude 的人（也是给装它的 AI）**
 
-- dsh-tree 的"开分支带 Claude 记忆"依赖 dsh-claude 在 resume 时传 `forkSession: true`。
+- dsh-chat-tree 的"开分支带 Claude 记忆"依赖 dsh-claude 在 resume 时传 `forkSession: true`。
   上游 0.1.54 还没有这一行，没有它父子分支会共用一个 Claude 会话文件，进程一重启就
   互相串记忆。补丁很小（`resumeSessionAt` 旁边加 `forkSession: true`），用 pnpm patch
   挂到 `$DSH_HOME/profiles/web/patches/`。不用 Claude 的用户完全碰不到这件事。

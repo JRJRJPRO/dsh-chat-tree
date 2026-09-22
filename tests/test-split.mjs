@@ -1,5 +1,5 @@
 /**
- * dsh-tree —— 拆开被多个 DSH 会话共用的 Claude 会话（src/host/split.js）。
+ * dsh-chat-tree —— 拆开被多个 DSH 会话共用的 Claude 会话（src/host/split.js）。
  *
  * 【导读】
  * 干嘛的：钉住"手抄 fork"这条修复路径的边界，全在临时目录里跑，不碰真实 home。
@@ -20,7 +20,7 @@ import { check, report } from './test-kit.mjs'
 import { applySplit, bucketOf, chainRecords, currentChain, forkTranscript, planSplit, readSidecarDir } from '../src/host/split.js'
 
 // ===== 第1步：造数据 =====
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-split-'))
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-split-'))
 const name = (sessionId) => `${Buffer.from(sessionId).toString('base64url')}.json`
 const CWD = 'D:\\x\\y'
 const doc = (claudeSessionId, anchors) => ({

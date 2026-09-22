@@ -101,18 +101,18 @@ route(ctx, '/boom', {
 })
 route(ctx, '/bytes', { GET: () => raw({ 'content-type': 'image/png' }, Buffer.from([0x89, 0x50])) })
 
-const demo = handlers.get('/plugins/dsh-tree/demo')
-const boom = handlers.get('/plugins/dsh-tree/boom')
-const bytes = handlers.get('/plugins/dsh-tree/bytes')
+const demo = handlers.get('/plugins/dsh-chat-tree/demo')
+const boom = handlers.get('/plugins/dsh-chat-tree/boom')
+const bytes = handlers.get('/plugins/dsh-chat-tree/bytes')
 
 console.log('用例 1：路径前缀、查询串、返回值直接当 JSON 发')
 {
 	check(handlers.size === 3, `注册了 ${handlers.size} 个路由，应该是 3 个`)
 	check(
-		[...handlers.keys()].every((path) => path.startsWith('/plugins/dsh-tree/')),
+		[...handlers.keys()].every((path) => path.startsWith('/plugins/dsh-chat-tree/')),
 		`路径前缀不对：${[...handlers.keys()].join(' ')}`,
 	)
-	const answer = await call(demo, 'GET', '/plugins/dsh-tree/demo?cwd=D%3A%2Fx')
+	const answer = await call(demo, 'GET', '/plugins/dsh-chat-tree/demo?cwd=D%3A%2Fx')
 	check(answer.status === 200, `状态码 ${answer.status}`)
 	check(answer.json.cwd === 'D:/x', `查询串没解出来：${JSON.stringify(answer.json)}`)
 	check(String(answer.headers['content-type']).includes('application/json'), '答复没标成 JSON')
@@ -122,12 +122,12 @@ console.log('用例 1：路径前缀、查询串、返回值直接当 JSON 发')
 
 console.log('用例 2：POST 的 body 自动解析，空 body 当 {}')
 {
-	const answer = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"session":"s1","group":"t1"}')
+	const answer = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '{"session":"s1","group":"t1"}')
 	check(answer.json.ok === true, 'POST 没走到 handler')
 	check(answer.json.got.session === 's1' && answer.json.got.group === 't1', `body 解错了：${JSON.stringify(answer.json.got)}`)
-	const empty = await call(demo, 'POST', '/plugins/dsh-tree/demo', '')
+	const empty = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '')
 	check(empty.status === 200 && JSON.stringify(empty.json.got) === '{}', `空 body 应该当成 {}，实际 ${empty.text}`)
-	const broken = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{不是 json')
+	const broken = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '{不是 json')
 	check(broken.status === 400, `坏 body 应该 400，实际 ${broken.status}`)
 	check(typeof broken.json.error === 'string', '出错体必须是 {error: string}，浏览器半就指望这个字段')
 	console.log(`  正常 body 解到 handler；空 body → {}；坏 body → 400「${broken.json.error}」`)
@@ -135,19 +135,19 @@ console.log('用例 2：POST 的 body 自动解析，空 body 当 {}')
 
 console.log('用例 3：没登记的方法一律 405，而不是当成 GET')
 {
-	const answer = await call(demo, 'DELETE', '/plugins/dsh-tree/demo')
+	const answer = await call(demo, 'DELETE', '/plugins/dsh-chat-tree/demo')
 	check(answer.status === 405, `DELETE 应该 405，实际 ${answer.status}`)
-	const onlyGet = await call(bytes, 'POST', '/plugins/dsh-tree/bytes', '{}')
+	const onlyGet = await call(bytes, 'POST', '/plugins/dsh-chat-tree/bytes', '{}')
 	check(onlyGet.status === 405, `没登记 POST 的路由收到 POST 应该 405，实际 ${onlyGet.status}`)
 	console.log(`  DELETE → 405；往只读路由 POST → 405`)
 }
 
 console.log('用例 4：说好的失败用它自己的状态码，没说好的一律 500')
 {
-	const known = await call(boom, 'GET', '/plugins/dsh-tree/boom')
+	const known = await call(boom, 'GET', '/plugins/dsh-chat-tree/boom')
 	check(known.status === 404, `HttpError(404) 应该出 404，实际 ${known.status}`)
 	check(known.json.error === '没有这张图', `错误信息丢了：${known.text}`)
-	const bug = await call(boom, 'POST', '/plugins/dsh-tree/boom', '{}')
+	const bug = await call(boom, 'POST', '/plugins/dsh-chat-tree/boom', '{}')
 	// ⚠️ 这一条是有意义的：把自己的 bug 也回成 400，就等于告诉用户"你传错了"，
 	//    然后没人会去看服务端日志。500 才是"我这边坏了"。
 	check(bug.status === 500, `没预料到的异常应该 500，实际 ${bug.status}`)
@@ -156,7 +156,7 @@ console.log('用例 4：说好的失败用它自己的状态码，没说好的�
 
 console.log('用例 5：图片走原样字节，不许被 JSON 编码')
 {
-	const answer = await call(bytes, 'GET', '/plugins/dsh-tree/bytes')
+	const answer = await call(bytes, 'GET', '/plugins/dsh-chat-tree/bytes')
 	check(answer.status === 200, `状态码 ${answer.status}`)
 	check(answer.headers['content-type'] === 'image/png', `content-type 是 ${answer.headers['content-type']}`)
 	check(answer.text === '\x89P', `字节被动过了：${JSON.stringify(answer.text)}`)
@@ -170,16 +170,16 @@ console.log('用例 6：鉴权交给宿主的 connection，判决原样照办')
 	// 却挡不住同网段的人直接 curl ——	lanBind 开着时，会话预览就是这么漏出去的。
 	// 现在这一层只做一件事：把 connection 的判决原样执行。
 	fence.verdict = undefined
-	const open = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	const open = await call(demo, 'GET', '/plugins/dsh-chat-tree/demo')
 	check(open.status === 200, `放行时应该 200，实际 ${open.status}`)
 
 	fence.verdict = 403
-	const fenced = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	const fenced = await call(demo, 'GET', '/plugins/dsh-chat-tree/demo')
 	check(fenced.status === 403, `围栏说 403 就得是 403，实际 ${fenced.status}`)
 	check(fenced.json.error.includes('trustedHosts'), '报错里要写清楚怎么放行，否则走隧道的人只会看到"导轨没了"')
 
 	fence.verdict = 401
-	const anon = await call(demo, 'GET', '/plugins/dsh-tree/demo')
+	const anon = await call(demo, 'GET', '/plugins/dsh-chat-tree/demo')
 	check(anon.status === 401, `围栏说 401 就得是 401，实际 ${anon.status}`)
 	// ⚠️ 401 的提示要指向 /remote：局域网页面撞上的就是这个码，
 	//    浏览器半靠它改走通道（src/client/net.js 的 send）。
@@ -187,7 +187,7 @@ console.log('用例 6：鉴权交给宿主的 connection，判决原样照办')
 
 	// GET 也要过闸 —— /outlines 是读接口，泄露的就是它
 	fence.verdict = 403
-	check((await call(demo, 'GET', '/plugins/dsh-tree/demo')).status === 403, 'GET 必须同样受围栏管')
+	check((await call(demo, 'GET', '/plugins/dsh-chat-tree/demo')).status === 403, 'GET 必须同样受围栏管')
 	fence.verdict = undefined
 	console.log('  放行/403/401 原样照办；GET 同样受管；报错分别指向 trustedHosts 和 /remote')
 }
@@ -206,18 +206,18 @@ console.log('用例 7：拿不到 connection 就一律拒绝，绝不裸奔')
 
 console.log('用例 8：只收 JSON，且 body 有上限')
 {
-	const form = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', {
+	const form = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '{"a":1}', {
 		'content-type': 'application/x-www-form-urlencoded',
 	})
 	check(form.status === 415, `form 的 content-type 应该 415，实际 ${form.status}`)
-	const noType = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', { 'content-type': '' })
+	const noType = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '{"a":1}', { 'content-type': '' })
 	check(noType.status === 200, '没写 content-type 的（curl 默认就不写）不该被拦')
-	const charset = await call(demo, 'POST', '/plugins/dsh-tree/demo', '{"a":1}', {
+	const charset = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', '{"a":1}', {
 		'content-type': 'application/json; charset=utf-8',
 	})
 	check(charset.status === 200, '带 charset 的 application/json 应该放行')
 	// ⚠️ 上限必须在收的过程中判。等收完再数就晚了 —— 内存那时已经吃进去了。
-	const huge = await call(demo, 'POST', '/plugins/dsh-tree/demo', 'x'.repeat(MAX_BODY_BYTES + 1))
+	const huge = await call(demo, 'POST', '/plugins/dsh-chat-tree/demo', 'x'.repeat(MAX_BODY_BYTES + 1))
 	check(huge.status === 413, `超长 body 应该 413，实际 ${huge.status}`)
 	console.log(`  非 JSON → 415；无 content-type 放行；超 ${MAX_BODY_BYTES} 字节 → 413`)
 }

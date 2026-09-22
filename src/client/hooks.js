@@ -81,7 +81,7 @@ export function contentRightOf(el) {
 }
 
 /** 导轨最外层那个 div 身上的记号。`isCovered` 靠它认出"这是我自己"。 */
-export const RAIL_MARK = 'data-dsh-tree-rail'
+export const RAIL_MARK = 'data-dsh-chat-tree-rail'
 
 /**
  * 聊天区是不是被别的东西整个盖住了。
@@ -342,7 +342,7 @@ export function rewindRetryDelay(outlines) {
 export const STAR_ANIM_MS = 340
 
 /** 关键帧的名字。收藏和取消各一条 —— 取消那下要"缩回去"，不是把收藏倒放。 */
-export const STAR_ANIM = { on: 'dsh-tree-star-on', off: 'dsh-tree-star-off' }
+export const STAR_ANIM = { on: 'dsh-chat-tree-star-on', off: 'dsh-chat-tree-star-off' }
 
 /**
  * 把那两条关键帧塞进页面。整页只需要一份，Rail 挂载时调一次。
@@ -350,7 +350,7 @@ export const STAR_ANIM = { on: 'dsh-tree-star-on', off: 'dsh-tree-star-off' }
  */
 export function installStarAnimation() {
 	try {
-		if (document.querySelector('style[data-dsh-tree="star-anim"]') !== null) return () => {}
+		if (document.querySelector('style[data-dsh-chat-tree="star-anim"]') !== null) return () => {}
 		const tag = document.createElement('style')
 		tag.dataset.dshTree = 'star-anim'
 		tag.textContent =

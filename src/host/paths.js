@@ -5,7 +5,7 @@
  * 现在统一走 `atomicWrite`。读也一样：读坏了 / 版本不对一律当"没有"，
  * 调用方不必各写一套 try。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -21,14 +21,33 @@ export function dshHome() {
 }
 
 /**
- * 我们自己的东西一律放在 `$DSH_HOME/plugins/dsh-tree/` 下面。
+ * 插件改名前的落盘目录名。第一次碰到新目录不存在而老目录还在时整个搬过去，
+ * 老用户的形状、图片、标注一样不丢。
+ */
+const LEGACY_DIR = 'dsh-tree'
+const migratedRoots = new Set()
+
+/**
+ * 我们自己的东西一律放在 `$DSH_HOME/plugins/dsh-chat-tree/` 下面。
  *
  * 放在 home 而不是 localStorage：换浏览器、进手机都还在。
  * @param parts - 目录下的相对路径片段
  * @returns 绝对路径
  */
 export function pluginFile(...parts) {
-	return join(dshHome(), 'plugins', 'dsh-tree', ...parts)
+	const root = join(dshHome(), 'plugins', 'dsh-chat-tree')
+	if (!migratedRoots.has(root)) {
+		migratedRoots.add(root)
+		const legacy = join(dshHome(), 'plugins', LEGACY_DIR)
+		if (!existsSync(root) && existsSync(legacy)) {
+			try {
+				renameSync(legacy, root)
+			} catch {
+				// 搬不动（比如权限）就当没有老数据，别把宿主带崩
+			}
+		}
+	}
+	return join(root, ...parts)
 }
 
 /**
