@@ -80,8 +80,8 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 **节点大小**把点、连线、间距一起缩放，50%–250%。
 
-**配色**一行一种节点，左边颜色右边形状。默认跟着你的浅色 / 深色主题走；
-自己挑过的那一项就固定下来，按「重置」交还回去。
+**配色**一行一种节点，左边颜色右边形状。取色盘挑，或者直接填 `#FFD43B` 这样的六位色值。
+设什么画什么，明暗主题下一样；按「重置」交还默认。
 
 <br clear="right">
 
@@ -91,11 +91,15 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-tree
 
 - **12 个形状** —— 圆 / 圆角方 / 方 / 菱形 / 三角 / 倒三角 / 箭头 / 五边形 / 六边形 / 十字 / 四角星 / 沙漏
 - **一个字** —— 填一个字或 emoji，画成它外加一个圆角描边框
-- **一张图** —— png / jpg / webp / svg 都行，尺寸不限，自动缩好。存在 `$DSH_HOME` 里，换浏览器也还在
-- **颜色** —— 6 个预设 + 一格恢复默认 + 一个取色盘
+- **一张图** —— png / jpg / webp / svg 都行，尺寸不限，自动缩好
+
+改名、收藏、图标、颜色都存在 dsh 这边，换浏览器、上手机都还在。
+- **颜色** —— 6 个预设 + 一格恢复默认 + 取色盘，或直接填六位色值
 
 ---
 
-想改代码：[AGENTS.md](AGENTS.md) · [DESIGN.md](DESIGN.md) · [NATIVE-BASELINE.md](NATIVE-BASELINE.md)
+通过 dsh-claude 用 Claude Code？先看 [AGENTS.md](AGENTS.md) 里那条说明。
+
+想改代码：[AGENTS.md](AGENTS.md)
 
 MIT

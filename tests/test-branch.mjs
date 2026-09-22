@@ -22,7 +22,7 @@
  *   第5步  断言 C —— 不该动的时候一个字节都不动
  *
  * 跑法：
- *   DSH_HOME_REAL='E:/Programs/deepseek-harness/home' node test-branch.mjs
+ *   DSH_HOME_REAL='E:/Programs/deepseek-harness/home' node tests/test-branch.mjs
  *
  * @module test-branch
  */
@@ -104,7 +104,7 @@ process.env.DSH_HOME = home
 const sidecarDir = path.join(home, 'plugins', 'dsh-claude', 'sessions')
 fs.mkdirSync(sidecarDir, { recursive: true })
 
-const host = await import(new URL('./index.js', import.meta.url))
+const host = await import(new URL('../index.js', import.meta.url))
 const { adoptBranch, lineage } = host.__test
 // ⚠️ `agents` 不能省。graft 是 fail-closed 的：问不出会话状态就当它在跑、拒绝读旁车。
 //    少了这张表，接管会**静悄悄地什么都不干**（上面那句 statusProbe 会返回 unknown）。

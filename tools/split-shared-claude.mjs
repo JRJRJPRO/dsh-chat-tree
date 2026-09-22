@@ -3,9 +3,9 @@
  * （见 src/host/split.js 顶部，含第一版为什么错了）。
  *
  * 跑法（dsh **必须停着**）：
- *   node split-shared-claude.mjs            # 只看，不写
- *   node split-shared-claude.mjs --apply    # 真写
- *   DSH_HOME=E:/Programs/deepseek-harness/home node split-shared-claude.mjs --apply
+ *   node tools/split-shared-claude.mjs            # 只看，不写
+ *   node tools/split-shared-claude.mjs --apply    # 真写
+ *   DSH_HOME=E:/Programs/deepseek-harness/home node tools/split-shared-claude.mjs --apply
  *
  * 为什么必须停着：会话在跑时 dsh-claude 每 150ms 原子覆盖一次旁车，这边哪怕只是读，
  * 开着的句柄也会让它 rename EPERM、整轮判失败（src/host/rewind.js 开头）。
@@ -13,8 +13,8 @@
  */
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { dshHome } from './src/host/paths.js'
-import { applySplit, diskIo, planSplit, readSidecarDir } from './src/host/split.js'
+import { dshHome } from '../src/host/paths.js'
+import { applySplit, diskIo, planSplit, readSidecarDir } from '../src/host/split.js'
 
 /** 有没有 dsh 在跑。认 `bin.js web|desktop|headless` 和它的 subprocess runner。 */
 function dshRunning() {

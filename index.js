@@ -22,6 +22,7 @@
 import { adoptBranch, agentOf, cancelPendingGrafts, forkTurnOf, inheritedPendingIds, scheduleGraftRetry } from './src/host/adopt.js'
 import { collect } from './src/host/collect.js'
 import { effectiveForkTurn, shadowedSeqs } from './src/host/outline.js'
+import { patchLabels, readLabels } from './src/host/labels.js'
 import { graft } from './src/host/graft.js'
 import { HttpError, raw, route } from './src/host/http.js'
 import { ICON_KEEP, ICON_MAX, isIconId, putIcon, readIcon } from './src/host/icons.js'
@@ -53,7 +54,7 @@ export const __test = {
 	adoptBranch, forkTurnOf, inheritedPendingIds, lineage, scheduleGraftRetry, cancelPendingGrafts,
 	putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX,
 	statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS,
-	collect, shadowedSeqs, effectiveForkTurn,
+	collect, shadowedSeqs, effectiveForkTurn, readLabels, patchLabels,
 }
 
 /**
@@ -95,7 +96,13 @@ export function apply(ctx) {
 	// 画树要的全部数据。形状跟大纲一起发：少一个往返，也不会出现
 	// "大纲到了形状没到"那一帧的错分组。
 	route(ctx, '/outlines', {
-		GET: async ({ query }) => Object.assign(await collect(ctx, query.get('cwd') || ''), { shape: readShape() }),
+		GET: async ({ query }) => Object.assign(await collect(ctx, query.get('cwd') || ''), { shape: readShape(), labels: readLabels() }),
+	})
+
+	// 改名 / 收藏 / 收藏图标 / 收藏颜色。存在宿主这边，换浏览器、上手机都还在。
+	route(ctx, '/labels', {
+		GET: () => readLabels(),
+		POST: ({ body }) => patchLabels(body),
 	})
 
 	route(ctx, '/shape', {

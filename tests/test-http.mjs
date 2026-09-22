@@ -13,8 +13,8 @@
  */
 
 import { check, report } from './test-kit.mjs'
-import { inject } from './index.js'
-import { HttpError, MAX_BODY_BYTES, raw, rejectionOf, route } from './src/host/http.js'
+import { inject } from '../index.js'
+import { HttpError, MAX_BODY_BYTES, raw, rejectionOf, route } from '../src/host/http.js'
 
 /**
  * 假 ctx：把注册进来的 handler 按路径收起来。

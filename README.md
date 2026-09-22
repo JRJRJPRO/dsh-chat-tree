@@ -84,8 +84,9 @@ back the moment you hover them.
 **Node size** scales dots, lines and spacing together, 50%–250%.
 
 **Colors** are one row per kind of node, color on the left and shape on the
-right. They follow your light/dark theme until you pick something yourself —
-then that choice sticks. **Reset** hands it back.
+right. Pick with the color wheel, or type a hex value like `#FFD43B` straight
+in. What you set is exactly what gets drawn — the same in light and dark.
+**Reset** hands a row back to the default.
 
 <br clear="right">
 
@@ -96,12 +97,16 @@ Once a node is starred, its card offers two more rows:
 - **12 shapes** — circle, rounded square, square, diamond, triangle, inverted
   triangle, arrow, pentagon, hexagon, cross, four-point star, hourglass
 - **A character** — any letter or emoji, drawn inside a rounded outline
-- **An image** — png / jpg / webp / svg, any size, scaled for you. Stored in
-  `$DSH_HOME`, so it survives a change of browser
-- **A color** — 6 presets, a reset swatch, and a full picker
+- **An image** — png / jpg / webp / svg, any size, scaled for you
+
+Names, favorites, icons and colors are all stored on the dsh side, so they
+follow you to another browser or your phone.
+- **A color** — 6 presets, a reset swatch, a color picker, or a typed hex value
 
 ---
 
-Want to hack on it? [AGENTS.md](AGENTS.md) · [DESIGN.md](DESIGN.md) · [NATIVE-BASELINE.md](NATIVE-BASELINE.md)
+Using Claude Code through dsh-claude? Read the note in [AGENTS.md](AGENTS.md) first.
+
+Want to hack on it? [AGENTS.md](AGENTS.md)
 
 MIT

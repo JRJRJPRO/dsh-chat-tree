@@ -61,15 +61,16 @@ export function Rail(props) {
 	const [hover, setHover] = react.useState(null)
 	const [tick, setTick] = react.useState(0)
 	const lastGraph = react.useRef(undefined) // 数据空窗期顶上去的那棵树，见下面 ⚠️
-	const labels = react.useMemo(() => readLabels(), [tick])
+	// 标注随 tick（本地改了）和 outlines（宿主那份到了）刷新
+	const labels = react.useMemo(() => readLabels(), [tick, outlines])
 	// 收藏清单和改名共用一个 `tick`：两者都存在 localStorage，都只在用户点了之后才变，
 	// 各自开一个计数器只会让"点了收藏，名字也跟着重读一遍"这种无害的事看起来像 bug。
-	const favorites = react.useMemo(() => readFavorites(), [tick])
+	const favorites = react.useMemo(() => readFavorites(), [tick, outlines])
 	// 每个收藏点自己挑的图标（没挑过的不在里面，画默认的五角星）。
 	// 跟着同一个 `tick` 重读，理由同上。
-	const favIcons = react.useMemo(() => readFavIcons(), [tick])
+	const favIcons = react.useMemo(() => readFavIcons(), [tick, outlines])
 	// 每个收藏点自己挑的颜色（没改过的不在里面，画默认的那个黄）。同一个 `tick`，理由同上。
-	const favColors = react.useMemo(() => readFavColors(), [tick])
+	const favColors = react.useMemo(() => readFavColors(), [tick, outlines])
 	// 刚被点的那颗星，用来播一次性动画（见 hooks.js 的 starAnimation）
 	const [flash, setFlash] = react.useState(null)
 
@@ -193,7 +194,14 @@ export function Rail(props) {
 	}
 	if (graph !== undefined) lastGraph.current = graph
 	else graph = lastGraph.current
-	if (graph === undefined) return null
+	// 一棵树都没有、而且宿主那边报了错 → 说一声，别整条导轨静悄悄消失
+	if (graph === undefined) {
+		if (!outlines || !outlines.error) return null
+		return h('div', {
+			style: { position: 'fixed', right: '14px', top: `${box.top + Z.pad}px`, zIndex: 40, maxWidth: '220px', pointerEvents: 'none',
+				font: '11px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.muted, whiteSpace: 'pre-wrap' },
+		}, `对话树拉不到数据：${outlines.error}`)
+	}
 
 	// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 	// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。

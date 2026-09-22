@@ -10,14 +10,14 @@
  *
  * 阅读顺序：第1步 造数据 → 第2步 用例 1 抄链 → 第3步 用例 2 规划 → 第4步 用例 3 落盘
  *
- * 跑法：node test-split.mjs
+ * 跑法：node tests/test-split.mjs
  * @module test-split
  */
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { check, report } from './test-kit.mjs'
-import { applySplit, bucketOf, chainRecords, currentChain, forkTranscript, planSplit, readSidecarDir } from './src/host/split.js'
+import { applySplit, bucketOf, chainRecords, currentChain, forkTranscript, planSplit, readSidecarDir } from '../src/host/split.js'
 
 // ===== 第1步：造数据 =====
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-split-'))

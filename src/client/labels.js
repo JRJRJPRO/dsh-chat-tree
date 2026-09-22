@@ -1,16 +1,64 @@
 /**
- * 节点上的用户标注：**改名**和**收藏**。两件事都存 localStorage。
+ * 节点上的用户标注：**改名**、**收藏**、收藏图标、收藏颜色。
  *
- * ⚠️ **这是个半成品**：换浏览器就没了，也进不了手机。真正的落点应该是 host 半的
- * `shape.json` 旁边（那儿已经有 `$DSH_HOME/plugins/dsh-tree/`），接口保持成
- * `readLabels()/writeLabel()` + `readFavorites()/writeFavorite()` 这几个函数，
- * 就是为了那天只改这一个文件。
+ * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-tree/labels.json`，见 src/host/labels.js），
+ * 换浏览器、上手机都还在。这里的 localStorage 只是**缓存**：每次拉到 `/outlines`
+ * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
+ * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
  *
  * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root`，见 tree.js），
  * 所以改名和收藏天然对齐到同一个点上。
  */
 
+import { postJson, warn } from './net.js'
+
 export const LS_KEY = 'dsh-tree.labels'
+
+/** 把补丁送给宿主。失败只记一笔：本地缓存已经改了，界面照常。 */
+function push(patch) {
+	postJson('/labels', patch).catch((error) => warn('标注没存到宿主，只留在了本浏览器', error))
+}
+
+const setItem = (key, value) => {
+	try {
+		localStorage.setItem(key, JSON.stringify(value))
+	} catch {
+		/* 存不下就算了 */
+	}
+}
+
+/**
+ * 用宿主那份盖掉本地缓存。宿主没给（老版本 host）就什么都不做。
+ * @param doc - `/outlines` 里带来的 `labels`
+ */
+export function adoptLabels(doc) {
+	if (doc === null || typeof doc !== 'object' || doc.version !== 1) return
+	if (seedFromLocal(doc)) return // 本地的更全，送上去，别用空的把它盖掉
+	setItem(LS_KEY, doc.labels || {})
+	setItem(FAVORITES_KEY, Array.isArray(doc.favorites) ? doc.favorites : [])
+	setItem(FAVICONS_KEY, doc.favIcons || {})
+	setItem(FAVCOLORS_KEY, doc.favColors || {})
+}
+
+/**
+ * 宿主空、本地有 → 把本地整份送上去。只在这一种情况下做，做过一次就不再做。
+ * @param doc - 宿主那份
+ * @returns 是否送了
+ */
+export function seedFromLocal(doc) {
+	const hostEmpty = Object.keys(doc.labels || {}).length === 0 && (doc.favorites || []).length === 0
+		&& Object.keys(doc.favIcons || {}).length === 0 && Object.keys(doc.favColors || {}).length === 0
+	if (!hostEmpty) return false
+	const labels = readLabels()
+	const favorites = readFavorites()
+	const favIcons = readFavIcons()
+	const favColors = readFavColors()
+	if (Object.keys(labels).length === 0 && favorites.size === 0 && Object.keys(favIcons).length === 0 && Object.keys(favColors).length === 0) return false
+	const patch = { labels, favorites: {}, favIcons, favColors }
+	for (const key of favorites) patch.favorites[key] = true
+	push(patch)
+	return true
+}
 
 /** 收藏清单存哪。和改名分开存：改名是一张字典，收藏是一个集合，混在一起迟早要判类型。 */
 export const FAVORITES_KEY = 'dsh-tree.favorites'
@@ -32,11 +80,8 @@ export function writeLabel(key, value) {
 	const all = readLabels()
 	if (value) all[key] = value
 	else delete all[key]
-	try {
-		localStorage.setItem(LS_KEY, JSON.stringify(all))
-	} catch {
-		/* 存不下就算了 */
-	}
+	setItem(LS_KEY, all)
+	push({ labels: { [key]: value || '' } })
 }
 
 // ===== 收藏 =====
@@ -82,11 +127,8 @@ export function nextFavorites(current, key, on) {
  */
 export function writeFavorite(key, on) {
 	const next = nextFavorites(readFavorites(), key, on)
-	try {
-		localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]))
-	} catch {
-		/* 存不下就算了 */
-	}
+	setItem(FAVORITES_KEY, [...next])
+	push({ favorites: { [key]: on === true } })
 	return next
 }
 
@@ -144,11 +186,8 @@ export function nextFavIcons(current, key, value) {
  */
 export function writeFavIcon(key, value) {
 	const next = nextFavIcons(readFavIcons(), key, value)
-	try {
-		localStorage.setItem(FAVICONS_KEY, JSON.stringify(next))
-	} catch {
-		/* 存不下就算了 */
-	}
+	setItem(FAVICONS_KEY, next)
+	push({ favIcons: { [key]: typeof value === 'string' ? value : '' } })
 	return next
 }
 
@@ -212,10 +251,7 @@ export function nextFavColors(current, key, value) {
  */
 export function writeFavColor(key, value) {
 	const next = nextFavColors(readFavColors(), key, value)
-	try {
-		localStorage.setItem(FAVCOLORS_KEY, JSON.stringify(next))
-	} catch {
-		/* 存不下就算了 */
-	}
+	setItem(FAVCOLORS_KEY, next)
+	push({ favColors: { [key]: typeof value === 'string' ? value : '' } })
 	return next
 }

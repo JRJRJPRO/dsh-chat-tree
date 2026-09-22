@@ -18,7 +18,7 @@
  *   第6步  用例 5：同一行的横段不许重复画
  *   第7步  用例 6：详情卡贴着那个点放，不贴整棵树的左缘
  *
- * 跑法：node test-layout.mjs
+ * 跑法：node tests/test-layout.mjs
  *
  * @module test-layout
  */

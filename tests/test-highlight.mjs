@@ -14,7 +14,7 @@
  *   第2步  造树的小工具
  *   第3步  三个用例：线性 / 一层岔路 / 三层链（沿链取最小值）
  *
- * 跑法：node test-highlight.mjs
+ * 跑法：node tests/test-highlight.mjs
  *
  * @module test-highlight
  */

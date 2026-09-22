@@ -18,7 +18,7 @@
  *   第4步  用例 3：挑单子（列树不列节点、已合进来的能拆回去）
  *   第5步  用例 4：在跑就不让合并，并把原因写在单子里
  *
- * 跑法：node test-merge.mjs
+ * 跑法：node tests/test-merge.mjs
  *
  * @module test-merge
  */
@@ -35,7 +35,7 @@ import path from 'node:path'
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-merge-'))
 process.env.DSH_HOME = home
 
-const { reshape } = await import('./index.js')
+const { reshape } = await import('../index.js')
 
 const pure = await loadClientPure()
 

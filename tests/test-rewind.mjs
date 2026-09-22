@@ -27,7 +27,7 @@
  *   第6步  用例 9-10：**读旁车不许打断正在跑的那一轮**（最要命的一条）+ 整条管线
  *   第7步  用例 12-14：宿主原生的就地撤回（surface replace）+ 岔路点按分支自己的眼光算
  *
- * 跑法：node test-rewind.mjs
+ * 跑法：node tests/test-rewind.mjs
  *
  * @module test-rewind
  */
@@ -37,7 +37,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { foldOutline, __test } from './index.js'
+import { foldOutline, __test } from '../index.js'
 
 const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 

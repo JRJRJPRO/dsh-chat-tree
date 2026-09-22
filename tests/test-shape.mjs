@@ -24,7 +24,7 @@
  *   第5步  场景 2：两条毫无关系的真实对话合并（John 点名的那个）
  *   第6步  场景 3：连着合三条 + 在合进来的那棵里分离，两套存储不许打架
  *
- * 跑法：DSH_HOME=<真实 home> node test-shape.mjs
+ * 跑法：DSH_HOME=<真实 home> node tests/test-shape.mjs
  *
  * @module test-shape
  */
@@ -88,7 +88,7 @@ function readSession(file) {
 const lab = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-shape-'))
 process.env.DSH_HOME = lab
 
-const { foldOutline, reshape, __test } = await import('./index.js')
+const { foldOutline, reshape, __test } = await import('../index.js')
 
 const pure = await loadClientPure()
 

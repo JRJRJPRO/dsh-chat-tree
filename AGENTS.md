@@ -1,9 +1,9 @@
 # 给 AI 助手的上手文档
 
 用法看 [README.md](README.md)。这份是**动代码之前要先知道的事**。
-细的分两处：施工问题（改东西动哪几个文件）在 [ARCHITECTURE.md](ARCHITECTURE.md)，
-设计取舍和踩过的坑在 [DESIGN.md](DESIGN.md)，宿主原生有什么能力在
-[NATIVE-BASELINE.md](NATIVE-BASELINE.md)。
+细的分两处：施工问题（改东西动哪几个文件）在 [docs/dev/ARCHITECTURE.md](docs/dev/ARCHITECTURE.md)，
+设计取舍和踩过的坑在 [docs/dev/DESIGN.md](docs/dev/DESIGN.md)，宿主原生有什么能力在
+[docs/dev/NATIVE-BASELINE.md](docs/dev/NATIVE-BASELINE.md)。
 
 ---
 
@@ -20,7 +20,7 @@ DeepSeek Harness（dsh）的插件，一个 npm 包，靠 `package.json` 里的 
 > `client.js` **别手改**，下一次构建就冲掉了。它是 `node build.mjs` 把
 > `src/client/*.js` 拼出来的 —— 浏览器半必须是一个文件，这是 dsh 的规矩。
 
-host 半通过三条路由和浏览器半说话：`/plugins/dsh-tree/{outlines,shape,icon}`。
+host 半通过四条路由和浏览器半说话：`/plugins/dsh-tree/{outlines,shape,icon,labels}`。
 两边的约定只有一条：**出错一律 `{error: string}`**。
 
 ## 2. 装成可开发的样子
@@ -55,20 +55,20 @@ dsh plugin --profile web add link:D:/绝对路径/dsh-tree
 ```bash
 npm test                   # 先构建，再十四套一起跑
 
-node test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
-node test-highlight.mjs    # 高亮、hover intent、连线遮挡
-node test-elide.mjs        # 省略的距离、行号压实、缩放
-node test-layout.mjs       # 列距、贴右缘、横线去重、被浮层盖住时收起
-node test-pointer.mjs      # 触摸设备：点按代替悬停、输入法、焦点守卫
-node test-icon.mjs         # 自定义节点图片：只收 PNG、内容哈希、清理不误伤
-node test-rewind.mjs       # 撤回：哪些轮该消失、哪些该成废弃支线
-node test-merge.mjs        # 合并 / 接回去
-node test-shape.mjs        # 拿真实会话跑合并 / 分离的端到端
-node test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
-node test-http.mjs         # 路由外壳：信任围栏、方法分发、出错码、body 上限
-node test-net.mjs          # 浏览器半：直连被拒时改走 /remote 通道
-node test-lifecycle.mjs    # 启用 / 停用 / 再启用：两半都不许留东西
-node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 3000 棵随机树扫不变式
+node tests/test.mjs              # 真实会话日志跑整条渲染管线，--print 打印 ASCII 树
+node tests/test-highlight.mjs    # 高亮、hover intent、连线遮挡
+node tests/test-elide.mjs        # 省略的距离、行号压实、缩放
+node tests/test-layout.mjs       # 列距、贴右缘、横线去重、被浮层盖住时收起
+node tests/test-pointer.mjs      # 触摸设备：点按代替悬停、输入法、焦点守卫
+node tests/test-icon.mjs         # 自定义节点图片：只收 PNG、内容哈希、清理不误伤
+node tests/test-rewind.mjs       # 撤回：哪些轮该消失、哪些该成废弃支线
+node tests/test-merge.mjs        # 合并 / 接回去
+node tests/test-shape.mjs        # 拿真实会话跑合并 / 分离的端到端
+node tests/test-branch.mjs       # 把真实分支倒带到"刚出生"，重放接管逻辑
+node tests/test-http.mjs         # 路由外壳：信任围栏、方法分发、出错码、body 上限
+node tests/test-net.mjs          # 浏览器半：直连被拒时改走 /remote 通道
+node tests/test-lifecycle.mjs    # 启用 / 停用 / 再启用：两半都不许留东西
+node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 3000 棵随机树扫不变式
 ```
 
 单独跑某一个之前记得 `npm run build` —— 测的是生成物 `client.js`。
@@ -99,24 +99,21 @@ node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 300
    没有它，父子分支共用一个 Claude 会话文件，进程一重启就互相串记忆。补丁在
    `$DSH_HOME/profiles/web/patches/`，由 `pnpm-workspace.yaml` 的 `patchedDependencies`
    重放；升级 dsh-claude 后先确认上游是否已带 `forkSession`，没带就把补丁改成新版本号。
-   已经共用的旧会话用 `split-shared-claude.mjs` 拆（**dsh 停着时**）。
+   已经共用的旧会话用 `tools/split-shared-claude.mjs` 拆（**dsh 停着时**）。
 
 ## 5. 已知问题（按优先级）
 
-**P0**
+**给用 dsh-claude 的人（也是给装它的 AI）**
 
-- 改名 / 收藏 / 收藏图标 / 收藏颜色**四样都存在 localStorage**，而分组、形状、图片文件
-  在 `$DSH_HOME/plugins/dsh-tree/` 下。后果：换浏览器或上手机，树在但标注全没；
-  清缓存等于全丢，没有导出。图片更糟 —— 文件在盘上，引用它的表在 localStorage，
-  新浏览器里没人引用就会被 LRU-32 清掉。
-  修法：加一条 `/labels` 路由存 `labels.json`（规格照抄 `shape.js`），或用 `ctx.storage.domain`。
-- **导轨拉不到数据时界面上零提示**（`hooks.js` 只 `warn` 到 console，`rail.js` 直接
-  `return null`，整条导轨消失）。围栏引入后失败模式变多了（401 / 403 / 503），
-  而那些错误信息写得很细却一个字都到不了用户眼前。
+- dsh-tree 的"开分支带 Claude 记忆"依赖 dsh-claude 在 resume 时传 `forkSession: true`。
+  上游 0.1.54 还没有这一行，没有它父子分支会共用一个 Claude 会话文件，进程一重启就
+  互相串记忆。补丁很小（`resumeSessionAt` 旁边加 `forkSession: true`），用 pnpm patch
+  挂到 `$DSH_HOME/profiles/web/patches/`。不用 Claude 的用户完全碰不到这件事。
+- 已经串了的旧会话用 `node tools/split-shared-claude.mjs --apply` 拆（dsh 停着时跑）。
 
 **P1**
 
-- 自定义图片全局只留 32 张（`ICON_KEEP`），超了按 mtime 静默删，引用还在，节点变成画不出来
+- 自定义图片全局只留 200 张（`ICON_KEEP`），超了按 mtime 静默删，引用还在，节点变成画不出来
 - `shape.json` 只增不减，删掉的会话永远留在 `groupOf` / `detached` 里
 - `atomicWrite` 的 `rename` 失败时 `.tmp` 不清理，留孤儿文件
 - `reshape` 是读-改-写，两个客户端并发会静默丢一个补丁
@@ -132,6 +129,8 @@ node test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 300
 
 ## 6. 提交规矩
 
+- **提交信息只写一句话，写给用户看**（"用 yyy 修复了 xxx"那种），细节放代码注释和 docs/dev。
+  仓库是给用户看的，GitHub 上提交列表用户也看得到。
 - **提交信息里不要加任何 AI 署名**（`Co-Authored-By` / `Generated with`）
 - 一个提交一件事。文件重叠到没法拆时，宁可合成一个说清楚，也别切出跑不起来的中间提交
 - 改了 `src/client/` 就把重新 build 过的 `client.js` 一起提交

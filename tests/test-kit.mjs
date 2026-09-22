@@ -55,7 +55,7 @@ export async function loadClientPure() {
  *
  * 测启用、停用这类生命周期的东西要调 `apply`，光有纯函数不够。
  *
- * ⚠️ 只加载一次：`import('./client.js')` 第二次会命中 ESM 缓存，factory 不会重跑，
+ * ⚠️ 只加载一次：`import('../client.js')` 第二次会命中 ESM 缓存，factory 不会重跑，
  *    所以结果缓存在模块里，谁来要都是同一份。
  * @returns client.js 的 module.exports
  */
@@ -80,7 +80,7 @@ export async function loadClient() {
 		clear: () => cells.clear(),
 	}
 	globalThis.document = { querySelector: () => null, head: { appendChild: () => {} }, createElement: () => ({ dataset: {}, remove: () => {} }) }
-	await import('./client.js')
+	await import('../client.js')
 	if (exported === undefined || exported.__pure === undefined) throw new Error('client.js 没有导出 __pure，测试无法进行')
 	loaded = exported
 	return loaded

@@ -49,7 +49,7 @@ globalThis.sessionStorage = {
 	getItem: (key) => (key === 'dsh-remote-device' ? 'dev-42' : null),
 }
 
-const { apiPrefix, getJson, postJson } = await import('./src/client/net.js')
+const { apiPrefix, getJson, postJson } = await import('../src/client/net.js')
 
 // ===== 第 2 步：用例 =====
 

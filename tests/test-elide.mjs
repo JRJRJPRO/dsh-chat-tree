@@ -10,7 +10,7 @@
  *   第2步  造树的小工具
  *   第3步  用例：线性窗口 / 兄弟算 2 步 / 不省略 / 鱼眼淡出 / 行号压实 / 真日志回归
  *
- * 跑法：node test-elide.mjs
+ * 跑法：node tests/test-elide.mjs
  *
  * @module test-elide
  */

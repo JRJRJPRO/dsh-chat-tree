@@ -101,7 +101,7 @@ console.log('用例 4：NO_ZOOM 与 TAPPABLE 的分工')
 // ===== 用例 5：别绕过 pointer.js 自己手写一份 =====
 console.log('用例 5：user-select 只许从 pointer.js 出')
 {
-	const dir = new URL('./src/client/', import.meta.url)
+	const dir = new URL('../src/client/', import.meta.url)
 	const offenders = []
 	for (const name of readdirSync(dir)) {
 		if (!name.endsWith('.js') || name === 'pointer.js') continue
@@ -123,7 +123,7 @@ console.log('用例 6：输入框字号顶到 16px')
 	//    而且**不会自己缩回来**。导轨是 position:fixed 的，放大之后直接跑到屏幕外。
 	//    宿主的 viewport meta 不归我们管，所以只能从字号这一头解。
 	for (const name of ['ui-detail.js', 'ui-settings.js']) {
-		const text = readFileSync(new URL(`./src/client/${name}`, import.meta.url), 'utf8')
+		const text = readFileSync(new URL(`../src/client/${name}`, import.meta.url), 'utf8')
 		check(text.includes("'16px'"),
 			`${name} 里的输入框丢了 16px 那条兜底 —— iOS 上聚焦它会把整页放大且缩不回来`)
 	}
@@ -148,7 +148,7 @@ console.log('用例 7：名字框里有光标 → 整张卡按住不放')
 console.log('用例 8：「字」框的输入法规矩')
 {
 	// John 报的：在收藏图标的「字」框里一输中文就退出。两个原因，两条都在源码里钉住。
-	const text = readFileSync(new URL('./src/client/ui-detail.js', import.meta.url), 'utf8')
+	const text = readFileSync(new URL('../src/client/ui-detail.js', import.meta.url), 'utf8')
 	// 取 FavIconRow 里那个 key:'char' 的输入框（到下一个 h( 为止够用了）
 	const at = text.indexOf("key: 'char'")
 	check(at > 0, "找不到「字」那个输入框（key: 'char'），这条用例该跟着改")
@@ -192,7 +192,7 @@ console.log('用例 10：输入框把键盘事件拦在自己家里')
 {
 	// John 报的：在节点描述里按 Ctrl+A，结果全选的是聊天区的文字。
 	// 宿主在上层挂着自己的快捷键，不拦的话这个框里敲的每一下它都收得到。
-	const text = readFileSync(new URL('./src/client/ui-detail.js', import.meta.url), 'utf8')
+	const text = readFileSync(new URL('../src/client/ui-detail.js', import.meta.url), 'utf8')
 	for (const [name, at] of [['名字框', text.indexOf('export function NameField')], ['「字」框', text.indexOf("key: 'char'")]]) {
 		check(at > 0, `找不到${name}，这条用例该跟着改`)
 		const field = text.slice(at, at + 3200)
@@ -211,9 +211,9 @@ console.log('用例 11：两个框都得先问一句"是不是在拼字"')
 	// John 报的：在收藏图标的「字」框里打 "ceshiyixia"，还没选词就变成了那串英文。
 	// 微软拼音**用空格或回车选词**，那一下会先派一个 keydown{key:'Enter', isComposing:true}；
 	// 老写法看见 Enter 就 blur()，浏览器当场掐掉这次合成，把**拼音原文**当结果落进框里。
-	const text = readFileSync(new URL('./src/client/ui-detail.js', import.meta.url), 'utf8')
+	const text = readFileSync(new URL('../src/client/ui-detail.js', import.meta.url), 'utf8')
 	// 设置卡里那个「填字」框是同一套规矩的第二份，别只改一边
-	const card = readFileSync(new URL('./src/client/ui-settings.js', import.meta.url), 'utf8')
+	const card = readFileSync(new URL('../src/client/ui-settings.js', import.meta.url), 'utf8')
 	const own = card.indexOf("key: 'own'")
 	check(own > 0, "找不到设置卡里那个「填字」框（key: 'own'）")
 	const ownField = card.slice(own, own + 1800)

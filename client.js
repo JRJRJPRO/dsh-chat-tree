@@ -493,18 +493,65 @@ window.__ModuleLoader__.load({
 		// ===== labels.js ===============================================
 
 		/**
-		 * 节点上的用户标注：**改名**和**收藏**。两件事都存 localStorage。
+		 * 节点上的用户标注：**改名**、**收藏**、收藏图标、收藏颜色。
 		 *
-		 * ⚠️ **这是个半成品**：换浏览器就没了，也进不了手机。真正的落点应该是 host 半的
-		 * `shape.json` 旁边（那儿已经有 `$DSH_HOME/plugins/dsh-tree/`），接口保持成
-		 * `readLabels()/writeLabel()` + `readFavorites()/writeFavorite()` 这几个函数，
-		 * 就是为了那天只改这一个文件。
+		 * 落盘在宿主那边（`$DSH_HOME/plugins/dsh-tree/labels.json`，见 src/host/labels.js），
+		 * 换浏览器、上手机都还在。这里的 localStorage 只是**缓存**：每次拉到 `/outlines`
+		 * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
+		 * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
 		 *
 		 * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root`，见 tree.js），
 		 * 所以改名和收藏天然对齐到同一个点上。
 		 */
 
+
 		const LS_KEY = 'dsh-tree.labels'
+
+		/** 把补丁送给宿主。失败只记一笔：本地缓存已经改了，界面照常。 */
+		function push(patch) {
+			postJson('/labels', patch).catch((error) => warn('标注没存到宿主，只留在了本浏览器', error))
+		}
+
+		const setItem = (key, value) => {
+			try {
+				localStorage.setItem(key, JSON.stringify(value))
+			} catch {
+				/* 存不下就算了 */
+			}
+		}
+
+		/**
+		 * 用宿主那份盖掉本地缓存。宿主没给（老版本 host）就什么都不做。
+		 * @param doc - `/outlines` 里带来的 `labels`
+		 */
+		function adoptLabels(doc) {
+			if (doc === null || typeof doc !== 'object' || doc.version !== 1) return
+			if (seedFromLocal(doc)) return // 本地的更全，送上去，别用空的把它盖掉
+			setItem(LS_KEY, doc.labels || {})
+			setItem(FAVORITES_KEY, Array.isArray(doc.favorites) ? doc.favorites : [])
+			setItem(FAVICONS_KEY, doc.favIcons || {})
+			setItem(FAVCOLORS_KEY, doc.favColors || {})
+		}
+
+		/**
+		 * 宿主空、本地有 → 把本地整份送上去。只在这一种情况下做，做过一次就不再做。
+		 * @param doc - 宿主那份
+		 * @returns 是否送了
+		 */
+		function seedFromLocal(doc) {
+			const hostEmpty = Object.keys(doc.labels || {}).length === 0 && (doc.favorites || []).length === 0
+				&& Object.keys(doc.favIcons || {}).length === 0 && Object.keys(doc.favColors || {}).length === 0
+			if (!hostEmpty) return false
+			const labels = readLabels()
+			const favorites = readFavorites()
+			const favIcons = readFavIcons()
+			const favColors = readFavColors()
+			if (Object.keys(labels).length === 0 && favorites.size === 0 && Object.keys(favIcons).length === 0 && Object.keys(favColors).length === 0) return false
+			const patch = { labels, favorites: {}, favIcons, favColors }
+			for (const key of favorites) patch.favorites[key] = true
+			push(patch)
+			return true
+		}
 
 		/** 收藏清单存哪。和改名分开存：改名是一张字典，收藏是一个集合，混在一起迟早要判类型。 */
 		const FAVORITES_KEY = 'dsh-tree.favorites'
@@ -526,11 +573,8 @@ window.__ModuleLoader__.load({
 			const all = readLabels()
 			if (value) all[key] = value
 			else delete all[key]
-			try {
-				localStorage.setItem(LS_KEY, JSON.stringify(all))
-			} catch {
-				/* 存不下就算了 */
-			}
+			setItem(LS_KEY, all)
+			push({ labels: { [key]: value || '' } })
 		}
 
 		// ===== 收藏 =====
@@ -576,11 +620,8 @@ window.__ModuleLoader__.load({
 		 */
 		function writeFavorite(key, on) {
 			const next = nextFavorites(readFavorites(), key, on)
-			try {
-				localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]))
-			} catch {
-				/* 存不下就算了 */
-			}
+			setItem(FAVORITES_KEY, [...next])
+			push({ favorites: { [key]: on === true } })
 			return next
 		}
 
@@ -638,11 +679,8 @@ window.__ModuleLoader__.load({
 		 */
 		function writeFavIcon(key, value) {
 			const next = nextFavIcons(readFavIcons(), key, value)
-			try {
-				localStorage.setItem(FAVICONS_KEY, JSON.stringify(next))
-			} catch {
-				/* 存不下就算了 */
-			}
+			setItem(FAVICONS_KEY, next)
+			push({ favIcons: { [key]: typeof value === 'string' ? value : '' } })
 			return next
 		}
 
@@ -706,11 +744,8 @@ window.__ModuleLoader__.load({
 		 */
 		function writeFavColor(key, value) {
 			const next = nextFavColors(readFavColors(), key, value)
-			try {
-				localStorage.setItem(FAVCOLORS_KEY, JSON.stringify(next))
-			} catch {
-				/* 存不下就算了 */
-			}
+			setItem(FAVCOLORS_KEY, next)
+			push({ favColors: { [key]: typeof value === 'string' ? value : '' } })
 			return next
 		}
 
@@ -3286,8 +3321,16 @@ window.__ModuleLoader__.load({
 				let alive = true
 				const timer = setTimeout(() => {
 					getJson('/outlines', { cwd })
-						.then((body) => alive && setData(body))
-						.catch((error) => warn('拉大纲失败，树停在上一帧', error))
+						.then((body) => {
+							if (!alive) return
+							adoptLabels(body && body.labels) // 标注以宿主为准，本地只是缓存
+							setData(body)
+						})
+						.catch((error) => {
+							warn('拉大纲失败，树停在上一帧', error)
+							// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失
+							if (alive) setData((previous) => Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }))
+						})
 				}, 120)
 				return () => {
 					alive = false
@@ -4932,15 +4975,16 @@ window.__ModuleLoader__.load({
 			const [hover, setHover] = react.useState(null)
 			const [tick, setTick] = react.useState(0)
 			const lastGraph = react.useRef(undefined) // 数据空窗期顶上去的那棵树，见下面 ⚠️
-			const labels = react.useMemo(() => readLabels(), [tick])
+			// 标注随 tick（本地改了）和 outlines（宿主那份到了）刷新
+			const labels = react.useMemo(() => readLabels(), [tick, outlines])
 			// 收藏清单和改名共用一个 `tick`：两者都存在 localStorage，都只在用户点了之后才变，
 			// 各自开一个计数器只会让"点了收藏，名字也跟着重读一遍"这种无害的事看起来像 bug。
-			const favorites = react.useMemo(() => readFavorites(), [tick])
+			const favorites = react.useMemo(() => readFavorites(), [tick, outlines])
 			// 每个收藏点自己挑的图标（没挑过的不在里面，画默认的五角星）。
 			// 跟着同一个 `tick` 重读，理由同上。
-			const favIcons = react.useMemo(() => readFavIcons(), [tick])
+			const favIcons = react.useMemo(() => readFavIcons(), [tick, outlines])
 			// 每个收藏点自己挑的颜色（没改过的不在里面，画默认的那个黄）。同一个 `tick`，理由同上。
-			const favColors = react.useMemo(() => readFavColors(), [tick])
+			const favColors = react.useMemo(() => readFavColors(), [tick, outlines])
 			// 刚被点的那颗星，用来播一次性动画（见 hooks.js 的 starAnimation）
 			const [flash, setFlash] = react.useState(null)
 
@@ -5064,7 +5108,14 @@ window.__ModuleLoader__.load({
 			}
 			if (graph !== undefined) lastGraph.current = graph
 			else graph = lastGraph.current
-			if (graph === undefined) return null
+			// 一棵树都没有、而且宿主那边报了错 → 说一声，别整条导轨静悄悄消失
+			if (graph === undefined) {
+				if (!outlines || !outlines.error) return null
+				return h('div', {
+					style: { position: 'fixed', right: '14px', top: `${box.top + Z.pad}px`, zIndex: 40, maxWidth: '220px', pointerEvents: 'none',
+						font: '11px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.muted, whiteSpace: 'pre-wrap' },
+				}, `对话树拉不到数据：${outlines.error}`)
+			}
 
 			// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 			// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。

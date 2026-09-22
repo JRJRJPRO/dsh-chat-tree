@@ -12,8 +12,8 @@
  *   → client 的 visibleTree / conversationOf / layout（真代码，从 __pure 出口取）
  *   → 打印 ASCII 树 + 跑断言
  *
- * 用法：node test.mjs            跑全部断言，失败退出码非 0
- *       node test.mjs --print    额外打印每个视角下的树
+ * 用法：node tests/test.mjs            跑全部断言，失败退出码非 0
+ *       node tests/test.mjs --print    额外打印每个视角下的树
  *
  * 阅读顺序：
  *   第1步  读盘：解多 frame zstd
@@ -26,7 +26,7 @@ import { check, loadClientPure, report } from './test-kit.mjs'
 import fs from 'node:fs'
 import zlib from 'node:zlib'
 import path from 'node:path'
-import { foldOutline, __test } from './index.js'
+import { foldOutline, __test } from '../index.js'
 
 const HOME = process.env.DSH_HOME || 'E:/Programs/deepseek-harness/home'
 const PRINT = process.argv.includes('--print')

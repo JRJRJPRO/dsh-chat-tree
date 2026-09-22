@@ -6,6 +6,7 @@
 import { react } from './runtime.js'
 import { Z } from './const.js'
 import { getJson, warn } from './net.js'
+import { adoptLabels } from './labels.js'
 
 /**
  * 藏掉宿主自带的轮次导轨（否则两条叠一起谁也看不清）。
@@ -277,8 +278,16 @@ export function useOutlines(cwd, listState, nonce) {
 		let alive = true
 		const timer = setTimeout(() => {
 			getJson('/outlines', { cwd })
-				.then((body) => alive && setData(body))
-				.catch((error) => warn('拉大纲失败，树停在上一帧', error))
+				.then((body) => {
+					if (!alive) return
+					adoptLabels(body && body.labels) // 标注以宿主为准，本地只是缓存
+					setData(body)
+				})
+				.catch((error) => {
+					warn('拉大纲失败，树停在上一帧', error)
+					// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失
+					if (alive) setData((previous) => Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }))
+				})
 		}, 120)
 		return () => {
 			alive = false

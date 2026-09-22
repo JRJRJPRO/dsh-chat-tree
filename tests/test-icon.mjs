@@ -15,7 +15,7 @@
  *   第2步  临时 home，绝不碰真实的那份
  *   第3步  三组断言：只收 PNG / 内容哈希与路径安全 / 清理策略
  *
- * 跑法：node test-icon.mjs
+ * 跑法：node tests/test-icon.mjs
  *
  * @module test-icon
  */
@@ -81,7 +81,7 @@ function crc32(bytes) {
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tree-icon-'))
 process.env.DSH_HOME = home
 
-const host = await import(new URL('./index.js', import.meta.url))
+const host = await import(new URL('../index.js', import.meta.url))
 const { putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX } = host.__test
 
 // ===== 第 3 步：断言 =====

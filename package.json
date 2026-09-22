@@ -7,7 +7,7 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "pretest": "node build.mjs",
-    "test": "node test.mjs && node test-highlight.mjs && node test-elide.mjs && node test-branch.mjs && node test-icon.mjs && node test-rewind.mjs && node test-merge.mjs && node test-shape.mjs && node test-http.mjs && node test-net.mjs && node test-lifecycle.mjs && node test-tidy.mjs && node test-pointer.mjs && node test-layout.mjs && node test-split.mjs"
+    "test": "node tests/test.mjs && node tests/test-highlight.mjs && node tests/test-elide.mjs && node tests/test-branch.mjs && node tests/test-icon.mjs && node tests/test-rewind.mjs && node tests/test-merge.mjs && node tests/test-shape.mjs && node tests/test-http.mjs && node tests/test-net.mjs && node tests/test-lifecycle.mjs && node tests/test-tidy.mjs && node tests/test-pointer.mjs && node tests/test-layout.mjs && node tests/test-split.mjs && node tests/test-labels.mjs"
   },
   "main": "index.js",
   "exports": {
@@ -24,7 +24,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
-    "AGENTS.md",
+    "AGENTS.md", "tools",
     "ARCHITECTURE.md",
     "DESIGN.md",
     "NATIVE-BASELINE.md",

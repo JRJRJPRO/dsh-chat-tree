@@ -17,7 +17,7 @@
  */
 
 import { check, report, loadClient } from './test-kit.mjs'
-import { __test, apply as hostApply } from './index.js'
+import { __test, apply as hostApply } from '../index.js'
 
 // ===== 第 1 步：假宿主 =====
 
@@ -150,9 +150,9 @@ console.log('用例 1：装上之后该有的都在')
 	const host = fakeHost(world)
 	hostApply(host.ctx)
 	const paths = [...host.state.routes.keys()].sort()
-	check(paths.length === 3, `注册了 ${paths.length} 个路由，应该是 3 个：${paths.join(' ')}`)
+	check(paths.length === 4, `注册了 ${paths.length} 个路由，应该是 4 个：${paths.join(' ')}`)
 	check(
-		paths.join(' ') === '/plugins/dsh-tree/icon /plugins/dsh-tree/outlines /plugins/dsh-tree/shape',
+		paths.join(' ') === '/plugins/dsh-tree/icon /plugins/dsh-tree/labels /plugins/dsh-tree/outlines /plugins/dsh-tree/shape',
 		`路由不对：${paths.join(' ')}`,
 	)
 	check(host.state.listeners.length === 1 && host.state.listeners[0].event === 'agent/created', '没接管 agent/created')
@@ -178,7 +178,7 @@ console.log('用例 2：停用 → 再启用（市场里点两下就会走这条
 		failure = error
 	}
 	check(failure === undefined, `再启用抛了：${failure && failure.message}`)
-	check(second.state.routes.size === 3, `再启用后只剩 ${second.state.routes.size} 个路由`)
+	check(second.state.routes.size === 4, `再启用后只剩 ${second.state.routes.size} 个路由`)
 	check(world.namespaces.has('dsh-tree'), '再启用后设置 namespace 没回来')
 	console.log('  第二次装上照样是 3 个路由 + namespace')
 	second.dispose()
