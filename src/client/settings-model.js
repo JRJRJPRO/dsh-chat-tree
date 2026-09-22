@@ -40,11 +40,11 @@ export function layerText(step) {
 export const VISIBLE = [
 	{
 		mode: 'depth', field: 'visibleDepth', label: '按层数', steps: LAYERS, text: layerText, fallback: DEPTH.fallback,
-		hint: '和你正在看的那一轮**差几层**以内的节点才画出来。同一层要么整排都在、要么整排都不在，看着最齐整。',
+		hint: '只画与当前这一轮相差指定层数以内的节点。同一层要么都画，要么都不画。',
 	},
 	{
 		mode: 'step', field: 'visibleRadius', label: '按步数', steps: STEPS, text: stepText, fallback: RADIUS.fallback,
-		hint: '离你正在看的那一轮**多少步**以内的节点才画出来。父节点算 1 步，父节点的另一个孩子算 2 步 —— 于是隔壁分支上和你同层的节点可能差很多步，并排却不显示。',
+		hint: '只画与当前这一轮相距指定步数以内的节点。父节点算 1 步，父节点的另一个孩子算 2 步。',
 	},
 ]
 
@@ -107,12 +107,12 @@ export const isFavShape = (value) => typeof value === 'string' && favShape(value
  */
 export const ROWS = [
 	{ key: 'normal', label: '普通节点', hint: '不在当前路径上的节点。' },
-	{ key: 'current', label: '当前路径', hint: '当前这条路径的节点、连线，以及"正看着这一轮"的实心填充，都跟着这个颜色走。' },
-	{ key: 'compact', label: '压缩节点', hint: '被 /compact 压缩掉的那一轮。四个角色的形状各自独立，设成一样就分不出来了。' },
+	{ key: 'current', label: '当前路径', hint: '当前路径上的节点与连线，以及正在看的那一轮。' },
+	{ key: 'compact', label: '压缩节点', hint: '被 /compact 压缩掉的那一轮。' },
 	{
 		key: 'empty',
 		label: '空节点',
-		hint: '树根那个"新对话"占位，在它上面按 ＋ 可以在同一棵树里再开一条。边框永远是虚线 —— 那是"还没说话"的记号，不跟着配置走。',
+		hint: '树根的"新对话"占位节点，边框恒为虚线。',
 	},
 	// 收藏**不是第五个角色**（它是盖在任何一种节点上的一层记号，所以不在 ROLES 里），
 	// 但它确实有一对"颜色 + 形状"要给用户调，所以字段名直接写出来。
@@ -122,7 +122,7 @@ export const ROWS = [
 		color: 'favoriteColor',
 		shape: 'favoriteShape',
 		extra: ['star'],
-		hint: '收藏过的节点长什么样。这里改的是**默认** —— 在树上某个点的卡片里单独挑过图标或颜色的，仍按它自己的来。描边和填充都是这个颜色，填充只是它的半透明版。挑过之后就钉死了，明暗主题下都是这个色。',
+		hint: '收藏节点的默认样式。在单个节点的卡片里单独挑过的，按它自己的来。',
 	},
 	// `key` 就是 shapes.js 里的角色名（收藏除外），所以改哪两个设置字段、要不要画虚线，
 	// 一律从 ROLES 查，不在这儿重写一遍
@@ -150,7 +150,7 @@ export const FIELDS = [
 		steps: one.steps, text: one.text, fallback: one.fallback, accept: Number.isFinite, hint: one.hint,
 	})),
 	{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
-		hint: '点、连线、列间距、命中区一起等比例缩放。树太高时行距仍会被自动压扁。' },
+		hint: '点、连线、列间距、命中区一起等比例缩放。' },
 	// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
 	// 以前这八行是手写的，于是同一个字段名在 ROLES / FIELDS / ROWS 里各写一遍，
 	// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。

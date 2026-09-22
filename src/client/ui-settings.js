@@ -292,7 +292,7 @@ export function SettingsCard(props) {
 			// 传图：选完立刻在浏览器里缩成 ICON_EDGE 见方的 PNG 再上传，见 shrink()
 			h('label', {
 				key: 'img',
-				title: `传一张图当节点。png / jpg / webp / svg 都行，尺寸不限 —— 会自动等比缩进 ${ICON_EDGE}×${ICON_EDGE}`,
+				title: `传一张图当节点。png / jpg / webp / svg 都行，会等比缩到 ${ICON_EDGE}×${ICON_EDGE}`,
 				style: S.chip(String(now).startsWith(PICTURE), on),
 			}, [
 				String(now).startsWith(PICTURE)
@@ -321,7 +321,7 @@ export function SettingsCard(props) {
 			h('input', {
 				key: 'own', type: 'text', disabled: !on,
 				value: glyph === null ? (String(now).startsWith(CUSTOM) ? String(now).slice(CUSTOM.length) : '') : glyph,
-				placeholder: '填字', title: '填字当节点，emoji 也行，多少个都收 —— 画不下的会截断加省略号',
+				placeholder: '填字', title: '填字当节点，emoji 也行；画不下会截断。',
 				autoCapitalize: 'off', autoCorrect: 'off',
 				style: Object.assign({}, S.own(String(now).startsWith(CUSTOM), on), canHover ? {} : { fontSize: '16px' }),
 				onCompositionStart: () => { composing.current = true },
