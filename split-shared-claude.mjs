@@ -1,5 +1,6 @@
 /**
- * 一次性修复：把被多个 DSH 会话共用的 Claude 会话拆开（见 src/host/split.js 顶部）。
+ * 一次性修复：把被多个 DSH 会话共用的 Claude 会话拆开 —— 给每条抄一份只属于它的记录文件
+ * （见 src/host/split.js 顶部，含第一版为什么错了）。
  *
  * 跑法（dsh **必须停着**）：
  *   node split-shared-claude.mjs            # 只看，不写
@@ -13,7 +14,7 @@
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { dshHome } from './src/host/paths.js'
-import { applySplit, planSplit, readSidecarDir } from './src/host/split.js'
+import { applySplit, diskIo, planSplit, readSidecarDir } from './src/host/split.js'
 
 /** 有没有 dsh 在跑。认 `bin.js web|desktop|headless` 和它的 subprocess runner。 */
 function dshRunning() {
@@ -42,24 +43,27 @@ if (dshRunning()) {
 }
 
 const dir = join(dshHome(), 'plugins', 'dsh-claude', 'sessions')
+const io = diskIo()
 const entries = readSidecarDir(dir)
-const plan = planSplit(entries)
+const plan = planSplit(entries, io.transcriptOf)
 console.log(`旁车目录：${dir}`)
 console.log(`读到 ${entries.length} 份；被多个会话共用的 Claude 会话 ${plan.groups.length} 个`)
 for (const group of plan.groups) {
-	console.log(`\n  ${group.claudeSessionId}  ← ${group.sessions.length} 条 DSH 会话`)
-	for (const step of plan.arm.filter((item) => item.claudeSessionId === group.claudeSessionId)) {
-		console.log(`     武装 ${step.sessionId}  → resumeAt 第 ${step.turn} 轮 ${step.resumeAt.slice(0, 8)}…`)
+	console.log(`
+  ${group.claudeSessionId}  ← ${group.sessions.length} 条 DSH 会话`)
+	for (const step of plan.fork.filter((item) => item.claudeSessionId === group.claudeSessionId)) {
+		console.log(`     fork ${step.sessionId}  ← 第 ${step.turn} 轮 ${step.anchor.slice(0, 8)}…  → 新会话 ${step.newId.slice(0, 8)}…`)
 	}
 	for (const item of plan.stuck.filter((it) => it.claudeSessionId === group.claudeSessionId)) {
-		console.log(`     ⚠ 卡住 ${item.sessionId}（${item.why}）—— 一轮都没跑过，没有锚点可续；它下次仍会从共享文件的最新叶子续`)
+		console.log(`     ⚠ 卡住 ${item.sessionId}（${item.why}）—— 没法 fork；它下次仍会从共享文件的当前链续`)
 	}
 }
-console.log(`\n待武装 ${plan.arm.length} 条，卡住 ${plan.stuck.length} 条`)
+console.log(`
+待 fork ${plan.fork.length} 条，卡住 ${plan.stuck.length} 条`)
 if (!apply) {
 	console.log('（只看不写。确认无误后加 --apply）')
 	process.exit(0)
 }
-const result = applySplit(entries, plan)
-console.log(`已写 ${result.written.length} 条${result.skipped.length > 0 ? `，跳过 ${result.skipped.length} 条：${JSON.stringify(result.skipped)}` : ''}`)
-console.log('完成。接着在 profiles/web 里 pnpm install 让补丁生效，再启动 dsh。')
+const result = applySplit(entries, plan, io)
+console.log(`已 fork ${result.written.length} 条${result.skipped.length > 0 ? `，跳过 ${result.skipped.length} 条：${JSON.stringify(result.skipped)}` : ''}`)
+console.log('完成。老的共享记录文件留着当档案，谁也不再往里写。现在可以启动 dsh。')

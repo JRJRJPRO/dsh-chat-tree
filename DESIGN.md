@@ -378,9 +378,12 @@ claude             seq24 assistant/message  content=[]          ← 一个字都
 > · **以后**：`$DSH_HOME/profiles/web/patches/@norman-else__dsh-claude@0.1.54.patch`
 >   给 dsh-claude 加上 `forkSession: true`（`pnpm-workspace.yaml` 的 `patchedDependencies`
 >   让 pnpm 每次装都重放）。上游发了带 `forkSession` 的版本就删掉这条。
-> · **过去**：`node split-shared-claude.mjs --apply`（dsh 停着时跑）给每条"共用且没武装
->   pending"的会话武装 `resumeAt = 它自己最后一个锚点`，下次起进程各自分叉出自己的会话。
->   逻辑在 `src/host/split.js`，用例在 `test-split.mjs`。
+> · **过去**：`node split-shared-claude.mjs --apply`（dsh 停着时跑）给每条共用的会话
+>   **手抄一份只属于它的记录文件**（沿它最后一个锚点的祖先链抄、改 sessionId），改绑旁车。
+>   第一版只是武装 `resumeAt` 指望 CLI 自己 fork —— 错了：CLI 和 SDK 的 fork 都只认文件
+>   "当前链"，共用文件里不在当前链上的锚点一律 "No message found with message.uuid"，
+>   36 条里 24 条撞上，且 pending 清不掉、每次开口都失败。逻辑在 `src/host/split.js`
+>   （顶部有前因后果），用例在 `test-split.mjs`；手抄的文件已用真实 CLI resume 实测通过。
 
 ```
 binding         ← 抄父分支的（指向同一个 Claude Code 会话）
