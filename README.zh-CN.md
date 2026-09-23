@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/banner.png" alt="dsh-chat-tree — 把对话画成一棵树" width="860">
+  <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/banner.jpg" alt="dsh-chat-tree — 把对话画成一棵树" width="860">
 </p>
 
 <h1 align="center">dsh-chat-tree</h1>
