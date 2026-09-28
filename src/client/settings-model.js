@@ -151,6 +151,9 @@ export const FIELDS = [
 	})),
 	{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 		hint: '点、连线、列间距、命中区一起等比例缩放。' },
+	// 左侧会话列表按对话树折叠（sidebar.js）。开关项，默认开。
+	{ field: 'sidebarFold', kind: 'switch', label: '侧栏按对话折叠', fallback: true, accept: (value) => typeof value === 'boolean',
+		hint: '左侧会话列表里，一棵树只占一行，分支收在树头底下，点箭头摊开。关掉就回到宿主原样，每条分支各占一行。' },
 	// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
 	// 以前这八行是手写的，于是同一个字段名在 ROLES / FIELDS / ROWS 里各写一遍，
 	// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。

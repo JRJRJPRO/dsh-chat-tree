@@ -11,8 +11,9 @@ import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
 import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeOf, starSkin } from './shapes.js'
 import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
+import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
+import { useSidebarFold } from './sidebar.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
 import { themeFrom, visibleRange } from './settings-model.js'
 import { Detail } from './ui-detail.js'
@@ -42,6 +43,9 @@ export function Rail(props) {
 
 	const current = listState && listState.current
 	const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
+	// 点击跳转钉住的那一轮只在本会话里有意义：换了会话就解钉。
+	// （jump 自己也会换会话：它是 open 之后隔了 loadThrough + 60ms 才钉，这条效果早就跑完了，不会把它解掉。）
+	react.useEffect(() => unpinActiveTurn(), [current])
 	const [nonce, setNonce] = react.useState(0)
 	const [echo, setEcho] = react.useState(undefined)
 	const outlines = useOutlines(cwd, listState, nonce)
@@ -169,6 +173,11 @@ export function Rail(props) {
 	}, [canHover])
 	// ⏳ 的说明在 title 里，而 title 在触摸设备上永远不会出现 —— 戳一下摊开。
 	const [tip, setTip] = react.useState(false)
+
+	// 左侧会话列表按对话树折叠（sidebar.js）。放在下面那个早退**之前**：
+	// 不在会话界面（设置页 / 全局面板）时左边的列表照样在，照样要折。
+	// shape 用 Rail 手里的（改树形的回显也在里面）；还没开任何会话时它是 undefined，钩子自己拉。
+	useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false)
 
 	// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 	// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。

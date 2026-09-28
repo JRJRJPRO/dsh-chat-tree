@@ -41,6 +41,14 @@ and which path you're on. Named nodes carry their label right on the tree.
 
 <br clear="right">
 
+## The sidebar folds too
+
+In the session list on the left, a tree takes up one row: branches tuck under
+the root, and a chevron at the front of the row unfolds them. While folded, a
+small count sits next to the title, and it turns blue when a branch inside is
+still running. Switching to a branch unfolds its tree for you. Prefer the flat
+list? Turn off **Fold sidebar by conversation** in settings.
+
 ## Every node has a card
 
 <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/card.png" alt="Node detail card" width="470" align="right">
@@ -82,6 +90,9 @@ current turn — by depth or by distance, whichever you prefer. Either one has a
 back the moment you hover them.
 
 **Node size** scales dots, lines and spacing together, 50%–250%.
+
+**Fold sidebar by conversation** switches the session list back to the host's
+flat layout, one row per branch, when turned off.
 
 **Colors** are one row per kind of node, color on the left and shape on the
 right. Pick with the color wheel, or type a hex value like `#FFD43B` straight

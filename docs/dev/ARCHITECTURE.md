@@ -63,6 +63,7 @@ npm test          # 先构建再跑十个测试脚本
 | `pointer.js` | 这块屏能不能悬停（`useHover`）、手指戳一下算什么（`tapNext`）、WebKit 必补的样式表 |
 | `labels.js` | 节点上的用户标注：改名 + 收藏 + 收藏图标（都存 localStorage，半成品，见文件头） |
 | `tree.js` | 选树、归组、节点 key、`shapeOps`、节点上能做什么 |
+| `fold.js` | 左侧会话列表怎么折：谁归哪棵树、座位怎么排（纯函数） |
 | `graph.js` | `buildGraph` —— 唯一一处定义"图长什么样" |
 | `elide.js` | 省略 + 鱼眼淡出 |
 | `shapes.js` | 角色表 `ROLES`、12 个预设形状、配色、`dotStyle`；收藏图标的解析 `favShape` |
@@ -70,6 +71,7 @@ npm test          # 先构建再跑十个测试脚本
 | `icon-upload.js` | 传图前在浏览器里光栅化 |
 | `diagnose.js` | `window.__dshTree()` 自诊断 |
 | `hooks.js` | 量聊天区、跟踪当前轮次、订阅宿主快照、拉大纲 |
+| `sidebar.js` | 往宿主的会话行上贴折叠记号（全插件唯一碰 React fiber 的地方，认不出来就不折） |
 | `settings-model.js` | 设置项总表 + store |
 | `ui-detail.js` | 悬停详情卡（收起／展开两档）、改名框、收藏图标选择器、合并清单 |
 | `ui-settings.js` | 设置卡片 |
@@ -159,7 +161,7 @@ npm test          # 先构建再跑十个测试脚本
 
 ## 7. 测试
 
-十个离线脚本，共用 `test-kit.mjs`（一条断言、一个收尾、一份"把浏览器半骗起来"的加载器）。
+十八个离线脚本，共用 `test-kit.mjs`（一条断言、一个收尾、一份"把浏览器半骗起来"的加载器）。
 
 ```js
 import { check, report, loadClientPure } from './test-kit.mjs'

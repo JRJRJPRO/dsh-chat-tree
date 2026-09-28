@@ -1119,6 +1119,188 @@ window.__ModuleLoader__.load({
 			return node.entry !== undefined && node.active === true && node.entry.turn === activeTurn
 		}
 
+		// ===== fold.js =================================================
+
+		/**
+		 * 左侧会话列表怎么折：一棵树只占一行，分支收在它底下。
+		 *
+		 * 【导读】
+		 * 宿主的侧栏把每条会话（fork 出来的分支也算）各画一行，树一多左边就是十几条
+		 * 标题几乎一样的记录。这里算的是"哪几行该归到哪一行底下"：
+		 *   ① foldHeads —— 每条会话归哪棵树（树的编号 = 树头那条会话的 id）
+		 *   ② foldRows  —— 给侧栏里**实际画出来的那几行**排座位：树头留在原位，分支紧跟其后
+		 *   ③ nextOpen  —— 哪几棵树是摊开的（存 localStorage，纯函数只算下一份清单）
+		 *
+		 * 全是**纯函数**，不碰 DOM。真正往宿主的行上贴记号的在 sidebar.js。
+		 *
+		 * 【树的边界怎么定】和导轨那边一致，但只到**会话粒度**：
+		 *   · 血缘：顺着 parentId 爬到根；
+		 *   · 拆（detached）：剪点所在的那条会话自己当树头，它底下的血缘跟着它走；
+		 *   · 认领（adopted）：登记过"我归剪点那棵"的会话，归到剪点那条会话的树；
+		 *   · 合并（groupOf）：根被登记进别人的组，就归到那个组（组号本身就是一条会话 id）。
+		 * 剪在一条会话**中间**的情况（前半截在旧树、后半截在新树），侧栏上一行就是一行，
+		 * 按"后半截"算 —— 这条会话整行挪到新树底下。
+		 */
+
+		/** 摊开清单存在 localStorage 的键。 */
+		const OPEN_KEY = 'dsh-chat-tree.sidebar-open'
+
+		/**
+		 * 节点 key（`<会话>:<轮次>`）里的会话 id。纯会话 id（老格式的 detached）原样返回。
+		 * @param key - 节点 key 或会话 id
+		 * @returns 会话 id；不是字符串就 undefined
+		 */
+		function sessionOfKey(key) {
+			if (typeof key !== 'string' || key === '') return undefined
+			const at = key.lastIndexOf(':')
+			return at === -1 ? key : key.slice(0, at)
+		}
+
+		/**
+		 * 每条会话归哪棵树。
+		 *
+		 * 小例子：A ← B ← C，再把 C 的剪点剪断，D 是在 C 那棵树的前缀上开出来的、认领给了 C：
+		 *   A → A，B → A，C → C（自己是剪点），D → C（认领）。
+		 * 再把另一棵树 E 合进 A：E → A。
+		 *
+		 * 子代理（origin = 'subagent'）不折：宿主对它们有自己的一套展示，别抢。
+		 * @param sessions - 会话列表，每条至少有 `id`，可有 `parentId` / `origin`
+		 * @param shape - `shape.json`：`{groupOf, detached, adopted}`，缺哪项都行
+		 * @returns id → 树头的会话 id
+		 */
+		function foldHeads(sessions, shape) {
+			const byId = indexOf(sessions)
+			const groupOf = shape && shape.groupOf && typeof shape.groupOf === 'object' ? shape.groupOf : {}
+			const adopted = shape && shape.adopted && typeof shape.adopted === 'object' ? shape.adopted : {}
+			const cut = new Set()
+			for (const key of (shape && Array.isArray(shape.detached) ? shape.detached : [])) {
+				const owner = sessionOfKey(key)
+				if (owner !== undefined) cut.add(owner)
+			}
+			const memo = new Map()
+			const headOf = (id, seen) => {
+				const hit = memo.get(id)
+				if (hit !== undefined) return hit
+				const item = byId.get(id)
+				if (item === undefined) return id
+				// 手改坏的 shape.json / 环状血缘不许把这里挂死：转回来就地停
+				const guard = seen || new Set()
+				if (guard.has(id)) return id
+				guard.add(id)
+				let out
+				const claimed = sessionOfKey(adopted[id])
+				const group = groupOf[id]
+				if (cut.has(id)) out = id
+				else if (claimed !== undefined && claimed !== id && byId.has(claimed)) out = headOf(claimed, guard)
+				else if (typeof item.parentId === 'string' && item.parentId !== id && byId.has(item.parentId)) out = headOf(item.parentId, guard)
+				else if (typeof group === 'string' && group !== id && byId.has(group)) out = headOf(group, guard)
+				else out = id
+				memo.set(id, out)
+				return out
+			}
+			const heads = new Map()
+			for (const item of sessions || []) {
+				if (!item || typeof item.id !== 'string') continue
+				heads.set(item.id, item.origin === 'subagent' ? item.id : headOf(item.id))
+			}
+			return heads
+		}
+
+		/**
+		 * 给侧栏里画出来的那几行排座位。
+		 *
+		 * 输入是一个容器里**按 DOM 顺序**的全部孩子：会话行给 id，别的（工作区标题行、
+		 * "还有 n 条"按钮）给 undefined —— 它们也要占座，否则一挪座位它们就跑到别处去了。
+		 *
+		 * 规矩：
+		 *   · 一棵树在这个容器里只有一行 → 什么都不折（`plain`），没有箭头没有缩进；
+		 *   · 有两行以上 → 树头那行留在**这棵树最靠前那行**的位置上（列表按最近更新排，
+		 *     刚发过消息的分支在哪，整棵树就在哪，不会被沉底的老树根拖下去），
+		 *     其余各行紧跟其后、保持原有先后；
+		 *   · 树头优先用 foldHeads 算出来的那条；它不在这个容器里（被宿主的"还有 n 条"
+		 *     藏掉了）就让最靠前那行代班 —— 摊开与否照样按树的编号（`tree`）记。
+		 *
+		 * 座位号 `order` 直接喂给 CSS 的 `order`：容器里的**每个**孩子都拿到一个，
+		 * 没被挪动的孩子拿 `index * stride`，挪动的挤在树头后面。
+		 *
+		 * 小例子：ids = [标题(undefined), b, a, x, c]，a 是 b、c 的树头：
+		 *   标题 → 0；b（树最靠前，位置 1）；树头 a 坐 1×6，b 坐 1×6+1，c 坐 1×6+2；x 坐 3×6。
+		 *   视觉顺序：标题, a, b, c, x。
+		 * @param ids - 容器孩子按 DOM 顺序的会话 id（非会话行是 undefined）
+		 * @param heads - `foldHeads` 的结果；缺就当每行各成一树
+		 * @returns 和 ids 一一对应：`{id, index, order, role: 'other'|'plain'|'head'|'branch', tree, count}`
+		 */
+		function foldRows(ids, heads) {
+			const list = Array.isArray(ids) ? ids : []
+			const stride = list.length + 1
+			const trees = new Map()
+			list.forEach((id, index) => {
+				if (typeof id !== 'string') return
+				const tree = (heads && heads.get(id)) || id
+				const seat = trees.get(tree)
+				if (seat === undefined) trees.set(tree, { anchor: index, members: [index] })
+				else seat.members.push(index)
+			})
+			const out = list.map((id, index) => ({
+				id: typeof id === 'string' ? id : undefined,
+				index,
+				order: index * stride,
+				role: typeof id === 'string' ? 'plain' : 'other',
+				tree: undefined,
+				count: 0,
+			}))
+			for (const [tree, seat] of trees) {
+				if (seat.members.length < 2) continue
+				const own = seat.members.find((index) => list[index] === tree)
+				const headIndex = own === undefined ? seat.anchor : own
+				Object.assign(out[headIndex], { role: 'head', tree, order: seat.anchor * stride, count: seat.members.length - 1 })
+				let slot = 1
+				for (const index of seat.members) {
+					if (index === headIndex) continue
+					Object.assign(out[index], { role: 'branch', tree, order: seat.anchor * stride + slot })
+					slot += 1
+				}
+			}
+			return out
+		}
+
+		/**
+		 * 摊开 / 收起一棵树之后的清单。**纯函数**，不碰 localStorage。
+		 * @param list - 现在摊开着的树
+		 * @param tree - 树的编号
+		 * @param open - 要摊开还是收起
+		 * @returns 新清单（顺序保持，不重复）
+		 */
+		function nextOpen(list, tree, open) {
+			const now = (Array.isArray(list) ? list : []).filter((one) => typeof one === 'string' && one !== tree)
+			return open ? now.concat([tree]) : now
+		}
+
+		/**
+		 * 读摊开清单。存坏了就当空的。
+		 * @returns 树编号数组
+		 */
+		function readOpenTrees() {
+			try {
+				const raw = JSON.parse(localStorage.getItem(OPEN_KEY) || '[]')
+				return Array.isArray(raw) ? raw.filter((one) => typeof one === 'string') : []
+			} catch {
+				return []
+			}
+		}
+
+		/**
+		 * 存摊开清单。存不下就算了 —— 只是下次打开页面全部收起而已。
+		 * @param list - 树编号数组
+		 */
+		function writeOpenTrees(list) {
+			try {
+				localStorage.setItem(OPEN_KEY, JSON.stringify(list))
+			} catch {
+				/* 存不下就算了 */
+			}
+		}
+
 		// ===== graph.js ================================================
 
 		/**
@@ -3368,31 +3550,135 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 跟踪「你现在看到的是第几轮」。
-		 * 取聊天区顶部往下 25% 的探针线，找最后一个顶边还在线以上的聊天行。
+		 * 「你现在看到的是第几轮」怎么挑。**纯函数**，好把边界情形离线钉住。
+		 *
+		 * 两条规矩：
+		 *   1. 取聊天区顶部往下 25%（最多 140px）的探针线，找最后一个顶边还在线以上的聊天行；
+		 *      线以上一个都没有就拿第一个露头的。
+		 *   2. **末尾那一轮整个都在屏幕里，就是它。** 不加这条的话，最后一轮只要比探针线以下那段短，
+		 *      就永远轮不到它 —— 滚到底了树上还亮着倒数第二个点（John 报的：线性 1-2-3-4，
+		 *      4 很短，滑到底树上停在 3）。只对末尾那轮开这个口子：中间的轮次滚过去自然会碰到探针线。
+		 *      整段对话都装得下一屏时，这条让它恒指最新一轮 —— 反正没得滚，最新的那轮就是注意力所在；
+		 *      点了树上别的点想看哪轮就钉哪轮（见 pinActiveTurn）。
+		 * @param rows - 聊天行，按 DOM 顺序：`{turn, top, bottom}`
+		 * @param box - 聊天区：`{top, bottom}`
+		 * @returns 轮次号；一行都没有就 undefined
+		 */
+		function pickActiveTurn(rows, box) {
+			const probe = box.top + Math.min(140, (box.bottom - box.top) * 0.25)
+			let best
+			let tail
+			for (const row of rows || []) {
+				if (!row || !Number.isFinite(row.turn)) continue
+				tail = row
+				if (row.bottom < box.top) continue // 整行都滚过去了
+				if (row.top <= probe) best = row.turn // 顶边还在线以上：候选，后面的会盖掉前面的
+				else if (best === undefined) best = row.turn // 线以上一个都没有：拿第一个露头的
+			}
+			if (tail !== undefined && tail.bottom > box.top && tail.top < box.bottom && tail.bottom <= box.bottom + 2) best = tail.turn
+			return best
+		}
+
+		// ===== 点击跳转之后"钉住"那一轮 =====
+		//
+		// 跳转把那一轮的提问滚到屏幕顶上。但末尾几轮都短的时候滚不到那么远（容器到底了），
+		// 于是屏幕上同时露着 3 和 4：按上面第 2 条会判成 4，可你明明点的是 3。
+		// 所以点过之后先**钉住**你点的那轮，直到你自己再滚动：
+		//   · 钉上之后先等滚动停稳（平滑滚动要几百毫秒），记下那一行当时在屏幕上的位置；
+		//   · 之后这一行的位置挪了超过 PIN_SLACK 像素 = 你自己滚了，解钉，回到按位置算。
+		// 记的是**那一行在屏幕上的位置**而不是 scrollTop：不用管到底是哪个元素在滚，
+		// 而且底下正在流式输出、往下长内容时那一行不动，钉着不松 —— 宿主要是自动滚到底了它才松。
+		// 切会话也解钉（rail.js 里 current 一变就叫 unpinActiveTurn）。
+
+		/** 钉住之后，多少毫秒没有 scroll 事件算"停稳了"。 */
+		const PIN_SETTLE_MS = 250
+
+		/** 停稳之后，那一行在屏幕上挪了几像素以上算"用户自己滚了"。 */
+		const PIN_SLACK = 3
+
+		/** 现在钉着的：`{turn, settled}`，`settled` 是停稳时那一行的 top（还没停稳是 undefined）。 */
+		let pinned
+
+		const pinWatchers = new Set()
+
+		/**
+		 * 钉住某一轮。`api.jump` 滚过去之后调。
+		 * @param turn - 轮次号
+		 */
+		function pinActiveTurn(turn) {
+			if (!Number.isFinite(turn)) return
+			pinned = { turn, settled: undefined }
+			for (const fn of pinWatchers) fn()
+		}
+
+		/** 解钉。切会话时调；用户自己滚了由 useActiveTurn 自己解。 */
+		function unpinActiveTurn() {
+			if (pinned === undefined) return
+			pinned = undefined
+			for (const fn of pinWatchers) fn()
+		}
+
+		/**
+		 * 现在钉着哪一轮（自诊断用）。
+		 * @returns 轮次号；没钉就 undefined
+		 */
+		function pinnedTurn() {
+			return pinned === undefined ? undefined : pinned.turn
+		}
+
+		/**
+		 * 停稳了：记下那一行现在的位置。**纯函数**。
+		 * @param pin - 现在钉着的
+		 * @param top - 那一行现在的 top
+		 * @returns 记好位置的钉
+		 */
+		function settlePin(pin, top) {
+			if (pin === undefined) return undefined
+			return { turn: pin.turn, settled: Number.isFinite(top) ? top : undefined }
+		}
+
+		/**
+		 * 那一行挪到了 `top`，钉还钉不钉得住。**纯函数**。
+		 * @param pin - 现在钉着的
+		 * @param top - 那一行现在的 top
+		 * @param slack - 容许挪几像素
+		 * @returns 还钉着就原样返回；该解了就 undefined
+		 */
+		function nudgePin(pin, top, slack) {
+			if (pin === undefined) return undefined
+			if (pin.settled === undefined || !Number.isFinite(top)) return pin // 还没停稳，不算用户动的
+			return Math.abs(top - pin.settled) > slack ? undefined : pin
+		}
+
+		/**
+		 * 跟踪「你现在看到的是第几轮」。挑法见 pickActiveTurn，点击之后的钉住见上面那段。
 		 * scroll 不冒泡，所以在 document 上用捕获阶段监听。
 		 */
 		function useActiveTurn() {
 			const [turn, setTurn] = react.useState(undefined)
 			react.useEffect(() => {
 				let raf = 0
-				const measure = () => {
+				let settleTimer = 0
+				/** 量一遍聊天行：`{turn, top, bottom}`，按 DOM 顺序。量不到容器就 undefined。 */
+				const scan = () => {
 					const el = document.querySelector('[data-conversation-scroll]')
-					if (el === null) return
+					if (el === null) return undefined
 					const box = el.getBoundingClientRect()
-					const probe = box.top + Math.min(140, box.height * 0.25)
-					let best
+					const rows = []
 					for (const row of el.querySelectorAll('[data-chat-turn]')) {
-						const value = Number(row.getAttribute('data-chat-turn'))
-						if (!Number.isFinite(value)) continue
 						const rect = row.getBoundingClientRect()
-						if (rect.bottom < box.top) continue
-						if (rect.top <= probe) best = value
-						else {
-							if (best === undefined) best = value
-							break
-						}
+						rows.push({ turn: Number(row.getAttribute('data-chat-turn')), top: rect.top, bottom: rect.bottom })
 					}
+					return { rows, box: { top: box.top, bottom: box.bottom } }
+				}
+				const measure = () => {
+					const seen = scan()
+					if (seen === undefined) return
+					if (pinned !== undefined) {
+						const row = seen.rows.find((one) => one.turn === pinned.turn)
+						if (row !== undefined) pinned = nudgePin(pinned, row.top, PIN_SLACK)
+					}
+					const best = pinned !== undefined ? pinned.turn : pickActiveTurn(seen.rows, seen.box)
 					// ⚠️ 没量到任何一轮就保留上一次。切会话中间有几帧聊天行还没挂上，
 					//    清成 undefined 的话 anchorNode 会退到“当前路径最深的点”，
 					//    elide 的可视窗口跳到末端再跳回来 —— 又是一闪。
@@ -3403,13 +3689,34 @@ window.__ModuleLoader__.load({
 					cancelAnimationFrame(raf)
 					raf = requestAnimationFrame(measure)
 				}
+				// 钉上之后等滚动停稳再记位置；每来一个 scroll 事件就重新等
+				const settle = () => {
+					clearTimeout(settleTimer)
+					if (pinned === undefined || pinned.settled !== undefined) return
+					settleTimer = setTimeout(() => {
+						const seen = scan()
+						const row = seen === undefined ? undefined : seen.rows.find((one) => one.turn === (pinned || {}).turn)
+						if (pinned !== undefined && pinned.settled === undefined && row !== undefined) pinned = settlePin(pinned, row.top)
+					}, PIN_SETTLE_MS)
+				}
+				const onScroll = () => {
+					settle()
+					schedule()
+				}
+				const onPin = () => {
+					settle()
+					schedule()
+				}
+				pinWatchers.add(onPin)
 				measure()
-				document.addEventListener('scroll', schedule, true)
+				document.addEventListener('scroll', onScroll, true)
 				const offViewport = watchViewport(schedule)
 				const timer = setInterval(measure, 400)
 				return () => {
+					pinWatchers.delete(onPin)
 					cancelAnimationFrame(raf)
-					document.removeEventListener('scroll', schedule, true)
+					clearTimeout(settleTimer)
+					document.removeEventListener('scroll', onScroll, true)
 					offViewport()
 					clearInterval(timer)
 				}
@@ -3555,6 +3862,402 @@ window.__ModuleLoader__.load({
 		function starAnimation(flash, key) {
 			if (flash === null || flash === undefined || flash.key !== key) return 'none'
 			return `${flash.on ? STAR_ANIM.on : STAR_ANIM.off} ${STAR_ANIM_MS}ms cubic-bezier(.34,1.4,.64,1)`
+		}
+
+		// ===== sidebar.js ==============================================
+
+		/**
+		 * 把左侧会话列表按对话树折起来：一棵树一行，箭头一点摊开分支。
+		 *
+		 * 【为什么是往宿主 DOM 上贴记号】宿主的会话列表整块是 `sidebar.workspaces` 这一个
+		 * slot（kind: single，ui-workspace 已经占了），**单行没有 slot，行上也没有
+		 * `data-session-*`**。要么整块重画（搜索、拖拽排序、重命名、归档、工作区菜单……
+		 * 全得自己再写一遍），要么在宿主画好的行上动手脚。选后者，而且**只动三样**：
+		 *   · 容器改成 flex 列 + 每行一个 CSS `order` —— 分支行挪到树头后面，**DOM 一个字节不动**
+		 *     （挪 DOM 会让 React 下次 insertBefore 找不到参照物直接抛错）；
+		 *   · 行上贴 `data-dsht-*` 属性（React 只管它自己设过的属性，不会清掉）；
+		 *   · 树头行里塞一颗 `<button>` 当箭头（插在第一个位置，React 增删它自己的孩子
+		 *     用的是"插到某个已知兄弟前面"，多一个外人不碍事 —— dsh-claude 的撤回按钮同款路子）。
+		 *
+		 * 【行是哪条会话】从 React fiber 往上找到 SessionNodeItem 的 props（`node.id`）。
+		 * 这是唯一一处碰 React 内部结构的地方，宿主改了就**认不出来、整个不折**（fail open），
+		 * 不会画错。
+		 *
+		 * 【什么时候重贴】宿主每次重画侧栏（切会话、来消息、改名）都可能把行换掉，
+		 * 所以挂一个 MutationObserver，一帧最多贴一次；贴完 `takeRecords()` 把自己造成的
+		 * 变动吞掉，免得自己触发自己。
+		 *
+		 * 算座位的纯函数在 fold.js，这里只管贴。
+		 */
+
+		/** 容器上的记号：`group`（工作区分组视图，行间距 2px）/ `flat`（"放在一个列表里"视图）。 */
+		const FOLD_ATTR = 'data-dsht-fold'
+
+		/** 箭头按钮的类名。 */
+		const FOLD_BUTTON = 'dsht-fold'
+
+		/** 行上会贴的全部属性。清记号时按这张表扫，别漏。 */
+		const ROW_ATTRS = [
+			'data-dsht-role', // head / branch
+			'data-dsht-open', // 树头：1 摊开 / 0 收起
+			'data-dsht-count', // 树头：底下几条分支（收起时画成数字角标）
+			'data-dsht-slot', // 树头：这一行有没有宿主那个 16px 的状态槽（没有的话箭头要自己腾地方）
+			'data-dsht-dot', // 树头：状态槽里有没有东西（有的话箭头平时藏着，悬停才盖上去）
+			'data-dsht-holds', // 树头：收起着、而当前会话就在里面
+			'data-dsht-busy', // 树头：收起着、而里面有分支在跑（running）或刚跑完（completed）
+			'data-dsht-hidden', // 分支：收起时藏掉
+			'data-dsht-last', // 分支：最后一条（连线画成 └ 而不是 ├）
+		]
+
+		/** 只有树头才有的那几项，分支行上要清掉。 */
+		const HEAD_ATTRS = ROW_ATTRS.filter((name) => !['data-dsht-role', 'data-dsht-hidden', 'data-dsht-last'].includes(name))
+
+		/** 折角箭头。收起时朝右，摊开转 90°。 */
+		const CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+		/**
+		 * 样式表。颜色全是宿主的 `--dsw-alias-*` 变量，换主题跟着变。
+		 *
+		 * 几处要解释的：
+		 *   · 容器 `>*{flex:none;margin-top:0}`：宿主分组视图靠 `>*+*{margin-top:2px}` 隔行，
+		 *     换成 `order` 之后"前一个兄弟"是 DOM 顺序而不是视觉顺序，改用 `gap` 才对得齐；
+		 *   · 树头的数字角标是 `::after`，靠 `order` 挤到时间之前：宿主那几个 span 都是 order 0，
+		 *     把最后两个（时间、"…"菜单）推到 1，角标（0，源码顺序在最后）就落在标题之后；
+		 *   · 分支行的 ├ / └ 用 `::before` / `::after` 画。宿主拖拽时的落点线也用这两个伪元素，
+		 *     但它的选择器更具体（`.sessionRow.dropBefore:before`），拖的时候它赢，不冲突；
+		 *   · 树头没有状态槽（"一个列表"视图里没在跑的行）就补 padding 给箭头腾地方。
+		 */
+		const STYLE =
+			`[${FOLD_ATTR}]{display:flex;flex-direction:column}` +
+			`[${FOLD_ATTR}="group"]{gap:2px}` +
+			`[${FOLD_ATTR}]>*{flex:none;margin-top:0!important}` +
+			'[data-dsht-role]{position:relative}' +
+			'[data-dsht-role="head"]:not([data-dsht-slot="1"]){padding-left:26px}' +
+			'[data-dsht-role="branch"]{padding-left:26px}' +
+			'[data-dsht-role="branch"]::before{content:"";position:absolute;left:15px;top:-2px;bottom:0;width:1px;background:var(--dsw-alias-border-l4);pointer-events:none}' +
+			'[data-dsht-role="branch"][data-dsht-last="1"]::before{bottom:50%}' +
+			'[data-dsht-role="branch"]::after{content:"";position:absolute;left:15px;top:50%;width:7px;height:1px;background:var(--dsw-alias-border-l4);pointer-events:none}' +
+			'[data-dsht-hidden="1"]{display:none!important}' +
+			'[data-dsht-role="head"]>span:nth-last-of-type(-n+2){order:1}' +
+			'[data-dsht-role="head"][data-dsht-open="0"]::after{content:attr(data-dsht-count);order:0;flex:none;margin:0 6px 0 4px;min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:9px;font-size:11px;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover)}' +
+			'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="running"]::after{color:#fff;background:var(--dsw-alias-state-business-primary)}' +
+			'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="completed"]::after{color:#fff;background:var(--dsw-alias-state-success-primary,#3fb950)}' +
+			'[data-dsht-role="head"][data-dsht-holds="1"]:not(:hover){background:color-mix(in srgb,var(--dsw-alias-interactive-bg-hover) 55%,transparent)}' +
+			`.${FOLD_BUTTON}{position:absolute;left:6px;top:50%;width:20px;height:20px;margin-top:-10px;padding:0;border:0;border-radius:6px;background:none;color:var(--dsw-alias-label-tertiary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1}` +
+			`.${FOLD_BUTTON}:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}` +
+			`.${FOLD_BUTTON} svg{display:block;transition:transform .15s ease}` +
+			`[data-dsht-open="1"]>.${FOLD_BUTTON} svg{transform:rotate(90deg)}` +
+			`[data-dsht-dot="1"]>.${FOLD_BUTTON}{opacity:0}` +
+			`[data-dsht-dot="1"]:hover>.${FOLD_BUTTON}{opacity:1}` +
+			'[data-dsht-dot="1"]:hover>span[class*="_slot"]>*{visibility:hidden}'
+
+		/**
+		 * 把样式表塞进页面。整页只要一份。
+		 * @returns 卸载函数
+		 */
+		function installSidebarStyle() {
+			try {
+				if (document.querySelector('style[data-dsh-tree="sidebar-fold"]') !== null) return () => {}
+				const tag = document.createElement('style')
+				tag.dataset.dshTree = 'sidebar-fold'
+				tag.textContent = STYLE
+				document.head.appendChild(tag)
+				return () => tag.remove()
+			} catch {
+				return () => {}
+			}
+		}
+
+		/** 行 → 会话 id 的缓存。同一个 DOM 元素一辈子对应同一条会话（宿主按 id 当 key）。 */
+		const idCache = new WeakMap()
+
+		/**
+		 * 这一行是哪条会话。
+		 *
+		 * 从元素上的 `__reactFiber$…` 往上爬，找到 props 里带 `node.id` 和 `currentId` 的那个
+		 * （SessionNodeItem）。搜索结果行的 props 是 `result`，工作区标题行是 `group`，都认不出来 ——
+		 * 正好，那两种行本来就不该折。
+		 * @param el - `[role="treeitem"]` 那个元素
+		 * @returns 会话 id；认不出来就 undefined
+		 */
+		function sessionIdOf(el) {
+			if (idCache.has(el)) return idCache.get(el)
+			let found
+			try {
+				const key = Object.keys(el).find((name) => name.startsWith('__reactFiber$'))
+				let fiber = key === undefined ? undefined : el[key]
+				for (let hop = 0; fiber && hop < 16; hop += 1, fiber = fiber.return) {
+					const props = fiber.memoizedProps
+					if (props && props.node && typeof props.node.id === 'string' && 'currentId' in props) {
+						found = props.node.id
+						break
+					}
+				}
+			} catch {
+				found = undefined
+			}
+			idCache.set(el, found)
+			return found
+		}
+
+		/**
+		 * 设 / 删一个属性，值没变就不碰（少制造无谓的 DOM 变动）。
+		 * @param el - 元素
+		 * @param name - 属性名
+		 * @param value - 新值；null / undefined = 删掉
+		 */
+		function put(el, name, value) {
+			if (value === null || value === undefined) {
+				if (el.hasAttribute(name)) el.removeAttribute(name)
+			} else if (el.getAttribute(name) !== value) el.setAttribute(name, value)
+		}
+
+		/** 摘掉一行上的全部记号（座位号也清）。 */
+		function unmarkRow(el) {
+			for (const name of ROW_ATTRS) put(el, name, null)
+			if (el.style && el.style.order !== '') el.style.order = ''
+			const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
+			if (button !== null) button.remove()
+		}
+
+		/** 摘掉一个容器和它所有孩子上的记号。 */
+		function unmarkContainer(el) {
+			put(el, FOLD_ATTR, null)
+			for (const child of el.children) unmarkRow(child)
+		}
+
+		/** 把页面上所有记号全摘掉。停用 / 关掉设置时用。 */
+		function clearFold() {
+			if (typeof document === 'undefined') return
+			for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) unmarkContainer(el)
+			for (const el of document.querySelectorAll('[data-dsht-role]')) unmarkRow(el)
+			for (const el of document.querySelectorAll(`.${FOLD_BUTTON}`)) el.remove()
+		}
+
+		/**
+		 * 给树头行装上箭头（已经有就只更新状态）。
+		 *
+		 * 点击要 `stopPropagation`：行本身的 onClick 是打开会话，React 17+ 把监听挂在根上，
+		 * 原生事件在这儿拦住它就收不到。
+		 * @param row - 树头那一行
+		 * @param tree - 树的编号
+		 * @param count - 底下几条分支
+		 * @param open - 现在是摊开的吗
+		 * @param onToggle - 点了之后叫谁
+		 */
+		function ensureButton(row, tree, count, open, onToggle) {
+			let button = row.querySelector(`:scope > .${FOLD_BUTTON}`)
+			if (button === null) {
+				button = document.createElement('button')
+				button.type = 'button'
+				button.className = FOLD_BUTTON
+				button.innerHTML = CHEVRON
+				button.addEventListener('click', (event) => {
+					event.preventDefault()
+					event.stopPropagation()
+					const fire = button.__dshtToggle
+					if (typeof fire === 'function') fire(button.dataset.tree)
+				})
+				row.insertBefore(button, row.firstChild)
+			}
+			button.__dshtToggle = onToggle
+			button.dataset.tree = tree
+			const label = `${open ? '收起' : '展开'} ${count} 条分支`
+			put(button, 'aria-label', label)
+			put(button, 'title', label)
+			put(button, 'aria-expanded', open ? 'true' : 'false')
+		}
+
+		/**
+		 * 收起的树里有没有在跑 / 刚跑完的分支。分支行藏着，这个状态得挪到树头上来。
+		 * @param branches - 分支的会话 id
+		 * @param byId - 会话列表快照的 byId
+		 * @returns 'running' / 'completed' / null
+		 */
+		function busyOf(branches, byId) {
+			let done = false
+			for (const id of branches) {
+				const item = byId[id]
+				if (item === undefined) continue
+				if (item.running === true) return 'running'
+				if (item.completed === true) done = true
+			}
+			return done ? 'completed' : null
+		}
+
+		/**
+		 * 贴一遍。幂等：同样的输入贴两次，DOM 不再变。
+		 * @param heads - `foldHeads` 的结果
+		 * @param open - 摊开着的树（Set）
+		 * @param byId - 会话列表快照的 byId
+		 * @param current - 当前会话 id
+		 * @param onToggle - 箭头点了叫谁
+		 * @returns 折了几棵树（自诊断 / 测试用）
+		 */
+		function applyFold(heads, open, byId, current, onToggle) {
+			if (typeof document === 'undefined') return 0
+			const parents = []
+			for (const row of document.querySelectorAll('[role="treeitem"]')) {
+				const parent = row.parentElement
+				if (parent !== null && !parents.includes(parent)) parents.push(parent)
+			}
+			const kept = new Set()
+			let folded = 0
+			for (const parent of parents) {
+				const children = Array.from(parent.children)
+				const ids = children.map((el) => (el.getAttribute('role') === 'treeitem' ? sessionIdOf(el) : undefined))
+				const plan = foldRows(ids, heads)
+				if (!plan.some((row) => row.role === 'head')) {
+					unmarkContainer(parent)
+					continue
+				}
+				kept.add(parent)
+				put(parent, FOLD_ATTR, parent.getAttribute('role') === 'tree' ? 'flat' : 'group')
+				const branchesOf = new Map()
+				for (const row of plan) {
+					if (row.role !== 'branch') continue
+					const list = branchesOf.get(row.tree) || []
+					list.push(row.id)
+					branchesOf.set(row.tree, list)
+				}
+				for (const row of plan) {
+					const el = children[row.index]
+					const order = String(row.order)
+					if (el.style && el.style.order !== order) el.style.order = order
+					if (row.role === 'head') {
+						const isOpen = open.has(row.tree)
+						const branches = branchesOf.get(row.tree) || []
+						const slot = el.querySelector(':scope > span[class*="_slot"]')
+						put(el, 'data-dsht-role', 'head')
+						put(el, 'data-dsht-open', isOpen ? '1' : '0')
+						put(el, 'data-dsht-count', String(row.count))
+						put(el, 'data-dsht-slot', slot === null ? null : '1')
+						put(el, 'data-dsht-dot', slot !== null && slot.childElementCount > 0 ? '1' : null)
+						put(el, 'data-dsht-holds', !isOpen && branches.includes(current) ? '1' : null)
+						put(el, 'data-dsht-busy', isOpen ? null : busyOf(branches, byId))
+						put(el, 'data-dsht-hidden', null)
+						put(el, 'data-dsht-last', null)
+						ensureButton(el, row.tree, row.count, isOpen, onToggle)
+						folded += 1
+					} else if (row.role === 'branch') {
+						const isOpen = open.has(row.tree)
+						const branches = branchesOf.get(row.tree) || []
+						put(el, 'data-dsht-role', 'branch')
+						put(el, 'data-dsht-hidden', isOpen ? null : '1')
+						put(el, 'data-dsht-last', branches[branches.length - 1] === row.id ? '1' : null)
+						for (const name of HEAD_ATTRS) put(el, name, null)
+						const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
+						if (button !== null) button.remove()
+					} else {
+						// 没折的行也要占座（order 已经设了），别的记号全清
+						for (const name of ROW_ATTRS) put(el, name, null)
+						const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
+						if (button !== null) button.remove()
+					}
+				}
+			}
+			for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) if (!kept.has(el)) unmarkContainer(el)
+			return folded
+		}
+
+		/**
+		 * 挂在 Rail 上的钩子：算好该折成什么样，盯着侧栏贴上去。
+		 *
+		 * Rail 是常驻组件（shell.overlay），所以侧栏折叠也跟着常驻 —— 不在会话界面时
+		 * 左边的列表照样在，照样要折。
+		 * @param listState - 会话列表快照（`ctx.sessions.list`）
+		 * @param shape - Rail 手里的 `shape.json`（改树形的回显也在里面）；没有就自己拉
+		 * @param enabled - 设置里开着吗
+		 */
+		function useSidebarFold(listState, shape, enabled) {
+			const [own, setOwn] = react.useState(undefined)
+			const [open, setOpen] = react.useState(readOpenTrees)
+			const live = shape || own
+			// 还没开任何会话时 Rail 手里没有 outlines，也就没有 shape —— 自己拉一次全局那份
+			const missing = enabled && shape === undefined && own === undefined
+			react.useEffect(() => {
+				if (!missing) return undefined
+				let alive = true
+				getJson('/shape')
+					.then((body) => {
+						if (alive) setOwn(body && typeof body === 'object' ? body : {})
+					})
+					.catch((error) => {
+						warn('拉树形失败，侧栏先只按血缘折', error)
+						if (alive) setOwn({})
+					})
+				return () => {
+					alive = false
+				}
+			}, [missing])
+
+			const sessions = react.useMemo(
+				() => (listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined) : []),
+				[listState],
+			)
+			const heads = react.useMemo(() => foldHeads(sessions, live || {}), [sessions, live])
+			const current = listState ? listState.current : undefined
+			const byId = (listState && listState.byId) || {}
+
+			// 切到一条折在树里的分支 → 把那棵树摊开，不然你正看着的会话在左边找不到。
+			// 只在**切会话那一下**做一次，之后想收照样能收（收了树头会带一层底色提示"当前在里面"）。
+			const seen = react.useRef(undefined)
+			react.useEffect(() => {
+				if (!enabled || typeof current !== 'string' || seen.current === current) return
+				const tree = heads.get(current)
+				if (tree === undefined) return // 列表 / 形状还没到，下一次再看
+				seen.current = current
+				if (tree === current || open.includes(tree)) return
+				const next = nextOpen(open, tree, true)
+				writeOpenTrees(next)
+				setOpen(next)
+			}, [enabled, current, heads, open])
+
+			const toggle = react.useCallback((tree) => {
+				setOpen((now) => {
+					const next = nextOpen(now, tree, !now.includes(tree))
+					writeOpenTrees(next)
+					return next
+				})
+			}, [])
+
+			react.useEffect(() => {
+				if (!enabled) {
+					clearFold()
+					return undefined
+				}
+				const off = installSidebarStyle()
+				return () => {
+					off()
+					clearFold()
+				}
+			}, [enabled])
+
+			react.useEffect(() => {
+				if (!enabled || typeof document === 'undefined' || typeof MutationObserver === 'undefined') return undefined
+				const openSet = new Set(open)
+				let frame = 0
+				let observer
+				const repaint = () => {
+					frame = 0
+					try {
+						applyFold(heads, openSet, byId, current, toggle)
+					} catch (error) {
+						warn('侧栏折叠没贴上', error)
+					}
+					// 自己贴的那些变动别再触发自己
+					if (observer !== undefined) observer.takeRecords()
+				}
+				observer = new MutationObserver(() => {
+					if (frame === 0) frame = requestAnimationFrame(repaint)
+				})
+				observer.observe(document.body, { childList: true, subtree: true })
+				repaint()
+				return () => {
+					if (frame !== 0) cancelAnimationFrame(frame)
+					observer.disconnect()
+				}
+			}, [enabled, heads, open, byId, current, toggle])
 		}
 
 		// ===== settings-model.js =======================================
@@ -3709,6 +4412,9 @@ window.__ModuleLoader__.load({
 			})),
 			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。' },
+			// 左侧会话列表按对话树折叠（sidebar.js）。开关项，默认开。
+			{ field: 'sidebarFold', kind: 'switch', label: '侧栏按对话折叠', fallback: true, accept: (value) => typeof value === 'boolean',
+				hint: '左侧会话列表里，一棵树只占一行，分支收在树头底下，点箭头摊开。关掉就回到宿主原样，每条分支各占一行。' },
 			// 外观那八项是**算出来的**：每个角色两项（颜色 + 形状），字段名从 ROLES 查。
 			// 以前这八行是手写的，于是同一个字段名在 ROLES / FIELDS / ROWS 里各写一遍，
 			// 加第五个角色要改三处还不报错 —— 漏掉哪一处都是"设置里改了没反应"。
@@ -4717,6 +5423,16 @@ window.__ModuleLoader__.load({
 			tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
 			reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
 			range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+			// 开关：一条 34×20 的轨道，圆钮左右滑。开着用品牌色，关着用宿主的"压暗"灰。
+			toggle: (checked, on) => ({
+				flex: 'none', width: '34px', height: '20px', padding: '2px', boxSizing: 'border-box', border: 0, borderRadius: '10px',
+				display: 'flex', alignItems: 'center', cursor: on ? 'pointer' : 'default', transition: 'background .16s',
+				background: checked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-dimmed)', opacity: on ? 1 : 0.6,
+			}),
+			knob: (checked) => ({
+				display: 'block', width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
+				boxShadow: '0 1px 2px rgba(0,0,0,.25)', transition: 'transform .16s', transform: checked ? 'translateX(14px)' : 'translateX(0)',
+			}),
 			// 显示范围那一排：两种量法各占一半，左右并排。**二选一**要一眼看得出来 ——
 			// 选中的那半有亮边框，没选中的那半整体压暗；滑杆两边都能拖，拖谁就选谁。
 			two: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
@@ -4930,6 +5646,27 @@ window.__ModuleLoader__.load({
 				])
 			}
 
+			/** 开关项：标题一行，开关就在这一行右边（没有读数，开关本身就是读数）。 */
+			const flag = (spec) => {
+				const now = valueOf(spec.field) === true
+				const changed = user[spec.field] === true
+				return h('div', { key: spec.field, style: S.field }, [
+					h('div', { key: 'hd', style: S.fieldHead }, [
+						h('label', { key: 'l', style: S.label }, spec.label),
+						changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
+						changed
+							? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => clear([spec.field]) }, '重置')
+							: null,
+						h('button', {
+							key: 's', type: 'button', role: 'switch', 'aria-checked': now, 'aria-label': spec.label,
+							disabled: !on, style: S.toggle(now, on),
+							onClick: () => put(spec.field, !now),
+						}, h('span', { style: S.knob(now) })),
+					]),
+					spec.hint === '' ? null : h('p', { key: 'p', style: S.hint }, spec.hint),
+				])
+			}
+
 			/**
 			 * 形状选择器：按钮里**画出形状本身**，不写"圆形""菱形"这种字，
 			 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
@@ -5048,6 +5785,7 @@ window.__ModuleLoader__.load({
 					? h('div', { key: 'b', style: S.body }, [
 							visible(),
 							...FIELDS.filter((spec) => spec.kind === 'range' && spec.group !== 'visible').map(row),
+							...FIELDS.filter((spec) => spec.kind === 'switch').map(flag),
 							...ROWS.map(pair),
 							failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 							on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),
@@ -5087,6 +5825,9 @@ window.__ModuleLoader__.load({
 
 			const current = listState && listState.current
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
+			// 点击跳转钉住的那一轮只在本会话里有意义：换了会话就解钉。
+			// （jump 自己也会换会话：它是 open 之后隔了 loadThrough + 60ms 才钉，这条效果早就跑完了，不会把它解掉。）
+			react.useEffect(() => unpinActiveTurn(), [current])
 			const [nonce, setNonce] = react.useState(0)
 			const [echo, setEcho] = react.useState(undefined)
 			const outlines = useOutlines(cwd, listState, nonce)
@@ -5214,6 +5955,11 @@ window.__ModuleLoader__.load({
 			}, [canHover])
 			// ⏳ 的说明在 title 里，而 title 在触摸设备上永远不会出现 —— 戳一下摊开。
 			const [tip, setTip] = react.useState(false)
+
+			// 左侧会话列表按对话树折叠（sidebar.js）。放在下面那个早退**之前**：
+			// 不在会话界面（设置页 / 全局面板）时左边的列表照样在，照样要折。
+			// shape 用 Rail 手里的（改树形的回显也在里面）；还没开任何会话时它是 undefined，钩子自己拉。
+			useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false)
 
 			// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 			// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
@@ -5561,6 +6307,9 @@ window.__ModuleLoader__.load({
 			cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
+			// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
+			foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY,
+			applyFold, clearFold, sessionIdOf, FOLD_ATTR, FOLD_BUTTON,
 			// 画
 			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
 			// 形状怎么算出来的：面积、按面积配齐的放大倍数、正 n 边形、十字
@@ -5590,6 +6339,8 @@ window.__ModuleLoader__.load({
 			tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
 			// 撤回的重拉节奏
 			isRewindPending, rewindRetryDelay,
+			// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
+			pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
 			// 设置
 			settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
 			VISIBLE, isMode, visibleRange, stepsAway, layersAway,
@@ -5647,6 +6398,9 @@ window.__ModuleLoader__.load({
 						await new Promise((resolve) => setTimeout(resolve, 60))
 						const row = document.querySelector(`[data-chat-turn="${turn}"]`)
 						if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'start', behavior: 'smooth' })
+						// 末尾几轮都短时滚不到那么远（容器到底了），按位置算会判成更靠后的那轮 ——
+						// 你点的是哪轮树上就亮哪轮，直到你自己再滚动（见 hooks.js 的钉住那段）。
+						pinActiveTurn(turn)
 					}),
 
 				/**

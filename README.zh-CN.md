@@ -40,6 +40,12 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-chat-tree
 
 <br clear="right">
 
+## 左边的列表也跟着折
+
+左侧会话列表里，一棵树只占一行：分支收在树头底下，行首的箭头一点摊开。收起时标题右边
+有个数字写着底下几条，里面有分支在跑它就变蓝。切到某条分支，它所在的树会自动摊开。
+不想要的话，设置里关掉「侧栏按对话折叠」就回到原样。
+
 ## 每个节点都有一张卡片
 
 <img src="https://raw.githubusercontent.com/JRJRJPRO/dsh-chat-tree/main/docs/card.png" alt="节点详情卡" width="470" align="right">
@@ -79,6 +85,8 @@ dsh plugin --profile web add github:JRJRJPRO/dsh-chat-tree
 鼠标滑上去就回来。
 
 **节点大小**把点、连线、间距一起缩放，50%–250%。
+
+**侧栏按对话折叠**关掉就回到宿主原样，每条分支各占一行。
 
 **配色**一行一种节点，左边颜色右边形状。取色盘挑，或者直接填 `#FFD43B` 这样的六位色值。
 设什么画什么，明暗主题下一样；按「重置」交还默认。

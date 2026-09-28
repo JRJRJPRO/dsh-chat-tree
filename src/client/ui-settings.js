@@ -40,6 +40,16 @@ export const S = {
 	tag: { border: '.5px solid var(--dsw-alias-border-l4)', borderRadius: '6px', padding: '0 6px', fontSize: '11px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
 	reset: { font: 'inherit', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', background: 'none', border: 'none', padding: 0, fontSize: '12px', lineHeight: 1.5 },
 	range: (on) => ({ width: '100%', height: '34px', accentColor: 'var(--dsw-alias-brand-primary)', cursor: on ? 'pointer' : 'default' }),
+	// 开关：一条 34×20 的轨道，圆钮左右滑。开着用品牌色，关着用宿主的"压暗"灰。
+	toggle: (checked, on) => ({
+		flex: 'none', width: '34px', height: '20px', padding: '2px', boxSizing: 'border-box', border: 0, borderRadius: '10px',
+		display: 'flex', alignItems: 'center', cursor: on ? 'pointer' : 'default', transition: 'background .16s',
+		background: checked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-dimmed)', opacity: on ? 1 : 0.6,
+	}),
+	knob: (checked) => ({
+		display: 'block', width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
+		boxShadow: '0 1px 2px rgba(0,0,0,.25)', transition: 'transform .16s', transform: checked ? 'translateX(14px)' : 'translateX(0)',
+	}),
 	// 显示范围那一排：两种量法各占一半，左右并排。**二选一**要一眼看得出来 ——
 	// 选中的那半有亮边框，没选中的那半整体压暗；滑杆两边都能拖，拖谁就选谁。
 	two: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
@@ -253,6 +263,27 @@ export function SettingsCard(props) {
 		])
 	}
 
+	/** 开关项：标题一行，开关就在这一行右边（没有读数，开关本身就是读数）。 */
+	const flag = (spec) => {
+		const now = valueOf(spec.field) === true
+		const changed = user[spec.field] === true
+		return h('div', { key: spec.field, style: S.field }, [
+			h('div', { key: 'hd', style: S.fieldHead }, [
+				h('label', { key: 'l', style: S.label }, spec.label),
+				changed ? h('span', { key: 'g', style: S.tag }, '已修改') : null,
+				changed
+					? h('button', { key: 'r', type: 'button', style: S.reset, disabled: !on, onClick: () => clear([spec.field]) }, '重置')
+					: null,
+				h('button', {
+					key: 's', type: 'button', role: 'switch', 'aria-checked': now, 'aria-label': spec.label,
+					disabled: !on, style: S.toggle(now, on),
+					onClick: () => put(spec.field, !now),
+				}, h('span', { style: S.knob(now) })),
+			]),
+			spec.hint === '' ? null : h('p', { key: 'p', style: S.hint }, spec.hint),
+		])
+	}
+
 	/**
 	 * 形状选择器：按钮里**画出形状本身**，不写"圆形""菱形"这种字，
 	 * 而且跟着这一行选的颜色走 —— 按钮上看到的就是节点将来的样子。
@@ -371,6 +402,7 @@ export function SettingsCard(props) {
 			? h('div', { key: 'b', style: S.body }, [
 					visible(),
 					...FIELDS.filter((spec) => spec.kind === 'range' && spec.group !== 'visible').map(row),
+					...FIELDS.filter((spec) => spec.kind === 'switch').map(flag),
 					...ROWS.map(pair),
 					failed === '' ? null : h('p', { key: 'e', style: S.note, role: 'status' }, `保存失败：${failed}`),
 					on ? null : h('p', { key: 'w', style: S.note, role: 'status' }, `设置暂时不可写（状态 ${state.status || '未连接'}，模式 ${state.mode || '未知'}）。树按默认值画。`),

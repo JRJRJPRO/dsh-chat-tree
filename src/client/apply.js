@@ -6,6 +6,7 @@
  */
 import { SETTINGS_NS } from './const.js'
 import { warn, postJson } from './net.js'
+import { pinActiveTurn } from './hooks.js'
 import { settingsStore } from './settings-model.js'
 import { SettingsCard } from './ui-settings.js'
 import { Rail } from './rail.js'
@@ -53,6 +54,9 @@ export function apply(ctx) {
 				await new Promise((resolve) => setTimeout(resolve, 60))
 				const row = document.querySelector(`[data-chat-turn="${turn}"]`)
 				if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'start', behavior: 'smooth' })
+				// 末尾几轮都短时滚不到那么远（容器到底了），按位置算会判成更靠后的那轮 ——
+				// 你点的是哪轮树上就亮哪轮，直到你自己再滚动（见 hooks.js 的钉住那段）。
+				pinActiveTurn(turn)
 			}),
 
 		/**

@@ -194,31 +194,135 @@ export function useChatBox() {
 }
 
 /**
- * 跟踪「你现在看到的是第几轮」。
- * 取聊天区顶部往下 25% 的探针线，找最后一个顶边还在线以上的聊天行。
+ * 「你现在看到的是第几轮」怎么挑。**纯函数**，好把边界情形离线钉住。
+ *
+ * 两条规矩：
+ *   1. 取聊天区顶部往下 25%（最多 140px）的探针线，找最后一个顶边还在线以上的聊天行；
+ *      线以上一个都没有就拿第一个露头的。
+ *   2. **末尾那一轮整个都在屏幕里，就是它。** 不加这条的话，最后一轮只要比探针线以下那段短，
+ *      就永远轮不到它 —— 滚到底了树上还亮着倒数第二个点（John 报的：线性 1-2-3-4，
+ *      4 很短，滑到底树上停在 3）。只对末尾那轮开这个口子：中间的轮次滚过去自然会碰到探针线。
+ *      整段对话都装得下一屏时，这条让它恒指最新一轮 —— 反正没得滚，最新的那轮就是注意力所在；
+ *      点了树上别的点想看哪轮就钉哪轮（见 pinActiveTurn）。
+ * @param rows - 聊天行，按 DOM 顺序：`{turn, top, bottom}`
+ * @param box - 聊天区：`{top, bottom}`
+ * @returns 轮次号；一行都没有就 undefined
+ */
+export function pickActiveTurn(rows, box) {
+	const probe = box.top + Math.min(140, (box.bottom - box.top) * 0.25)
+	let best
+	let tail
+	for (const row of rows || []) {
+		if (!row || !Number.isFinite(row.turn)) continue
+		tail = row
+		if (row.bottom < box.top) continue // 整行都滚过去了
+		if (row.top <= probe) best = row.turn // 顶边还在线以上：候选，后面的会盖掉前面的
+		else if (best === undefined) best = row.turn // 线以上一个都没有：拿第一个露头的
+	}
+	if (tail !== undefined && tail.bottom > box.top && tail.top < box.bottom && tail.bottom <= box.bottom + 2) best = tail.turn
+	return best
+}
+
+// ===== 点击跳转之后"钉住"那一轮 =====
+//
+// 跳转把那一轮的提问滚到屏幕顶上。但末尾几轮都短的时候滚不到那么远（容器到底了），
+// 于是屏幕上同时露着 3 和 4：按上面第 2 条会判成 4，可你明明点的是 3。
+// 所以点过之后先**钉住**你点的那轮，直到你自己再滚动：
+//   · 钉上之后先等滚动停稳（平滑滚动要几百毫秒），记下那一行当时在屏幕上的位置；
+//   · 之后这一行的位置挪了超过 PIN_SLACK 像素 = 你自己滚了，解钉，回到按位置算。
+// 记的是**那一行在屏幕上的位置**而不是 scrollTop：不用管到底是哪个元素在滚，
+// 而且底下正在流式输出、往下长内容时那一行不动，钉着不松 —— 宿主要是自动滚到底了它才松。
+// 切会话也解钉（rail.js 里 current 一变就叫 unpinActiveTurn）。
+
+/** 钉住之后，多少毫秒没有 scroll 事件算"停稳了"。 */
+export const PIN_SETTLE_MS = 250
+
+/** 停稳之后，那一行在屏幕上挪了几像素以上算"用户自己滚了"。 */
+export const PIN_SLACK = 3
+
+/** 现在钉着的：`{turn, settled}`，`settled` 是停稳时那一行的 top（还没停稳是 undefined）。 */
+let pinned
+
+const pinWatchers = new Set()
+
+/**
+ * 钉住某一轮。`api.jump` 滚过去之后调。
+ * @param turn - 轮次号
+ */
+export function pinActiveTurn(turn) {
+	if (!Number.isFinite(turn)) return
+	pinned = { turn, settled: undefined }
+	for (const fn of pinWatchers) fn()
+}
+
+/** 解钉。切会话时调；用户自己滚了由 useActiveTurn 自己解。 */
+export function unpinActiveTurn() {
+	if (pinned === undefined) return
+	pinned = undefined
+	for (const fn of pinWatchers) fn()
+}
+
+/**
+ * 现在钉着哪一轮（自诊断用）。
+ * @returns 轮次号；没钉就 undefined
+ */
+export function pinnedTurn() {
+	return pinned === undefined ? undefined : pinned.turn
+}
+
+/**
+ * 停稳了：记下那一行现在的位置。**纯函数**。
+ * @param pin - 现在钉着的
+ * @param top - 那一行现在的 top
+ * @returns 记好位置的钉
+ */
+export function settlePin(pin, top) {
+	if (pin === undefined) return undefined
+	return { turn: pin.turn, settled: Number.isFinite(top) ? top : undefined }
+}
+
+/**
+ * 那一行挪到了 `top`，钉还钉不钉得住。**纯函数**。
+ * @param pin - 现在钉着的
+ * @param top - 那一行现在的 top
+ * @param slack - 容许挪几像素
+ * @returns 还钉着就原样返回；该解了就 undefined
+ */
+export function nudgePin(pin, top, slack) {
+	if (pin === undefined) return undefined
+	if (pin.settled === undefined || !Number.isFinite(top)) return pin // 还没停稳，不算用户动的
+	return Math.abs(top - pin.settled) > slack ? undefined : pin
+}
+
+/**
+ * 跟踪「你现在看到的是第几轮」。挑法见 pickActiveTurn，点击之后的钉住见上面那段。
  * scroll 不冒泡，所以在 document 上用捕获阶段监听。
  */
 export function useActiveTurn() {
 	const [turn, setTurn] = react.useState(undefined)
 	react.useEffect(() => {
 		let raf = 0
-		const measure = () => {
+		let settleTimer = 0
+		/** 量一遍聊天行：`{turn, top, bottom}`，按 DOM 顺序。量不到容器就 undefined。 */
+		const scan = () => {
 			const el = document.querySelector('[data-conversation-scroll]')
-			if (el === null) return
+			if (el === null) return undefined
 			const box = el.getBoundingClientRect()
-			const probe = box.top + Math.min(140, box.height * 0.25)
-			let best
+			const rows = []
 			for (const row of el.querySelectorAll('[data-chat-turn]')) {
-				const value = Number(row.getAttribute('data-chat-turn'))
-				if (!Number.isFinite(value)) continue
 				const rect = row.getBoundingClientRect()
-				if (rect.bottom < box.top) continue
-				if (rect.top <= probe) best = value
-				else {
-					if (best === undefined) best = value
-					break
-				}
+				rows.push({ turn: Number(row.getAttribute('data-chat-turn')), top: rect.top, bottom: rect.bottom })
 			}
+			return { rows, box: { top: box.top, bottom: box.bottom } }
+		}
+		const measure = () => {
+			const seen = scan()
+			if (seen === undefined) return
+			if (pinned !== undefined) {
+				const row = seen.rows.find((one) => one.turn === pinned.turn)
+				if (row !== undefined) pinned = nudgePin(pinned, row.top, PIN_SLACK)
+			}
+			const best = pinned !== undefined ? pinned.turn : pickActiveTurn(seen.rows, seen.box)
 			// ⚠️ 没量到任何一轮就保留上一次。切会话中间有几帧聊天行还没挂上，
 			//    清成 undefined 的话 anchorNode 会退到“当前路径最深的点”，
 			//    elide 的可视窗口跳到末端再跳回来 —— 又是一闪。
@@ -229,13 +333,34 @@ export function useActiveTurn() {
 			cancelAnimationFrame(raf)
 			raf = requestAnimationFrame(measure)
 		}
+		// 钉上之后等滚动停稳再记位置；每来一个 scroll 事件就重新等
+		const settle = () => {
+			clearTimeout(settleTimer)
+			if (pinned === undefined || pinned.settled !== undefined) return
+			settleTimer = setTimeout(() => {
+				const seen = scan()
+				const row = seen === undefined ? undefined : seen.rows.find((one) => one.turn === (pinned || {}).turn)
+				if (pinned !== undefined && pinned.settled === undefined && row !== undefined) pinned = settlePin(pinned, row.top)
+			}, PIN_SETTLE_MS)
+		}
+		const onScroll = () => {
+			settle()
+			schedule()
+		}
+		const onPin = () => {
+			settle()
+			schedule()
+		}
+		pinWatchers.add(onPin)
 		measure()
-		document.addEventListener('scroll', schedule, true)
+		document.addEventListener('scroll', onScroll, true)
 		const offViewport = watchViewport(schedule)
 		const timer = setInterval(measure, 400)
 		return () => {
+			pinWatchers.delete(onPin)
 			cancelAnimationFrame(raf)
-			document.removeEventListener('scroll', schedule, true)
+			clearTimeout(settleTimer)
+			document.removeEventListener('scroll', onScroll, true)
 			offViewport()
 			clearInterval(timer)
 		}
