@@ -6,7 +6,6 @@
  */
 import { SETTINGS_NS } from './const.js'
 import { warn, postJson } from './net.js'
-import { shapeOps } from './tree.js'
 import { settingsStore } from './settings-model.js'
 import { SettingsCard } from './ui-settings.js'
 import { Rail } from './rail.js'
@@ -59,8 +58,19 @@ export function apply(ctx) {
 		/**
 		 * 在某一轮之后开岔路。**故意只有一行有效逻辑** —— 原生 fork 的两个缺陷
 		 * 由 host 半在 `agent/created` 里接管，在这儿补会被原生分支按钮绕过。
+		 *
+		 * `born(id)` 在新会话建好、**切过去之前**跑：Rail 用它把"在拆出去那棵树的前缀上
+		 * 开的分支"认领到那棵树。要赶在 open 之前 —— open 之后导轨立刻按新会话重画，
+		 * 认领还没落地的那一帧画的就是旧树。
+		 * @returns 新会话 id
 		 */
-		fork: (id, atSeq) => attempt('开分支失败', async () => ctx.sessions.open(await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true }))),
+		fork: (id, atSeq, born) =>
+			attempt('开分支失败', async () => {
+				const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
+				if (typeof born === 'function') await born(made)
+				ctx.sessions.open(made)
+				return made
+			}),
 
 		/**
 		 * 在同一棵树里新开一条对话。
@@ -69,14 +79,18 @@ export function apply(ctx) {
 		 *    workspace.sessionIds 这张显式成员表分组，只传 cwd 建出来的会话谁都不认领，
 		 *    于是掉进"未分组"。宿主自己的新建按钮就是 create({ workspaceId })。
 		 *    查不到归属时才退回 cwd（至少工作目录是对的）。
+		 *
+		 * `born(id)` 同 fork：登记进当前这棵树 —— 这是"空节点底下能有好几条对话"的唯一来源。
+		 * dsh 不给新建会话任何父子关系，不自己记就永远各自成树。补丁由 Rail 拼
+		 * （`shapeOps.merge`，站在拆出去的树上时再加一条 `shapeOps.adopt`）。
+		 * @returns 新会话 id
 		 */
-		fresh: (workspaceId, cwd, tree) =>
+		fresh: (workspaceId, cwd, born) =>
 			attempt('新建对话失败', async () => {
 				const id = await ctx.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
-				// 登记进当前这棵树 —— 这是"空节点底下能有好几条对话"的唯一来源。
-				// dsh 不给新建会话任何父子关系，不自己记就永远各自成树。
-				if (tree) await api.reshape(shapeOps.merge(id, tree))
-				return ctx.sessions.open(id)
+				if (typeof born === 'function') await born(id)
+				ctx.sessions.open(id)
+				return id
 			}),
 
 		/**

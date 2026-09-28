@@ -312,9 +312,11 @@ console.log('\n用例 8：＋ 在空节点 / 叶子上该做什么')
 
 	check(pure.branchAction(leafRoot) === 'none', '光秃秃的空节点点 ＋ 不该有任何反应')
 	check(pure.branchAction(rootWithKids) === 'fresh', '底下已有分支的空节点，＋ 才是"再开一条新对话"')
-	check(pure.branchAction(leaf) === 'open', '叶子节点该就地接着问，不 fork')
+	// youli42 报的 issue #3：叶子上那颗 ＋ 写着"新开分支"，按下去却什么都不发生
+	//（"就地接着问"= 打开当前会话 = 空操作）。按了没反应的按钮比没有更让人发毛，直接不画。
+	check(pure.branchAction(leaf) === 'none', '叶子节点不该画 ＋（复制一份没意义，"接着问"又等于没按）')
 	check(pure.branchAction(forked) === 'fork', '有后续的节点才真的 fork')
-	console.log('  空节点(无子)=none / 空节点(有子)=fresh / 叶子=open / 有后续=fork')
+	console.log('  空节点(无子)=none / 空节点(有子)=fresh / 叶子=none / 有后续=fork')
 
 	// 父会话正在跑的时候不许开岔路：新分支要继承上下文就得读它的记录，
 	// 而读那个文件会打断它正在跑的那一轮。**不偷偷开一条失忆分支，也不延后，当场说原因。**

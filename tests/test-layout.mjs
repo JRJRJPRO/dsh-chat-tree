@@ -17,6 +17,7 @@
  *   第5步  用例 4：被盖住的判定
  *   第6步  用例 5：同一行的横段不许重复画
  *   第7步  用例 6：详情卡贴着那个点放，不贴整棵树的左缘
+ *   第8步  用例 7：列距被压过之后，自定义字的框不许叠到隔壁列（issue #1）
  *
  * 跑法：node tests/test-layout.mjs
  *
@@ -296,6 +297,91 @@ const BOX = { top: 0, height: 600, right: 1600 }
 	}
 
 	console.log(`  五个岔路（maxColumn=4）：第 0 列 right=${right(0).toFixed(1)}，老写法 ${old.toFixed(1)} → 近了 ${(old - right(0)).toFixed(1)}px；最左列 ${right(4).toFixed(1)}`)
+}
+
+// ===== 第8步：用例 7 —— 列距被压过之后，带框的字不许叠到隔壁列 =====
+{
+	console.log('用例 7：列距被压过之后，自定义字的框按压完的列距重截，相邻两列不叠')
+	const { glyphSpanFor, shapeSpec, GLYPH_SPAN, GLYPH_BOX, GLYPH_PAD_X, spanOf } = pure
+
+	// youli42 报的 issue #1：「内容2」和「1」相邻两列，宽框压在窄框上。
+	// 场面：两个带字框的收藏点在相邻两列，横向只有 80px，列距被压到比框窄（但还没压到底）。
+	const wide = (size) => drawnWidth(shapeSpec('char:内容2'), size)
+	const free = railLayout(BOX, 100, 12, 1, wide)
+	check(free.lane >= wide(free.dotSize) + Z.laneGap, '前提：没压的时候列距按框宽留')
+	const tight = railLayout(BOX, 100, 12, 1, wide, 80)
+	check(tight.lane < wide(tight.dotSize), `前提：压完的列距 ${tight.lane.toFixed(1)} 该比框 ${wide(tight.dotSize).toFixed(1)} 窄，否则这条用例抓不到 bug`)
+	check(tight.lane >= GLYPH_BOX * tight.dotSize + tight.z.laneGap, '前提：还没压到比最小的框还窄（那是下面单独的一条）')
+
+	// 老画法：框按全宽画 → 两列之间的空白是负的，就是"叠上了"
+	const overlapWas = Math.abs(tight.xOf(0) - tight.xOf(1)) - wide(tight.dotSize)
+	check(overlapWas < 0, `改动前该是叠上的（算出来 ${overlapWas.toFixed(1)}px），否则这条用例抓不到 bug`)
+
+	// 新画法：按压完的列距给一个更小的 span，框跟着窄回去
+	const span = glyphSpanFor(tight.lane, tight.z.laneGap, tight.dotSize)
+	check(span < GLYPH_SPAN, `压过之后 span 该小于全宽 ${GLYPH_SPAN}，实际 ${span.toFixed(2)}`)
+	const squeezed = shapeSpec('char:内容2', span)
+	const boxW = drawnWidth(squeezed, tight.dotSize)
+	check(boxW <= tight.lane - tight.z.laneGap + 1e-9, `压完框宽 ${boxW.toFixed(1)} 该 ≤ 列距 − 间隙 ${(tight.lane - tight.z.laneGap).toFixed(1)}`)
+	const clear = Math.abs(tight.xOf(0) - tight.xOf(1)) - boxW
+	check(clear >= tight.z.laneGap - 1e-9, `相邻两列的字框之间该留得下 ${tight.z.laneGap}px，实际 ${clear.toFixed(1)}px`)
+	// 字要让路：先缩字号（到 GLYPH_MIN_SCALE 为止），还装不下才截断加省略号。
+	// 这一档只是压窄了些，缩字号就够；原文一个字不动（它是存进设置里的值）
+	const shrunk = pure.glyphFont(squeezed.glyph, tight.dotSize, squeezed.span) < pure.glyphFont('内容2', tight.dotSize) - 1e-9
+	check(squeezed.glyph.endsWith('…') || shrunk, `压过之后字该缩小或截断，实际画的是「${squeezed.glyph}」、字号没变`)
+	check(squeezed.value === 'char:内容2', '截断只许发生在画出来的字上，存的值不能变')
+	check(squeezed.span === span, '截过的 spec 要记着自己是按哪个 span 造的（字号按它算）')
+
+	// 再压狠一点（横向只剩 70px）：缩到字号下限还装不下，就截断加省略号
+	const tighter = railLayout(BOX, 100, 12, 1, wide, 70)
+	const spanT = glyphSpanFor(tighter.lane, tighter.z.laneGap, tighter.dotSize)
+	const clipped = shapeSpec('char:内容2', spanT)
+	check(clipped.glyph.endsWith('…') && clipped.glyph !== '内容2', `压得更狠时该截断加省略号，实际画的是「${clipped.glyph}」`)
+	check(drawnWidth(clipped, tighter.dotSize) <= tighter.lane - tighter.z.laneGap + 1e-9, '截断之后框宽也该 ≤ 列距 − 间隙')
+	check(pure.glyphFont(clipped.glyph, tighter.dotSize, spanT) >= pure.GLYPH_MIN_SCALE * tighter.dotSize - 1e-9, '截断之后字号不该低于下限（截断就是为了不再缩）')
+
+	// 没压的时候一个像素都不许变：列距本来就按这个框留的，算出来的 span 装得下全部字，
+	// spec 和不给 span 时一模一样（span 数值本身可以小于 GLYPH_SPAN —— 字只有 2.6 em 宽）
+	const roomy = glyphSpanFor(free.lane, free.z.laneGap, free.dotSize)
+	check(roomy >= pure.glyphEm('内容2') - 1e-9, `没压时 span ${roomy.toFixed(2)} 该装得下 ${pure.glyphEm('内容2')} em 的字`)
+	const same = shapeSpec('char:内容2', roomy)
+	check(same.glyph === '内容2' && same.grow === shapeSpec('char:内容2').grow, '没压时画法必须和原来逐像素相同')
+	// 三个字以上（本来就要缩字号的）同理：列距按它留过，压不压都一样
+	const long = 'char:甲乙丙丁'
+	const laid = railLayout(BOX, 100, 12, 1, (size) => drawnWidth(shapeSpec(long), size))
+	const longSpan = glyphSpanFor(laid.lane, laid.z.laneGap, laid.dotSize)
+	check(longSpan === GLYPH_SPAN, `本来就顶到全宽的字，没压时 span 该是 ${GLYPH_SPAN}，实际 ${longSpan}`)
+	check(shapeSpec(long, longSpan).glyph === shapeSpec(long).glyph, '顶到全宽的字没压时画法不变')
+
+	// 压到底：截字这一招到此为止 —— 框最窄也就是一个正方块（GLYPH_BOX）
+	const floor = glyphSpanFor(1, 0, 11)
+	check(Math.abs(floor - (GLYPH_BOX - 2 * GLYPH_PAD_X)) < 1e-9, `压到底的 span 该是 ${(GLYPH_BOX - 2 * GLYPH_PAD_X).toFixed(2)}，实际 ${floor.toFixed(2)}`)
+	check(Math.abs(shapeSpec('char:内容2', floor).grow - GLYPH_BOX) < 1e-9, '压到底时框该缩成一个正方块')
+
+	// 再往下（列距压到"两个圆点刚分得开"，比正方块和星星都窄）：整个形状等比缩小，
+	// 最小缩到一个圆点那么大 —— 和圆点一样只剩两像素缝，但不叠。John 试出来的极端情形。
+	const { shrinkToLane } = pure
+	const crushed = railLayout(BOX, 100, 12, 20, () => drawnWidth(STAR, 11), 30)
+	check(crushed.lane < GLYPH_BOX * crushed.dotSize && crushed.lane < drawnWidth(STAR, crushed.dotSize), '前提：列距压到比正方块和星星都窄')
+	for (const [name, spec] of [['字框', shapeSpec('char:内容2', floor)], ['星星', STAR], ['菱形', SHAPES.find((item) => item.spin === true)]]) {
+		const wide = drawnWidth(spec, crushed.dotSize)
+		const fit = shrinkToLane(wide, crushed.lane, crushed.z.laneGap, crushed.dotSize)
+		check(fit < 1, `${name} 该被缩小，实际倍数 ${fit}`)
+		const shown = wide * fit
+		check(shown <= Math.max(crushed.dotSize, crushed.lane - crushed.z.laneGap) + 1e-9, `${name} 缩完 ${shown.toFixed(1)}px 还是塞不进列距`)
+		check(shown >= crushed.dotSize - 1e-9, `${name} 缩得比圆点还小（${shown.toFixed(1)}px），认不出来了`)
+		const between = Math.abs(crushed.xOf(0) - crushed.xOf(1)) - shown
+		check(between >= 2 - 1e-9, `${name} 相邻两列之间该像圆点一样至少留 2px，实际 ${between.toFixed(1)}px`)
+	}
+	// 没压的时候恒为 1：列距本来就按最宽的形状留过
+	const starry = railLayout(BOX, 100, 12, 2, (size) => drawnWidth(STAR, size))
+	check(shrinkToLane(drawnWidth(STAR, starry.dotSize), starry.lane, starry.z.laneGap, starry.dotSize) === 1, '没压时星星不许被缩')
+	check(shrinkToLane(drawnWidth(shapeSpec('char:内容2'), free.dotSize), free.lane, free.z.laneGap, free.dotSize) === 1, '没压时字框不许被缩')
+	check(shrinkToLane(0, 13, 5, 11) === 1 && shrinkToLane(20, NaN, 5, 11) === 1, '乱给的参数该退回 1，不许画出 0 大小的点')
+	// 乱给的 span 不许把画法搞坏
+	check(spanOf(undefined) === GLYPH_SPAN && spanOf(NaN) === GLYPH_SPAN && spanOf(99) === GLYPH_SPAN, '不合法 / 超大的 span 都该夹回全宽')
+
+	console.log(`  列距 ${free.lane.toFixed(1)} → 压到 ${tight.lane.toFixed(1)}：框 ${wide(tight.dotSize).toFixed(1)}px → ${boxW.toFixed(1)}px，画成「${squeezed.glyph}」，两列之间留 ${clear.toFixed(1)}px`)
 }
 
 report()

@@ -85,6 +85,32 @@ export function railLayout(box, scale, rows, maxColumn, widestOf, room) {
 }
 
 /**
+ * 列距压到比一个形状还窄时，这个形状该等比缩到几分之几。
+ *
+ * `railLayout` 压列距的下限是"两个圆点分得开"（`dotSize + 2`），不看形状有多宽：
+ * 星星（1.67 倍）、菱形（1.41 倍）、带框的字（最窄也是 1.7 倍）在那种列距下都会
+ * 叠到隔壁列上（youli42 报的 issue #1 的极端情形：窄到普通圆点都快贴上的时候）。
+ * 修法：画的时候把它**整个等比缩小**到塞得进 `列距 − 间隙`，但**最小缩到一个圆点那么大**
+ * —— 这时它和普通圆点一样只剩两像素缝，看得清是个星星就够了，再小就认不出来了。
+ *
+ * 没压的时候列距本来就按最宽的形状留，算出来恒为 1，画法一个像素都不变。
+ *
+ * 小例子（点 11px、间隙 5px）：
+ *   星星 18.4px、列距 23.4（没压）→ 房间 max(11, 18.4) = 18.4 → 1，原样；
+ *   星星 18.4px、列距 13（压到底）→ 房间 max(11, 8) = 11 → 11/18.4 = 0.6，星星画成 11px。
+ * @param wide - 这个形状按当前点直径画出来多宽（`drawnWidth`）
+ * @param lane - 压完的列距
+ * @param gap - 两列之间至少留多少（`Z.laneGap`）
+ * @param dotSize - 点的直径 —— 缩的下限
+ * @returns 0..1 的倍数
+ */
+export function shrinkToLane(wide, lane, gap, dotSize) {
+	if (!(wide > 0) || !Number.isFinite(lane)) return 1
+	const room = Math.max(dotSize > 0 ? dotSize : 0, lane - (Number.isFinite(gap) ? gap : 0))
+	return room > 0 ? Math.min(1, room / wide) : 1
+}
+
+/**
  * 导轨离视口右缘多远（CSS 的 `right`，**值越大越靠左**）。
  *
  * **就是贴着聊天区右缘**，一个像素都不挪。

@@ -238,7 +238,8 @@ async function main() {
 		// 断言 5c：＋ 按钮的动作。
 		//
 		// John 报的："线性的 1-2-3，我在 3 上点 ＋ 接着问，左边却多出一份只有 1-2-3 的副本。"
-		// 3 后面什么都没有，复制一份毫无意义 —— 应该直接在原会话往下问。
+		// 3 后面什么都没有，复制一份毫无意义。曾经改成"就地接着问"，但那等于什么都不做 ——
+		// youli42 报的 issue #3 就是这颗按了没反应的 ＋。现在叶子上干脆不画。
 		for (const node of nodes) {
 			const action = pure.branchAction(node)
 			if (node.entry === undefined) {
@@ -247,7 +248,7 @@ async function main() {
 				const want = node.children.length === 0 ? 'none' : 'fresh'
 				check(action === want, `[${tag}] 空节点(${node.children.length} 个子节点)的 ＋ 应当是 ${want}，得到 ${action}`)
 			} else if (node.children.length === 0) {
-				check(action === 'open', `[${tag}] 叶子节点 ${node.key} 的 ＋ 不该复制会话，应当就地接着问，得到 ${action}`)
+				check(action === 'none', `[${tag}] 叶子节点 ${node.key} 不该画 ＋，得到 ${action}`)
 			} else {
 				check(action === 'fork', `[${tag}] 有后续的节点 ${node.key} 的 ＋ 必须真的开岔路，得到 ${action}`)
 			}

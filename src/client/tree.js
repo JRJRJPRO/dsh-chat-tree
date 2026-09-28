@@ -26,14 +26,14 @@ export function keyOf(sessionId, turn) {
 	return `${sessionId}:${turn}`
 }
 
-// ===== 形状补丁：改树形只有这四种动作 =====
+// ===== 形状补丁：改树形只有这几种动作 =====
 //
-// host 的 `/shape` 收的是 `{session, group?, detach?}`，其中 `session` 这个字段
-// **在两种动作里含义不同**（合并时是会话 id，剪边时是节点 key）—— host 半刻意
+// host 的 `/shape` 收的是 `{session, group?, detach?, adopt?}`，其中 `session` 这个字段
+// **在不同动作里含义不同**（合并 / 认领时是会话 id，剪边时是节点 key）—— host 半刻意
 // 不解析它，好让 key 的格式将来能改。代价是调用方手拼补丁时很容易拼错，
 // 所以补丁一律由下面这张表造，Rail 里不许再出现字面量补丁。
 
-/** 改树形的四种动作。每一个都返回一个能直接喂给 `api.reshape` 的补丁。 */
+/** 改树形的几种动作。每一个都返回一个能直接喂给 `api.reshape` 的补丁。 */
 export const shapeOps = {
 	/**
 	 * 把一棵树整个并进另一棵。
@@ -56,6 +56,21 @@ export const shapeOps = {
 	 * @param nodeKey - 剪缝所在的节点 key
 	 */
 	heal: (nodeKey) => ({ session: nodeKey, detach: false }),
+	/**
+	 * 让一条**新会话**归到某棵拆出去的树。
+	 *
+	 * 拆出去的树里，根到剪点父亲那段前缀是**照抄**的 —— 那几个节点仍然属于旧会话。
+	 * 在前缀上按 ＋ 开出来的分支，父亲是旧会话、岔路点在前缀段，按血缘算自然落回旧树
+	 * （youli42 报的 issue #4）。所以新会话一出生就要登记"我归剪点那棵"。
+	 * @param sessionId - 新会话 id
+	 * @param cutKey - 那棵树的剪点节点 key（`buildGraph` 返回的 `owner`）
+	 */
+	adopt: (sessionId, cutKey) => ({ session: sessionId, adopt: cutKey }),
+	/**
+	 * 撤销认领：这条会话回到按血缘算的那棵树。
+	 * @param sessionId - 会话 id
+	 */
+	disown: (sessionId) => ({ session: sessionId, adopt: '' }),
 }
 
 /**
@@ -269,10 +284,12 @@ export function cutSet(detached, sessions) {
 
 /**
  * 在某个节点上按 ＋ 该干什么。
- * **叶子节点不 fork**：后面什么都没有，复制一份只会多出一条内容重复的会话。
+ * **叶子节点不画 ＋**：后面什么都没有，复制一份只会多出一条内容重复的会话；
+ * 而"就在本会话接着问"等于什么都不做 —— 一颗按了没反应的按钮比没有更让人发毛
+ * （youli42 报的 issue #3：叶子上那颗 ＋ 写着"新开分支"，按下去却毫无动静）。
  * **撤回掉的节点也不给**：见函数体。
  * @param node - 被点的节点
- * @returns 'none' 什么都不该做 | 'fresh' 开新对话 | 'open' 就在本会话接着问 | 'fork' 真的开岔路
+ * @returns 'none' 什么都不该做（也不画按钮） | 'fresh' 开新对话 | 'fork' 真的开岔路
  */
 export function branchAction(node) {
 	// 撤回掉的轮次：claude 那边连锚点都一起删了（planRewind），
@@ -282,7 +299,7 @@ export function branchAction(node) {
 	// ⚠️ 刚建的对话只有这一个空节点，它自己就是"一条空对话"，
 	//    再 fresh 一条只是多出一条一模一样的空会话（和叶子节点同一条道理）。
 	if (node.entry === undefined) return node.children.length === 0 ? 'none' : 'fresh'
-	return node.children.length === 0 ? 'open' : 'fork'
+	return node.children.length === 0 ? 'none' : 'fork'
 }
 
 /**
@@ -296,8 +313,7 @@ export function branchAction(node) {
  * 直到它答得驴唇不对马嘴。为什么不是"先开着、等跑完再补"：那几秒里你看到的仍然是
  * 一条看着正常的分支，而且你会以为卡住了去瞎点。
  *
- * 另外三种动作都不需要读它的记录，所以一律不拦：
- *   · `open` —— 就在本会话接着问，没有新会话；
+ * 另外两种动作都不需要读它的记录，所以一律不拦：
  *   · `fresh` —— 空节点上开一条全新对话，本来就没有上下文可继承；
  *   · 普通 provider —— 对话原文就在 dsh 日志里，原生 fork 抄过去就够了。
  * @param node - 被点的节点

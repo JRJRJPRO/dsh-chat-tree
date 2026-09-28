@@ -73,6 +73,8 @@ import {
 	GLYPH_MIN_SCALE,
 	GLYPH_FIT_EM,
 	glyphFit,
+	glyphSpanFor,
+	spanOf,
 	RARE_SHAPES,
 	PICK_SHAPES,
 	GLYPH_SPAN,
@@ -93,7 +95,7 @@ import {
 	starPoly,
 	starSkin,
 } from './shapes.js'
-import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
+import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
 import { RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, rewindRetryDelay, starAnimation, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
@@ -113,7 +115,7 @@ export const __pure = {
 	polyArea, growOf, regularPoly, crossPoly,
 	SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 	// 自定义字：上限、占几倍宽、该用多大字号
-	GLYPH_STORE_MAX, GLYPH_MIN_SCALE, GLYPH_FIT_EM, glyphFit, RARE_SHAPES, PICK_SHAPES, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
+	GLYPH_STORE_MAX, GLYPH_MIN_SCALE, GLYPH_FIT_EM, glyphFit, glyphSpanFor, spanOf, RARE_SHAPES, PICK_SHAPES, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
 	// 收藏：五角星的形状、配色、以及点下去那一下的动画
 	STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 	// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
@@ -129,7 +131,7 @@ export const __pure = {
 	// 配色与明暗
 	PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 	// 几何
-	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
+	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 	// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
 	contentRightOf, isCovered, RAIL_MARK,
 	// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式

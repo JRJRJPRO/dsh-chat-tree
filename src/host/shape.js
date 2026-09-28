@@ -5,8 +5,14 @@
  */
 import { atomicWrite, readJsonFile, shapePath } from './paths.js'
 
-/** 空白形状。`groupOf` 只给**同树的非首条**对话登记；detached 是被手动拆出去的会话。 */
-export const EMPTY_SHAPE = { version: 1, groupOf: {}, detached: [] }
+/**
+ * 空白形状。
+ *   · `groupOf`  只给**同树的非首条**对话登记
+ *   · `detached` 被手动拆出去的节点（`<会话>:<轮次>`）
+ *   · `adopted`  `{新会话: 剪点 key}` —— 在拆出去那棵树的**前缀**上开出来的会话归哪棵。
+ *                前缀节点仍属旧会话，新分支按血缘算会掉回旧树（issue #4），所以要记一笔
+ */
+export const EMPTY_SHAPE = { version: 1, groupOf: {}, detached: [], adopted: {} }
 
 /**
  * 读树形关系。读不到 / 坏了 / 版本对不上都退回空白 —— 这东西丢了只是分组没了，
@@ -20,6 +26,8 @@ export function readShape() {
 		version: 1,
 		groupOf: document.groupOf !== null && typeof document.groupOf === 'object' ? document.groupOf : {},
 		detached: Array.isArray(document.detached) ? document.detached : [],
+		// 老文件没有这一项（认领是后加的），缺了就是空表，不算坏文件
+		adopted: document.adopted !== null && typeof document.adopted === 'object' ? document.adopted : {},
 	}
 }
 
@@ -57,11 +65,12 @@ export function settleGroup(groupOf, target) {
  *
  * `group` ：把一条**对话**合并进 `group` 这棵树（group 为空则拆回独立的一棵）。
  * `detach`：把一个**节点**（`<会话>:<轮次>`）从它父亲那里剪下来 / 接回去。
+ * `adopt` ：让一条**对话**归到某个剪点所在的那棵树（adopt 为空则撤销认领）。
  *
- * 两个字段的 `session` 含义不同（会话 id vs 节点 key），但都只是个不透明的字符串，
+ * 几个字段的 `session` 含义不同（会话 id vs 节点 key），但都只是个不透明的字符串，
  * host 半不解析也不校验形状 —— 怕的是以后改了 key 格式还要来改这里。
- * 两者可以同时给。
- * @param patch - `{session, group?, detach?}`
+ * 几者可以同时给。
+ * @param patch - `{session, group?, detach?, adopt?}`
  * @returns 打完补丁的形状
  */
 export function reshape(patch) {
@@ -70,6 +79,7 @@ export function reshape(patch) {
 	const current = readShape()
 	const groupOf = Object.assign({}, current.groupOf)
 	const detached = new Set(current.detached)
+	const adopted = Object.assign({}, current.adopted)
 
 	if (patch.group !== undefined) {
 		const want = typeof patch.group === 'string' && patch.group.length > 0 ? settleGroup(groupOf, patch.group) : ''
@@ -87,6 +97,12 @@ export function reshape(patch) {
 		else detached.delete(session)
 		// 拆出去的会话自成一棵，带着旧分组只会把它又拉回原树
 		if (patch.detach === true) delete groupOf[session]
+		// ⚠️ 接回去时**不动** adopted：认领的是"剪点所在的那棵树"，剪缝接回去它们就
+		//    一起回旧树，再拆一次又一起出来 —— 由 graph.js 按剪点当前的归属算，这里不用清。
 	}
-	return writeShape({ version: 1, groupOf, detached: [...detached] })
+	if (patch.adopt !== undefined) {
+		if (typeof patch.adopt === 'string' && patch.adopt.length > 0 && patch.adopt !== session) adopted[session] = patch.adopt
+		else delete adopted[session]
+	}
+	return writeShape({ version: 1, groupOf, detached: [...detached], adopted })
 }

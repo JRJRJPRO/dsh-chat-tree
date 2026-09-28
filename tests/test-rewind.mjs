@@ -191,7 +191,7 @@ console.log('用例 4：4 答完了才撤回 → 1-2-3-4 和 1-2-3-5 两条')
 	check(byKey.get('S:4').rewound === true, '节点上该留着 rewound 标记（卡片要挂"撤回"牌子）')
 	// claude 那边连锚点都一起删了（planRewind），从这儿 fork 只能得到一条失忆分支
 	check(pure.branchAction(byKey.get('S:4')) === 'none', '撤回掉的节点不该给 ＋ 按钮')
-	check(pure.branchAction(byKey.get('S:5')) === 'open', '还活着的叶子该照常给"接着问"')
+	check(pure.branchAction(byKey.get('S:5')) === 'none', '还活着的叶子也不画 ＋（issue #3：叶子上的 ＋ 按了没反应）')
 	console.log(`  3 的孩子：${byKey.get('S:3').children.map((kid) => kid.key).join(' / ')}，深度 ${graph.maxDepth}`)
 }
 

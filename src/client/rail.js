@@ -5,12 +5,12 @@ import { h, portal, react } from './runtime.js'
 import { C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { branchAction, conversationOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
+import { ROOT_KEY, branchAction, conversationOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
 import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
-import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, inkOf, shapeOf, starSkin } from './shapes.js'
-import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, trimRuns } from './geometry.js'
+import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeOf, starSkin } from './shapes.js'
+import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
 import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
@@ -188,7 +188,7 @@ export function Rail(props) {
 	//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
 	let graph
 	try {
-		graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked)) : undefined
+		graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
 	} catch (error) {
 		warn('建图失败，先拿上一棵顶着', error)
 	}
@@ -232,6 +232,10 @@ export function Rail(props) {
 		return most
 	}
 	const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, railRoom(box))
+	// 列距被压过之后（横向放不下，见 railLayout 的 `room`），带框的字**按压完的列距重截**：
+	// 框不许比列距宽，字装不下就少画几个加省略号。不这么做的话相邻两列的字框会叠在一起
+	// （youli42 报的 issue #1）。布局那边（widestOf）仍按全宽算，空间够了列距自然会撑回去。
+	const spanAt = (size) => glyphSpanFor(lane, z.laneGap, size)
 	// 命中区宽度。列被宽形状撑开时得跟着撑，否则两列之间会裂出一条点不中的缝。
 	// 反过来列距比 Z.hit 窄时**不收窄** —— 命中区互相重叠是故意的（点太小，靠 nodeAt 取最近的那个）。
 	const hitW = Math.max(z.hit, lane)
@@ -263,7 +267,18 @@ export function Rail(props) {
 	// 收藏的图标可换，所以让位量得按**它实际挑的那个形状**算，不能一律按五角星。
 	// 挑了个十字（1.11 倍）却按星星（1.67 倍）让位，连线会在点外面凭空断一截。
 	const starOf = (node) => (favorites.has(node.key) ? favShape(favIcons[node.key]) : false)
-	const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme, eyeOf(node).scale, starOf(node))
+	// 极端压缩：列距压到比最窄的框 / 星星还窄时（railLayout 的下限只管圆点分得开），把整个
+	// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
+	// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
+	const fitOf = (node, size) => {
+		const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(node.kind, node.active, theme, spanAt(size))
+		return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
+	}
+	const reachOf = (node) => {
+		const eye = eyeOf(node)
+		// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
+		return reachFor(node.kind, node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(node.kind, dotSize, eye.scale)), starOf(node))
+	}
 
 	const edge = (node) => {
 		// 两头都在才连。只剩一头的那条边整个不画 —— 鱼眼的收尾靠点自己淡掉，
@@ -305,23 +320,25 @@ export function Rail(props) {
 		}
 		// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 		// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme) : undefined
+		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
 		// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-		const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
+		const shape = star === undefined ? shapeOf(node.kind, node.active, theme, spanAt(size)) : star.shape
 		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+		// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
+		const drawn = size * fitOf(node, size)
 		parts.push(h('span', {
 			key: `d${node.key}`,
 			style: Object.assign(
-				{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
+				{ position: 'absolute', left: `${x - drawn / 2}px`, top: `${y - drawn / 2}px`, cursor: 'pointer' },
 				TAPPABLE,
-				dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
+				dotStyle(node.kind, node.active, isHover, drawn, isFocused, theme, alpha, star),
 				// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 				//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 				//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
 				{ animation: starAnimation(flash, node.key) },
 			),
 			onClick: go,
-		}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, star === undefined && dashedOf(node.kind))))
+		}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(node.kind))))
 		// 透明加宽命中区：点很小，直接点很难中
 		parts.push(h('span', {
 			key: `hit${node.key}`,
@@ -458,9 +475,18 @@ export function Rail(props) {
 					if (action === 'none') return undefined
 					// 按钮那边已经灰掉了，这里再挡一次：键盘、脚本、以后加的别的入口都走这条路
 					if (forkBlockedWhy(node) !== '') return undefined
-					if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOfSession(picked, shape.groupOf, current))
-					if (action === 'open') return api.open(node.session.id)
-					return api.fork(node.session.id, node.entry.seq)
+					// 站在拆出去的树上、点的又是**前缀**上的节点（它仍属旧会话）：新会话按血缘会
+					// 掉回旧树，得认领到这棵（issue #4，见 graph.js 的【认领】）。
+					// 点的是子树里的节点就不用：它的父亲本来就在这棵树里。
+					const claim = graph.owner !== ROOT_KEY && node.tree !== graph.owner ? shapeOps.adopt : undefined
+					if (action === 'fresh') {
+						// 新对话没有血缘，得登记进当前这棵树（merge）；站在拆出去的树上还要认领（adopt）
+						return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, (id) => {
+							const patch = Object.assign({}, here ? shapeOps.merge(id, here) : {}, claim ? claim(id, graph.owner) : {})
+							return patch.session === undefined ? undefined : reshape(patch)
+						})
+					}
+					return api.fork(node.session.id, node.entry.seq, claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
 				},
 			}),
 		),

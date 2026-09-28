@@ -779,14 +779,14 @@ window.__ModuleLoader__.load({
 			return `${sessionId}:${turn}`
 		}
 
-		// ===== 形状补丁：改树形只有这四种动作 =====
+		// ===== 形状补丁：改树形只有这几种动作 =====
 		//
-		// host 的 `/shape` 收的是 `{session, group?, detach?}`，其中 `session` 这个字段
-		// **在两种动作里含义不同**（合并时是会话 id，剪边时是节点 key）—— host 半刻意
+		// host 的 `/shape` 收的是 `{session, group?, detach?, adopt?}`，其中 `session` 这个字段
+		// **在不同动作里含义不同**（合并 / 认领时是会话 id，剪边时是节点 key）—— host 半刻意
 		// 不解析它，好让 key 的格式将来能改。代价是调用方手拼补丁时很容易拼错，
 		// 所以补丁一律由下面这张表造，Rail 里不许再出现字面量补丁。
 
-		/** 改树形的四种动作。每一个都返回一个能直接喂给 `api.reshape` 的补丁。 */
+		/** 改树形的几种动作。每一个都返回一个能直接喂给 `api.reshape` 的补丁。 */
 		const shapeOps = {
 			/**
 			 * 把一棵树整个并进另一棵。
@@ -809,6 +809,21 @@ window.__ModuleLoader__.load({
 			 * @param nodeKey - 剪缝所在的节点 key
 			 */
 			heal: (nodeKey) => ({ session: nodeKey, detach: false }),
+			/**
+			 * 让一条**新会话**归到某棵拆出去的树。
+			 *
+			 * 拆出去的树里，根到剪点父亲那段前缀是**照抄**的 —— 那几个节点仍然属于旧会话。
+			 * 在前缀上按 ＋ 开出来的分支，父亲是旧会话、岔路点在前缀段，按血缘算自然落回旧树
+			 * （youli42 报的 issue #4）。所以新会话一出生就要登记"我归剪点那棵"。
+			 * @param sessionId - 新会话 id
+			 * @param cutKey - 那棵树的剪点节点 key（`buildGraph` 返回的 `owner`）
+			 */
+			adopt: (sessionId, cutKey) => ({ session: sessionId, adopt: cutKey }),
+			/**
+			 * 撤销认领：这条会话回到按血缘算的那棵树。
+			 * @param sessionId - 会话 id
+			 */
+			disown: (sessionId) => ({ session: sessionId, adopt: '' }),
 		}
 
 		/**
@@ -1022,10 +1037,12 @@ window.__ModuleLoader__.load({
 
 		/**
 		 * 在某个节点上按 ＋ 该干什么。
-		 * **叶子节点不 fork**：后面什么都没有，复制一份只会多出一条内容重复的会话。
+		 * **叶子节点不画 ＋**：后面什么都没有，复制一份只会多出一条内容重复的会话；
+		 * 而"就在本会话接着问"等于什么都不做 —— 一颗按了没反应的按钮比没有更让人发毛
+		 * （youli42 报的 issue #3：叶子上那颗 ＋ 写着"新开分支"，按下去却毫无动静）。
 		 * **撤回掉的节点也不给**：见函数体。
 		 * @param node - 被点的节点
-		 * @returns 'none' 什么都不该做 | 'fresh' 开新对话 | 'open' 就在本会话接着问 | 'fork' 真的开岔路
+		 * @returns 'none' 什么都不该做（也不画按钮） | 'fresh' 开新对话 | 'fork' 真的开岔路
 		 */
 		function branchAction(node) {
 			// 撤回掉的轮次：claude 那边连锚点都一起删了（planRewind），
@@ -1035,7 +1052,7 @@ window.__ModuleLoader__.load({
 			// ⚠️ 刚建的对话只有这一个空节点，它自己就是"一条空对话"，
 			//    再 fresh 一条只是多出一条一模一样的空会话（和叶子节点同一条道理）。
 			if (node.entry === undefined) return node.children.length === 0 ? 'none' : 'fresh'
-			return node.children.length === 0 ? 'open' : 'fork'
+			return node.children.length === 0 ? 'none' : 'fork'
 		}
 
 		/**
@@ -1049,8 +1066,7 @@ window.__ModuleLoader__.load({
 		 * 直到它答得驴唇不对马嘴。为什么不是"先开着、等跑完再补"：那几秒里你看到的仍然是
 		 * 一条看着正常的分支，而且你会以为卡住了去瞎点。
 		 *
-		 * 另外三种动作都不需要读它的记录，所以一律不拦：
-		 *   · `open` —— 就在本会话接着问，没有新会话；
+		 * 另外两种动作都不需要读它的记录，所以一律不拦：
 		 *   · `fresh` —— 空节点上开一条全新对话，本来就没有上下文可继承；
 		 *   · 普通 provider —— 对话原文就在 dsh 日志里，原生 fork 抄过去就够了。
 		 * @param node - 被点的节点
@@ -1125,9 +1141,11 @@ window.__ModuleLoader__.load({
 		 *   切到子分支时只有颜色变，列不动。
 		 * @param sessions - 本对话的分支（已过滤）
 		 * @param currentId - 当前会话
-		 * @returns {nodes, maxDepth, maxColumn}
+		 * @param cuts - 被"分离"的节点 key 集合（`cutSet` 的结果）
+		 * @param adopted - 认领表 `{会话 id: 剪点 key}`：在拆出去那棵树的前缀上开出来的会话归哪棵
+		 * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是 `root`
 		 */
-		function buildGraph(sessions, currentId, cuts) {
+		function buildGraph(sessions, currentId, cuts, adopted) {
 			const byId = indexOf(sessions)
 			const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
 
@@ -1193,19 +1211,54 @@ window.__ModuleLoader__.load({
 			//         旧树 = 原树扣掉 N 的子树。
 			// 所以每个节点归属于"它头顶最近的那个被剪节点"，没有就归 root。
 			const cutAt = cuts instanceof Set ? cuts : new Set(cuts || [])
-			const ownerOf = new Map([[root, root]])
-			for (const node of nodes) {
-				if (node === root) continue
-				// 标出剪缝本身：分离完新树里照抄了根到剪点父亲的前缀，所以剪缝**看得见**，
-				// 接回去接到哪一目了然 —— 这个标记就是给那个「接回去」按钮用的
-				node.cut = cutAt.has(node.key)
-				ownerOf.set(node, node.cut ? node : ownerOf.get(node.parent))
-			}
+			// 标出剪缝本身：分离完新树里照抄了根到剪点父亲的前缀，所以剪缝**看得见**，
+			// 接回去接到哪一目了然 —— 这个标记就是给那个「接回去」按钮用的
+			for (const node of nodes) if (node !== root) node.cut = cutAt.has(node.key)
 
-			// 站在哪棵上：取当前会话最深的那个节点；这条会话一轮都还没有就待在 root 那棵
-			let here = root
-			for (const node of nodes) if (node.session.id === currentId && node.depth > here.depth) here = node
-			const mine = ownerOf.get(here) || root
+			// 【认领】拆出去的树里，前缀那几个节点仍然属于旧会话。在前缀上按 ＋ 开出来的分支，
+			// 父亲是旧会话、岔路点落在前缀段，按血缘算就掉回旧树 —— 用户在新树里开的分支，
+			// 一按下去整棵树换成了旧的（youli42 报的 issue #4）。
+			// 所以 shape.json 多记一张 `adopted`：{新会话: 剪点 key}。新会话的**头一个自有节点**
+			// 归到剪点所在的那棵树，后面的节点照常跟着父亲走。
+			//
+			// ⚠️ 归的是"剪点所在的那棵"（`owner(剪点)`），不是剪点本身：剪缝要是后来又接回去了，
+			//    剪点自己也归回旧树，认领的那条会话就该一起回去 —— 不然它会凭空消失。
+			//    再拆一次，两边又一起出来。认领记录本身不用改。
+			const adoptedBy = adopted !== null && typeof adopted === 'object' ? adopted : {}
+			const headOf = new Map() // 会话 → 它画出来的头一个自有节点
+			for (const node of nodes) if (node !== root && !headOf.has(node.session.id)) headOf.set(node.session.id, node)
+			const ownerOf = new Map([[root, root]])
+			/** 一个节点归哪棵树：头顶最近的那个剪点；认领过的会话头节点改看剪点那边。 */
+			const owner = (node, seen) => {
+				const hit = ownerOf.get(node)
+				if (hit !== undefined) return hit
+				const guard = seen || new Set()
+				if (node === undefined || guard.has(node)) return root // 手改坏的 shape.json 不许把建图挂死
+				guard.add(node)
+				let out
+				if (node.cut) out = node
+				else {
+					const want = adoptedBy[node.session.id]
+					const target = typeof want === 'string' && headOf.get(node.session.id) === node ? nodeOf.get(want) : undefined
+					out = target !== undefined && target !== node ? owner(target, guard) : owner(node.parent, guard)
+				}
+				ownerOf.set(node, out)
+				return out
+			}
+			for (const node of nodes) owner(node)
+
+			// 站在哪棵上：取当前会话最深的那个节点所属的那棵。
+			// 这条会话一轮都还没有（刚 fork / 刚新建）就站在它**将要挂上去**的地方：
+			// 认领过的看剪点，否则看挂载点 —— 不然刚开的分支在说第一句话之前会先显示成旧树。
+			let here
+			for (const node of nodes) if (node !== root && node.session.id === currentId && (here === undefined || node.depth > here.depth)) here = node
+			let mine
+			if (here !== undefined) mine = owner(here)
+			else {
+				const want = adoptedBy[currentId]
+				const target = typeof want === 'string' ? nodeOf.get(want) : undefined
+				mine = target !== undefined ? owner(target) : owner(attachOf.get(currentId) || root)
+			}
 
 			if (mine !== root || cutAt.size > 0) {
 				const keep = new Set()
@@ -1215,6 +1268,9 @@ window.__ModuleLoader__.load({
 				nodes = nodes.filter((node) => keep.has(node))
 				for (const node of nodes) node.children = node.children.filter((kid) => keep.has(kid))
 			}
+			// 每个节点归哪棵（剪点 key；没拆过就是 root）。前缀节点的 `tree` 和整张图的 `owner`
+			// 不一样 —— Rail 靠这个判断"在前缀上开的分支要不要认领"。
+			for (const node of nodes) node.tree = (ownerOf.get(node) || root).key
 
 			// ④ 高亮范围：给血缘链上每个会话记一个"轮次上限"，
 			//    从当前会话往祖先走，上限取一路上岔路点的**最小值**。
@@ -1325,7 +1381,7 @@ window.__ModuleLoader__.load({
 				maxDepth = Math.max(maxDepth, node.depth)
 				maxColumn = Math.max(maxColumn, node.column || 0)
 			}
-			return { nodes, maxDepth, maxColumn }
+			return { nodes, maxDepth, maxColumn, owner: mine.key }
 		}
 
 		// ===== elide.js ================================================
@@ -1599,10 +1655,48 @@ window.__ModuleLoader__.load({
 		 *   `Hello` → em 3，字号 10（五个字母才占三个汉字宽，不用缩）。
 		 * @param glyph - 那几个字
 		 * @param size - 点的直径
+		 * @param span - 字最多摊到点的几倍宽；缺省 `GLYPH_SPAN`，列距被压过时给小一点（见 `glyphSpanFor`）
 		 * @returns 字号（像素）
 		 */
-		function glyphFont(glyph, size) {
-			return size * Math.min(1, GLYPH_SPAN / glyphEm(glyph))
+		function glyphFont(glyph, size, span) {
+			return size * Math.min(1, spanOf(span) / glyphEm(glyph))
+		}
+
+		/**
+		 * 把 `span` 收拾成一个能用的数：没给 / 不是数 → `GLYPH_SPAN`；给了就夹在
+		 * `[GLYPH_BOX - 2·GLYPH_PAD_X, GLYPH_SPAN]` 之间 —— 下限是"框缩成一个正方块"时
+		 * 字还剩多少地方（0.7 em），再小框也不会更窄了，压了也白压。
+		 * @param span - 想要的倍数
+		 * @returns 夹好的倍数
+		 */
+		function spanOf(span) {
+			if (!Number.isFinite(span)) return GLYPH_SPAN
+			return Math.max(GLYPH_BOX - 2 * GLYPH_PAD_X, Math.min(GLYPH_SPAN, span))
+		}
+
+		/**
+		 * 列距被压过之后，带框的字还能摊多宽（点直径的倍数）。
+		 *
+		 * 【为什么要有这个】列距本来按"画出来最宽的那个形状"留（geometry.js 的 railLayout），
+		 * 所以正常情况下字框之间不会碰。但横向放不下时列距会被**压**（同一个函数里的 `room`），
+		 * 压的时候只保证两个圆点分得开，根本不看框有多宽 —— 于是相邻两列的字框叠在一起
+		 * （youli42 报的 issue #1：「内容2」压在旁边的「1」上）。
+		 *
+		 * 修法不是不压（那样树会盖到正文上），而是**画的时候按压完的列距重截**：
+		 * 框宽 ≤ 列距 − 间隙，字装不下就少画几个加省略号 —— 和"字太多"是同一条处理。
+		 *
+		 * 小例子（点 11px、间隙 5px）：
+		 *   列距 44.6（没压）→ (44.6−5)/11 − 1 = 2.6 → 夹到 [0.7, 3] 还是 2.6，`甲乙丙` 3 em 略缩；
+		 *   列距 25（压过）  → (25−5)/11 − 1 ≈ 0.82 → 只剩不到一个字的地方，`内容2` 画成 `…`
+		 *                      再缩到 0.6 倍字号，框 = 20px ≤ 列距 25，不再叠上隔壁。
+		 * @param lane - 压完的列距（像素）
+		 * @param gap - 两列之间至少留多少（像素，通常 `Z.laneGap`）
+		 * @param size - 点的直径（像素）
+		 * @returns 倍数，已夹好
+		 */
+		function glyphSpanFor(lane, gap, size) {
+			if (!Number.isFinite(lane) || !(size > 0)) return GLYPH_SPAN
+			return spanOf((lane - (Number.isFinite(gap) ? gap : 0)) / size - 2 * GLYPH_PAD_X)
 		}
 
 		/**
@@ -1618,11 +1712,13 @@ window.__ModuleLoader__.load({
 		 * 截到画得下为止，截了就加省略号。
 		 *
 		 * 【为什么是截断而不是"避免碰撞"】
-		 * 横向根本不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
+		 * 横向正常不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
 		 * 而列距按"这棵树上画得最宽的那个形状"留（geometry.js 的 railLayout），
 		 * 所以框再多字也只有那么宽，列距自动让开。纵向同理：框高恒为 `GLYPH_BOX`
 		 * 倍点直径，而点直径本来就卡在 `rowH - dotPad` 以内。
-		 * 真正的问题从来不是"会叠上"，而是"缩到看不清"。
+		 * 唯一会叠的是**列距被压过**的时候（横向放不下），那也走同一条路：
+		 * 按压完的列距给一个更小的 `fitEm`（见 `glyphSpanFor`），多截几个字，框就窄回去了。
+		 * 所以真正的问题从来不是"要避让"，而是"缩到看不清"。
 		 *
 		 * 业界对"格子里塞不下的文本"就这一条成熟做法：**截断 + 省略号，全文放在
 		 * 悬停出来的那张卡片里**（IDE 的面包屑、git 客户端的提交行、文件管理器的
@@ -1634,21 +1730,23 @@ window.__ModuleLoader__.load({
 		 *   `甲乙丙丁戊己` → 6 em 放不下，留出省略号那 1 em → `甲乙丙丁…`；
 		 *   `abcdefghij` → 6 em（字母各 0.6）→ `abcdefg…`。
 		 * @param glyph - 原文
+		 * @param fitEm - 最多装几个全角宽；缺省 `GLYPH_FIT_EM`（= 全宽下限字号能装的数）
 		 * @returns 画出来的那几个字
 		 */
-		function glyphFit(glyph) {
+		function glyphFit(glyph, fitEm) {
+			const limit = Number.isFinite(fitEm) && fitEm > 0 ? fitEm : GLYPH_FIT_EM
 			const chars = [...String(glyph === undefined || glyph === null ? '' : glyph)]
 			const wide = (ch) => emWidth(ch.codePointAt(0))
 			let sum = 0
 			for (let at = 0; at < chars.length; at += 1) {
-				if (sum + wide(chars[at]) <= GLYPH_FIT_EM + 1e-9) {
+				if (sum + wide(chars[at]) <= limit + 1e-9) {
 					sum += wide(chars[at])
 					continue
 				}
 				// 放不下了：省略号自己也要占一格，所以往回吐到腾得出位置为止
 				const kept = chars.slice(0, at)
 				let width = sum
-				while (kept.length > 0 && width + wide('…') > GLYPH_FIT_EM + 1e-9) {
+				while (kept.length > 0 && width + wide('…') > limit + 1e-9) {
 					width -= wide(kept[kept.length - 1])
 					kept.pop()
 				}
@@ -1657,9 +1755,9 @@ window.__ModuleLoader__.load({
 			return chars.join('')
 		}
 
-		function glyphGrow(glyph) {
+		function glyphGrow(glyph, span) {
 			const em = glyphEm(glyph)
-			const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD_X
+			const wide = (glyphFont(glyph, 1, span) * em) + 2 * GLYPH_PAD_X
 			return Math.max(wide, GLYPH_BOX)
 		}
 
@@ -2057,12 +2155,13 @@ window.__ModuleLoader__.load({
 		 * 那是"一眼能扫出来"的全部依据，所以不改的话谁都是黄的；
 		 * 真要按点分色（比如红=待办、绿=已验证）也给得出，见 `want`。
 		 * @param want - 用户挑的形状值：预设 id / `char:<字>` / `img:<id>`；空 = 默认
+		 * @param span - 自定义字最多摊几倍宽（列距被压过时给小一点，见 `glyphSpanFor`）；缺省全宽
 		 * @returns 画法；空或认不得一律退回五角星
 		 */
-		function favShape(want) {
+		function favShape(want, span) {
 			const text = typeof want === 'string' ? want.trim() : ''
 			if (text === '' || text === STAR.value) return STAR
-			const spec = shapeSpec(text)
+			const spec = shapeSpec(text, span)
 			// ⚠️ `shapeSpec` 认不得的东西退回的是**圆**，而收藏的默认不是圆是星。
 			//    不拦这一下的话，手改配置写错一个字，一屏收藏全变成普通圆点。
 			return spec.value === text ? spec : STAR
@@ -2199,16 +2298,17 @@ window.__ModuleLoader__.load({
 		 * @param icon - 这个点自己挑的图标；空 = 跟着默认走
 		 * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
 		 * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
+		 * @param span - 自定义字最多摊几倍宽（列距被压过时给小一点）；缺省全宽
 		 * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
 		 */
-		function starSkin(focused, icon, want, theme) {
+		function starSkin(focused, icon, want, theme, span) {
 			const skin = theme || paletteOf()
 			// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 			// 认得严一点：这个字符串要直接进 CSS。
 			const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 			const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
 			return Object.assign(paint(seed, focused), {
-				shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
+				shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon, span),
 			})
 		}
 
@@ -2298,17 +2398,20 @@ window.__ModuleLoader__.load({
 		 * @param want - 预设 id，或 `char:<字>`
 		 * @returns `{value, radius, spin, clip?, glyph?}`
 		 */
-		function shapeSpec(want) {
+		function shapeSpec(want, span) {
 			const text = typeof want === 'string' ? want : ''
 			if (text.startsWith(CUSTOM)) {
 				const raw = text.slice(CUSTOM.length).trim()
 				// ⚠️ `value` 一律是**原文**，不是截断后的那几个字 —— 它是存进设置里的那个值，
 				//    截了就存不回去、`isShape` 也会当场认不得自己。截断只发生在 `glyph` 上。
 				if (raw !== '' && [...raw].length <= GLYPH_STORE_MAX) {
-					const glyph = glyphFit(raw)
+					// `span` = 字最多摊几倍宽。不给就是全宽 `GLYPH_SPAN`；列距被压过时 Rail 会给小一点
+					// （`glyphSpanFor`），那就多截几个字 —— 框跟着窄回去，不再叠到隔壁列上。
+					const fit = spanOf(span)
+					const glyph = glyphFit(raw, fit / GLYPH_MIN_SCALE)
 					// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
 					// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
-					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
+					return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph, fit), span: fit }
 				}
 			}
 			if (text.startsWith(PICTURE)) {
@@ -2365,11 +2468,12 @@ window.__ModuleLoader__.load({
 		 * @param kind - 节点形态（normal / compact / empty）
 		 * @param active - 在当前路径上
 		 * @param theme - 主题
+		 * @param span - 角色形状是自定义字时最多摊几倍宽（列距被压过时给小一点）；缺省全宽
 		 * @returns 画法
 		 */
-		function shapeOf(kind, active, theme) {
+		function shapeOf(kind, active, theme, span) {
 			const role = ROLES[roleOf(kind, active)]
-			return shapeSpec((theme || THEME)[role.shape])
+			return shapeSpec((theme || THEME)[role.shape], span)
 		}
 
 		/**
@@ -2535,7 +2639,8 @@ window.__ModuleLoader__.load({
 				whiteSpace: 'nowrap', pointerEvents: 'none',
 				// ⚠️ 实心底上必须换对比色。不换的话字和底同色 —— 而**恰好是"正看着的这一轮"
 				//    最看不清**，因为它填得最实。这就是设计系统里的 on-color。
-				fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1,
+				// 字号按这个 spec 自己的 `span` 算：列距被压过时 spec 是按窄一点的 span 造的，字号要跟上
+				fontSize: `${glyphFont(shape.glyph, size, shape.span)}px`, lineHeight: 1,
 				color: skin.solid === true ? onAccent(skin.ink) : skin.ink,
 			}
 		}
@@ -2649,6 +2754,32 @@ window.__ModuleLoader__.load({
 				/** 第 row 行的圆心 y。 */
 				yOf: (row) => row * rowH + rowH / 2,
 			}
+		}
+
+		/**
+		 * 列距压到比一个形状还窄时，这个形状该等比缩到几分之几。
+		 *
+		 * `railLayout` 压列距的下限是"两个圆点分得开"（`dotSize + 2`），不看形状有多宽：
+		 * 星星（1.67 倍）、菱形（1.41 倍）、带框的字（最窄也是 1.7 倍）在那种列距下都会
+		 * 叠到隔壁列上（youli42 报的 issue #1 的极端情形：窄到普通圆点都快贴上的时候）。
+		 * 修法：画的时候把它**整个等比缩小**到塞得进 `列距 − 间隙`，但**最小缩到一个圆点那么大**
+		 * —— 这时它和普通圆点一样只剩两像素缝，看得清是个星星就够了，再小就认不出来了。
+		 *
+		 * 没压的时候列距本来就按最宽的形状留，算出来恒为 1，画法一个像素都不变。
+		 *
+		 * 小例子（点 11px、间隙 5px）：
+		 *   星星 18.4px、列距 23.4（没压）→ 房间 max(11, 18.4) = 18.4 → 1，原样；
+		 *   星星 18.4px、列距 13（压到底）→ 房间 max(11, 8) = 11 → 11/18.4 = 0.6，星星画成 11px。
+		 * @param wide - 这个形状按当前点直径画出来多宽（`drawnWidth`）
+		 * @param lane - 压完的列距
+		 * @param gap - 两列之间至少留多少（`Z.laneGap`）
+		 * @param dotSize - 点的直径 —— 缩的下限
+		 * @returns 0..1 的倍数
+		 */
+		function shrinkToLane(wide, lane, gap, dotSize) {
+			if (!(wide > 0) || !Number.isFinite(lane)) return 1
+			const room = Math.max(dotSize > 0 ? dotSize : 0, lane - (Number.isFinite(gap) ? gap : 0))
+			return room > 0 ? Math.min(1, room / wide) : 1
 		}
 
 		/**
@@ -5102,7 +5233,7 @@ window.__ModuleLoader__.load({
 			//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
 			let graph
 			try {
-				graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked)) : undefined
+				graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
 			} catch (error) {
 				warn('建图失败，先拿上一棵顶着', error)
 			}
@@ -5146,6 +5277,10 @@ window.__ModuleLoader__.load({
 				return most
 			}
 			const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, railRoom(box))
+			// 列距被压过之后（横向放不下，见 railLayout 的 `room`），带框的字**按压完的列距重截**：
+			// 框不许比列距宽，字装不下就少画几个加省略号。不这么做的话相邻两列的字框会叠在一起
+			// （youli42 报的 issue #1）。布局那边（widestOf）仍按全宽算，空间够了列距自然会撑回去。
+			const spanAt = (size) => glyphSpanFor(lane, z.laneGap, size)
 			// 命中区宽度。列被宽形状撑开时得跟着撑，否则两列之间会裂出一条点不中的缝。
 			// 反过来列距比 Z.hit 窄时**不收窄** —— 命中区互相重叠是故意的（点太小，靠 nodeAt 取最近的那个）。
 			const hitW = Math.max(z.hit, lane)
@@ -5177,7 +5312,18 @@ window.__ModuleLoader__.load({
 			// 收藏的图标可换，所以让位量得按**它实际挑的那个形状**算，不能一律按五角星。
 			// 挑了个十字（1.11 倍）却按星星（1.67 倍）让位，连线会在点外面凭空断一截。
 			const starOf = (node) => (favorites.has(node.key) ? favShape(favIcons[node.key]) : false)
-			const reachOf = (node) => reachFor(node.kind, node.active, dotSize, theme, eyeOf(node).scale, starOf(node))
+			// 极端压缩：列距压到比最窄的框 / 星星还窄时（railLayout 的下限只管圆点分得开），把整个
+			// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
+			// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
+			const fitOf = (node, size) => {
+				const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(node.kind, node.active, theme, spanAt(size))
+				return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
+			}
+			const reachOf = (node) => {
+				const eye = eyeOf(node)
+				// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
+				return reachFor(node.kind, node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(node.kind, dotSize, eye.scale)), starOf(node))
+			}
 
 			const edge = (node) => {
 				// 两头都在才连。只剩一头的那条边整个不画 —— 鱼眼的收尾靠点自己淡掉，
@@ -5219,23 +5365,25 @@ window.__ModuleLoader__.load({
 				}
 				// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 				// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme) : undefined
+				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-				const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star.shape
+				const shape = star === undefined ? shapeOf(node.kind, node.active, theme, spanAt(size)) : star.shape
 				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+				// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
+				const drawn = size * fitOf(node, size)
 				parts.push(h('span', {
 					key: `d${node.key}`,
 					style: Object.assign(
-						{ position: 'absolute', left: `${x - size / 2}px`, top: `${y - size / 2}px`, cursor: 'pointer' },
+						{ position: 'absolute', left: `${x - drawn / 2}px`, top: `${y - drawn / 2}px`, cursor: 'pointer' },
 						TAPPABLE,
-						dotStyle(node.kind, node.active, isHover, size, isFocused, theme, alpha, star),
+						dotStyle(node.kind, node.active, isHover, drawn, isFocused, theme, alpha, star),
 						// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 						//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 						//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
 						{ animation: starAnimation(flash, node.key) },
 					),
 					onClick: go,
-				}, dotInside(shape, size, skin, (1.5 * size) / Z.dot, star === undefined && dashedOf(node.kind))))
+				}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(node.kind))))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
@@ -5372,9 +5520,18 @@ window.__ModuleLoader__.load({
 							if (action === 'none') return undefined
 							// 按钮那边已经灰掉了，这里再挡一次：键盘、脚本、以后加的别的入口都走这条路
 							if (forkBlockedWhy(node) !== '') return undefined
-							if (action === 'fresh') return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, treeOfSession(picked, shape.groupOf, current))
-							if (action === 'open') return api.open(node.session.id)
-							return api.fork(node.session.id, node.entry.seq)
+							// 站在拆出去的树上、点的又是**前缀**上的节点（它仍属旧会话）：新会话按血缘会
+							// 掉回旧树，得认领到这棵（issue #4，见 graph.js 的【认领】）。
+							// 点的是子树里的节点就不用：它的父亲本来就在这棵树里。
+							const claim = graph.owner !== ROOT_KEY && node.tree !== graph.owner ? shapeOps.adopt : undefined
+							if (action === 'fresh') {
+								// 新对话没有血缘，得登记进当前这棵树（merge）；站在拆出去的树上还要认领（adopt）
+								return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, (id) => {
+									const patch = Object.assign({}, here ? shapeOps.merge(id, here) : {}, claim ? claim(id, graph.owner) : {})
+									return patch.session === undefined ? undefined : reshape(patch)
+								})
+							}
+							return api.fork(node.session.id, node.entry.seq, claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
 						},
 					}),
 				),
@@ -5410,7 +5567,7 @@ window.__ModuleLoader__.load({
 			polyArea, growOf, regularPoly, crossPoly,
 			SHAPES, THEME, ROLES, CUSTOM, PICTURE, ICON_EDGE,
 			// 自定义字：上限、占几倍宽、该用多大字号
-			GLYPH_STORE_MAX, GLYPH_MIN_SCALE, GLYPH_FIT_EM, glyphFit, RARE_SHAPES, PICK_SHAPES, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
+			GLYPH_STORE_MAX, GLYPH_MIN_SCALE, GLYPH_FIT_EM, glyphFit, glyphSpanFor, spanOf, RARE_SHAPES, PICK_SHAPES, GLYPH_SPAN, GLYPH_PAD_X, GLYPH_PAD_Y, GLYPH_BOX, GLYPH_RADIUS, glyphGrow, glyphFont, emWidth, glyphEm, glyphBoxStyle,
 			// 收藏：五角星的形状、配色、以及点下去那一下的动画
 			STAR, STAR_COLOR, starPoly, starSkin, starAnimation, STAR_ANIM, STAR_ANIM_MS, favShape,
 			// 一个色值，按底色自己调明度 —— 明暗两边不再各写一版
@@ -5426,7 +5583,7 @@ window.__ModuleLoader__.load({
 			// 配色与明暗
 			PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 			// 几何
-			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
+			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
 			// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了
 			contentRightOf, isCovered, RAIL_MARK,
 			// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
@@ -5495,8 +5652,19 @@ window.__ModuleLoader__.load({
 				/**
 				 * 在某一轮之后开岔路。**故意只有一行有效逻辑** —— 原生 fork 的两个缺陷
 				 * 由 host 半在 `agent/created` 里接管，在这儿补会被原生分支按钮绕过。
+				 *
+				 * `born(id)` 在新会话建好、**切过去之前**跑：Rail 用它把"在拆出去那棵树的前缀上
+				 * 开的分支"认领到那棵树。要赶在 open 之前 —— open 之后导轨立刻按新会话重画，
+				 * 认领还没落地的那一帧画的就是旧树。
+				 * @returns 新会话 id
 				 */
-				fork: (id, atSeq) => attempt('开分支失败', async () => ctx.sessions.open(await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true }))),
+				fork: (id, atSeq, born) =>
+					attempt('开分支失败', async () => {
+						const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
+						if (typeof born === 'function') await born(made)
+						ctx.sessions.open(made)
+						return made
+					}),
 
 				/**
 				 * 在同一棵树里新开一条对话。
@@ -5505,14 +5673,18 @@ window.__ModuleLoader__.load({
 				 *    workspace.sessionIds 这张显式成员表分组，只传 cwd 建出来的会话谁都不认领，
 				 *    于是掉进"未分组"。宿主自己的新建按钮就是 create({ workspaceId })。
 				 *    查不到归属时才退回 cwd（至少工作目录是对的）。
+				 *
+				 * `born(id)` 同 fork：登记进当前这棵树 —— 这是"空节点底下能有好几条对话"的唯一来源。
+				 * dsh 不给新建会话任何父子关系，不自己记就永远各自成树。补丁由 Rail 拼
+				 * （`shapeOps.merge`，站在拆出去的树上时再加一条 `shapeOps.adopt`）。
+				 * @returns 新会话 id
 				 */
-				fresh: (workspaceId, cwd, tree) =>
+				fresh: (workspaceId, cwd, born) =>
 					attempt('新建对话失败', async () => {
 						const id = await ctx.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
-						// 登记进当前这棵树 —— 这是"空节点底下能有好几条对话"的唯一来源。
-						// dsh 不给新建会话任何父子关系，不自己记就永远各自成树。
-						if (tree) await api.reshape(shapeOps.merge(id, tree))
-						return ctx.sessions.open(id)
+						if (typeof born === 'function') await born(id)
+						ctx.sessions.open(id)
+						return id
 					}),
 
 				/**

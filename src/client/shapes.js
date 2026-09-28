@@ -142,10 +142,48 @@ export function glyphEm(glyph) {
  *   `Hello` → em 3，字号 10（五个字母才占三个汉字宽，不用缩）。
  * @param glyph - 那几个字
  * @param size - 点的直径
+ * @param span - 字最多摊到点的几倍宽；缺省 `GLYPH_SPAN`，列距被压过时给小一点（见 `glyphSpanFor`）
  * @returns 字号（像素）
  */
-export function glyphFont(glyph, size) {
-	return size * Math.min(1, GLYPH_SPAN / glyphEm(glyph))
+export function glyphFont(glyph, size, span) {
+	return size * Math.min(1, spanOf(span) / glyphEm(glyph))
+}
+
+/**
+ * 把 `span` 收拾成一个能用的数：没给 / 不是数 → `GLYPH_SPAN`；给了就夹在
+ * `[GLYPH_BOX - 2·GLYPH_PAD_X, GLYPH_SPAN]` 之间 —— 下限是"框缩成一个正方块"时
+ * 字还剩多少地方（0.7 em），再小框也不会更窄了，压了也白压。
+ * @param span - 想要的倍数
+ * @returns 夹好的倍数
+ */
+export function spanOf(span) {
+	if (!Number.isFinite(span)) return GLYPH_SPAN
+	return Math.max(GLYPH_BOX - 2 * GLYPH_PAD_X, Math.min(GLYPH_SPAN, span))
+}
+
+/**
+ * 列距被压过之后，带框的字还能摊多宽（点直径的倍数）。
+ *
+ * 【为什么要有这个】列距本来按"画出来最宽的那个形状"留（geometry.js 的 railLayout），
+ * 所以正常情况下字框之间不会碰。但横向放不下时列距会被**压**（同一个函数里的 `room`），
+ * 压的时候只保证两个圆点分得开，根本不看框有多宽 —— 于是相邻两列的字框叠在一起
+ * （youli42 报的 issue #1：「内容2」压在旁边的「1」上）。
+ *
+ * 修法不是不压（那样树会盖到正文上），而是**画的时候按压完的列距重截**：
+ * 框宽 ≤ 列距 − 间隙，字装不下就少画几个加省略号 —— 和"字太多"是同一条处理。
+ *
+ * 小例子（点 11px、间隙 5px）：
+ *   列距 44.6（没压）→ (44.6−5)/11 − 1 = 2.6 → 夹到 [0.7, 3] 还是 2.6，`甲乙丙` 3 em 略缩；
+ *   列距 25（压过）  → (25−5)/11 − 1 ≈ 0.82 → 只剩不到一个字的地方，`内容2` 画成 `…`
+ *                      再缩到 0.6 倍字号，框 = 20px ≤ 列距 25，不再叠上隔壁。
+ * @param lane - 压完的列距（像素）
+ * @param gap - 两列之间至少留多少（像素，通常 `Z.laneGap`）
+ * @param size - 点的直径（像素）
+ * @returns 倍数，已夹好
+ */
+export function glyphSpanFor(lane, gap, size) {
+	if (!Number.isFinite(lane) || !(size > 0)) return GLYPH_SPAN
+	return spanOf((lane - (Number.isFinite(gap) ? gap : 0)) / size - 2 * GLYPH_PAD_X)
 }
 
 /**
@@ -161,11 +199,13 @@ export function glyphFont(glyph, size) {
  * 截到画得下为止，截了就加省略号。
  *
  * 【为什么是截断而不是"避免碰撞"】
- * 横向根本不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
+ * 横向正常不会碰撞 —— `glyphGrow` 的宽度被 `GLYPH_SPAN` 焊死在 3 em 以内，
  * 而列距按"这棵树上画得最宽的那个形状"留（geometry.js 的 railLayout），
  * 所以框再多字也只有那么宽，列距自动让开。纵向同理：框高恒为 `GLYPH_BOX`
  * 倍点直径，而点直径本来就卡在 `rowH - dotPad` 以内。
- * 真正的问题从来不是"会叠上"，而是"缩到看不清"。
+ * 唯一会叠的是**列距被压过**的时候（横向放不下），那也走同一条路：
+ * 按压完的列距给一个更小的 `fitEm`（见 `glyphSpanFor`），多截几个字，框就窄回去了。
+ * 所以真正的问题从来不是"要避让"，而是"缩到看不清"。
  *
  * 业界对"格子里塞不下的文本"就这一条成熟做法：**截断 + 省略号，全文放在
  * 悬停出来的那张卡片里**（IDE 的面包屑、git 客户端的提交行、文件管理器的
@@ -177,21 +217,23 @@ export function glyphFont(glyph, size) {
  *   `甲乙丙丁戊己` → 6 em 放不下，留出省略号那 1 em → `甲乙丙丁…`；
  *   `abcdefghij` → 6 em（字母各 0.6）→ `abcdefg…`。
  * @param glyph - 原文
+ * @param fitEm - 最多装几个全角宽；缺省 `GLYPH_FIT_EM`（= 全宽下限字号能装的数）
  * @returns 画出来的那几个字
  */
-export function glyphFit(glyph) {
+export function glyphFit(glyph, fitEm) {
+	const limit = Number.isFinite(fitEm) && fitEm > 0 ? fitEm : GLYPH_FIT_EM
 	const chars = [...String(glyph === undefined || glyph === null ? '' : glyph)]
 	const wide = (ch) => emWidth(ch.codePointAt(0))
 	let sum = 0
 	for (let at = 0; at < chars.length; at += 1) {
-		if (sum + wide(chars[at]) <= GLYPH_FIT_EM + 1e-9) {
+		if (sum + wide(chars[at]) <= limit + 1e-9) {
 			sum += wide(chars[at])
 			continue
 		}
 		// 放不下了：省略号自己也要占一格，所以往回吐到腾得出位置为止
 		const kept = chars.slice(0, at)
 		let width = sum
-		while (kept.length > 0 && width + wide('…') > GLYPH_FIT_EM + 1e-9) {
+		while (kept.length > 0 && width + wide('…') > limit + 1e-9) {
 			width -= wide(kept[kept.length - 1])
 			kept.pop()
 		}
@@ -200,9 +242,9 @@ export function glyphFit(glyph) {
 	return chars.join('')
 }
 
-export function glyphGrow(glyph) {
+export function glyphGrow(glyph, span) {
 	const em = glyphEm(glyph)
-	const wide = (glyphFont(glyph, 1) * em) + 2 * GLYPH_PAD_X
+	const wide = (glyphFont(glyph, 1, span) * em) + 2 * GLYPH_PAD_X
 	return Math.max(wide, GLYPH_BOX)
 }
 
@@ -600,12 +642,13 @@ export const STAR = poly('star', starPoly())
  * 那是"一眼能扫出来"的全部依据，所以不改的话谁都是黄的；
  * 真要按点分色（比如红=待办、绿=已验证）也给得出，见 `want`。
  * @param want - 用户挑的形状值：预设 id / `char:<字>` / `img:<id>`；空 = 默认
+ * @param span - 自定义字最多摊几倍宽（列距被压过时给小一点，见 `glyphSpanFor`）；缺省全宽
  * @returns 画法；空或认不得一律退回五角星
  */
-export function favShape(want) {
+export function favShape(want, span) {
 	const text = typeof want === 'string' ? want.trim() : ''
 	if (text === '' || text === STAR.value) return STAR
-	const spec = shapeSpec(text)
+	const spec = shapeSpec(text, span)
 	// ⚠️ `shapeSpec` 认不得的东西退回的是**圆**，而收藏的默认不是圆是星。
 	//    不拦这一下的话，手改配置写错一个字，一屏收藏全变成普通圆点。
 	return spec.value === text ? spec : STAR
@@ -742,16 +785,17 @@ export function fitContrast(hex, backdrop, target, dir) {
  * @param icon - 这个点自己挑的图标；空 = 跟着默认走
  * @param want - 这个点自己挑的颜色；空 / 认不得 = 跟着默认走
  * @param theme - 当前主题；收藏的默认色和默认图标在设置里可改，从这儿取
+ * @param span - 自定义字最多摊几倍宽（列距被压过时给小一点）；缺省全宽
  * @returns 和 `inkOf` 一模一样的 `{accent, ink, fill, solid}`，外加一个 `shape`
  */
-export function starSkin(focused, icon, want, theme) {
+export function starSkin(focused, icon, want, theme, span) {
 	const skin = theme || paletteOf()
 	// 用户改过这个点就用他挑的；没改过就用设置里的默认；设置也认不得就退回出厂那个黄。
 	// 认得严一点：这个字符串要直接进 CSS。
 	const ok = (value) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
 	const seed = (ok(want) ? want : ok(skin.favoriteColor) ? skin.favoriteColor : STAR_COLOR).toLowerCase()
 	return Object.assign(paint(seed, focused), {
-		shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon),
+		shape: favShape(icon === undefined || icon === null || icon === '' ? skin.favoriteShape : icon, span),
 	})
 }
 
@@ -841,17 +885,20 @@ export function fade(hex, alpha) {
  * @param want - 预设 id，或 `char:<字>`
  * @returns `{value, radius, spin, clip?, glyph?}`
  */
-export function shapeSpec(want) {
+export function shapeSpec(want, span) {
 	const text = typeof want === 'string' ? want : ''
 	if (text.startsWith(CUSTOM)) {
 		const raw = text.slice(CUSTOM.length).trim()
 		// ⚠️ `value` 一律是**原文**，不是截断后的那几个字 —— 它是存进设置里的那个值，
 		//    截了就存不回去、`isShape` 也会当场认不得自己。截断只发生在 `glyph` 上。
 		if (raw !== '' && [...raw].length <= GLYPH_STORE_MAX) {
-			const glyph = glyphFit(raw)
+			// `span` = 字最多摊几倍宽。不给就是全宽 `GLYPH_SPAN`；列距被压过时 Rail 会给小一点
+			// （`glyphSpanFor`），那就多截几个字 —— 框跟着窄回去，不再叠到隔壁列上。
+			const fit = spanOf(span)
+			const glyph = glyphFit(raw, fit / GLYPH_MIN_SCALE)
 			// grow = 横向占几倍宽。挂在 spec 上，列距和连线让位就自动跟着走了。
 			// `grow` 是**连框在内**的占宽，`glyphGrow` 已经把那圈 `GLYPH_PAD` 算进去了
-			return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph) }
+			return { value: text, radius: 'px', spin: false, glyph, grow: glyphGrow(glyph, fit), span: fit }
 		}
 	}
 	if (text.startsWith(PICTURE)) {
@@ -908,11 +955,12 @@ export function preview(want, color, size, dashed, override) {
  * @param kind - 节点形态（normal / compact / empty）
  * @param active - 在当前路径上
  * @param theme - 主题
+ * @param span - 角色形状是自定义字时最多摊几倍宽（列距被压过时给小一点）；缺省全宽
  * @returns 画法
  */
-export function shapeOf(kind, active, theme) {
+export function shapeOf(kind, active, theme, span) {
 	const role = ROLES[roleOf(kind, active)]
-	return shapeSpec((theme || THEME)[role.shape])
+	return shapeSpec((theme || THEME)[role.shape], span)
 }
 
 /**
@@ -1078,7 +1126,8 @@ export function glyphBoxStyle(shape, size, skin, stroke, dashed) {
 		whiteSpace: 'nowrap', pointerEvents: 'none',
 		// ⚠️ 实心底上必须换对比色。不换的话字和底同色 —— 而**恰好是"正看着的这一轮"
 		//    最看不清**，因为它填得最实。这就是设计系统里的 on-color。
-		fontSize: `${glyphFont(shape.glyph, size)}px`, lineHeight: 1,
+		// 字号按这个 spec 自己的 `span` 算：列距被压过时 spec 是按窄一点的 span 造的，字号要跟上
+		fontSize: `${glyphFont(shape.glyph, size, shape.span)}px`, lineHeight: 1,
 		color: skin.solid === true ? onAccent(skin.ink) : skin.ink,
 	}
 }

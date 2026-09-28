@@ -19,9 +19,11 @@ import { ROOT_KEY, indexOf, keyOf } from './tree.js'
  *   切到子分支时只有颜色变，列不动。
  * @param sessions - 本对话的分支（已过滤）
  * @param currentId - 当前会话
- * @returns {nodes, maxDepth, maxColumn}
+ * @param cuts - 被"分离"的节点 key 集合（`cutSet` 的结果）
+ * @param adopted - 认领表 `{会话 id: 剪点 key}`：在拆出去那棵树的前缀上开出来的会话归哪棵
+ * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是 `root`
  */
-export function buildGraph(sessions, currentId, cuts) {
+export function buildGraph(sessions, currentId, cuts, adopted) {
 	const byId = indexOf(sessions)
 	const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
 
@@ -87,19 +89,54 @@ export function buildGraph(sessions, currentId, cuts) {
 	//         旧树 = 原树扣掉 N 的子树。
 	// 所以每个节点归属于"它头顶最近的那个被剪节点"，没有就归 root。
 	const cutAt = cuts instanceof Set ? cuts : new Set(cuts || [])
-	const ownerOf = new Map([[root, root]])
-	for (const node of nodes) {
-		if (node === root) continue
-		// 标出剪缝本身：分离完新树里照抄了根到剪点父亲的前缀，所以剪缝**看得见**，
-		// 接回去接到哪一目了然 —— 这个标记就是给那个「接回去」按钮用的
-		node.cut = cutAt.has(node.key)
-		ownerOf.set(node, node.cut ? node : ownerOf.get(node.parent))
-	}
+	// 标出剪缝本身：分离完新树里照抄了根到剪点父亲的前缀，所以剪缝**看得见**，
+	// 接回去接到哪一目了然 —— 这个标记就是给那个「接回去」按钮用的
+	for (const node of nodes) if (node !== root) node.cut = cutAt.has(node.key)
 
-	// 站在哪棵上：取当前会话最深的那个节点；这条会话一轮都还没有就待在 root 那棵
-	let here = root
-	for (const node of nodes) if (node.session.id === currentId && node.depth > here.depth) here = node
-	const mine = ownerOf.get(here) || root
+	// 【认领】拆出去的树里，前缀那几个节点仍然属于旧会话。在前缀上按 ＋ 开出来的分支，
+	// 父亲是旧会话、岔路点落在前缀段，按血缘算就掉回旧树 —— 用户在新树里开的分支，
+	// 一按下去整棵树换成了旧的（youli42 报的 issue #4）。
+	// 所以 shape.json 多记一张 `adopted`：{新会话: 剪点 key}。新会话的**头一个自有节点**
+	// 归到剪点所在的那棵树，后面的节点照常跟着父亲走。
+	//
+	// ⚠️ 归的是"剪点所在的那棵"（`owner(剪点)`），不是剪点本身：剪缝要是后来又接回去了，
+	//    剪点自己也归回旧树，认领的那条会话就该一起回去 —— 不然它会凭空消失。
+	//    再拆一次，两边又一起出来。认领记录本身不用改。
+	const adoptedBy = adopted !== null && typeof adopted === 'object' ? adopted : {}
+	const headOf = new Map() // 会话 → 它画出来的头一个自有节点
+	for (const node of nodes) if (node !== root && !headOf.has(node.session.id)) headOf.set(node.session.id, node)
+	const ownerOf = new Map([[root, root]])
+	/** 一个节点归哪棵树：头顶最近的那个剪点；认领过的会话头节点改看剪点那边。 */
+	const owner = (node, seen) => {
+		const hit = ownerOf.get(node)
+		if (hit !== undefined) return hit
+		const guard = seen || new Set()
+		if (node === undefined || guard.has(node)) return root // 手改坏的 shape.json 不许把建图挂死
+		guard.add(node)
+		let out
+		if (node.cut) out = node
+		else {
+			const want = adoptedBy[node.session.id]
+			const target = typeof want === 'string' && headOf.get(node.session.id) === node ? nodeOf.get(want) : undefined
+			out = target !== undefined && target !== node ? owner(target, guard) : owner(node.parent, guard)
+		}
+		ownerOf.set(node, out)
+		return out
+	}
+	for (const node of nodes) owner(node)
+
+	// 站在哪棵上：取当前会话最深的那个节点所属的那棵。
+	// 这条会话一轮都还没有（刚 fork / 刚新建）就站在它**将要挂上去**的地方：
+	// 认领过的看剪点，否则看挂载点 —— 不然刚开的分支在说第一句话之前会先显示成旧树。
+	let here
+	for (const node of nodes) if (node !== root && node.session.id === currentId && (here === undefined || node.depth > here.depth)) here = node
+	let mine
+	if (here !== undefined) mine = owner(here)
+	else {
+		const want = adoptedBy[currentId]
+		const target = typeof want === 'string' ? nodeOf.get(want) : undefined
+		mine = target !== undefined ? owner(target) : owner(attachOf.get(currentId) || root)
+	}
 
 	if (mine !== root || cutAt.size > 0) {
 		const keep = new Set()
@@ -109,6 +146,9 @@ export function buildGraph(sessions, currentId, cuts) {
 		nodes = nodes.filter((node) => keep.has(node))
 		for (const node of nodes) node.children = node.children.filter((kid) => keep.has(kid))
 	}
+	// 每个节点归哪棵（剪点 key；没拆过就是 root）。前缀节点的 `tree` 和整张图的 `owner`
+	// 不一样 —— Rail 靠这个判断"在前缀上开的分支要不要认领"。
+	for (const node of nodes) node.tree = (ownerOf.get(node) || root).key
 
 	// ④ 高亮范围：给血缘链上每个会话记一个"轮次上限"，
 	//    从当前会话往祖先走，上限取一路上岔路点的**最小值**。
@@ -219,5 +259,5 @@ export function buildGraph(sessions, currentId, cuts) {
 		maxDepth = Math.max(maxDepth, node.depth)
 		maxColumn = Math.max(maxColumn, node.column || 0)
 	}
-	return { nodes, maxDepth, maxColumn }
+	return { nodes, maxDepth, maxColumn, owner: mine.key }
 }
