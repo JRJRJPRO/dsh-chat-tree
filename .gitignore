@@ -3,3 +3,4 @@ node_modules/
 test_number.txt
 *.tgz
 .npmrc
+CLAUDE.local.md

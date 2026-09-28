@@ -131,6 +131,5 @@ node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图
 
 - **提交信息只写一句话，写给用户看**（"用 yyy 修复了 xxx"那种），细节放代码注释和 docs/dev。
   仓库是给用户看的，GitHub 上提交列表用户也看得到。
-- **提交信息里不要加任何 AI 署名**（`Co-Authored-By` / `Generated with`）
 - 一个提交一件事。文件重叠到没法拆时，宁可合成一个说清楚，也别切出跑不起来的中间提交
 - 改了 `src/client/` 就把重新 build 过的 `client.js` 一起提交
