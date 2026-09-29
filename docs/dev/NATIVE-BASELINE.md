@@ -305,7 +305,7 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 | `sessions.list` 的 `ids / byId`（`id, displayTitle, running, blank, cwd, parentId, title`） | `dsh-api-session-controller/lib/client.js` 的 `projectList` |
 | `sessions.binding(id)`、`fork({sessionId, atSeq, increaseTitle})`、`create({workspaceId|cwd})` | 同上 |
 | `workspaces.list.archivedSessionIds` | `dsh-api-workspace-controller/lib/client.js` |
-| `shell.overlay` 插槽；`[data-conversation-scroll]`、`[data-chat-turn]`、`TurnNavigator.module.css`、侧栏 `role="tree"/"treeitem"`、`data-ds-dark-theme` | grep 0.2.0 的 client bundle 全在 |
+| `shell.overlay` 插槽；`[data-conversation-scroll]`、`[data-chat-turn]`、`[data-chat-flow]`、`[data-composer-seat]`、`[data-trajectory-scroll]`、`TurnNavigator.module.css`、侧栏 `role="tree"/"treeitem"`、`data-ds-dark-theme` | grep 0.2.0 的 client bundle 全在；`conversation.view` 页签 `{ only: active.id }` 一次只挂一个、空白会话 `ConversationSession` 返回 null，两代同款 |
 
 ### 变了的（DESIGN.md「设置：两代宿主」「宿主 0.2：浏览器半的三处搬家」）
 
@@ -332,6 +332,18 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 - 装在 profile 外的插件也能 `import '@deepseek-ai/…'`：`dsh-app-boot` 的 `installRuntimeInterception`
   把安装范围内的包（含 `@deepseek-ai/schemastery`）从 asar 里解析给任何路径。我们没用，
   npm 版 schemastery 的 `extra('volatile', true)` 就够。
+
+### 桌面版里的 dsh-claude（2026-09-29 实装）
+
+- 桌面 profile 一开始只有 dsh-base + dsh-web-app，**没有 Claude**；网页版那份 `@norman-else/dsh-claude@0.1.54`
+  的 peers 是 `>=0.1.5-rc.1`，但它要的 `@deepseek-ai/dsh-agent-presets` / `dsh-client-runtime` 两个包在 0.2 里已经没了。
+- 要装 **0.1.64**（2026-09-29 发布，README 写明面向 DSH `0.1.7-rc.2` / Desktop 2.0.15 这条线，peers 换成
+  `dsh-agent-preset` + `dsh-agent-preset-registry`，预设改成 cordis.patch.yml 里声明的 `preset-claude`）。
+- 装法：应用里 **插件 → 添加插件** 填 `@norman-else/dsh-claude@0.1.64`，装完在「已安装」里把它的开关**拨开**
+  （装完默认是关的，不拨不进 `dsh.profile.bundles`），然后**完全退出再打开**应用。新会话的模式选择器里就有「Claude」。
+- forkSession 补丁（AGENTS.md 第 4 节第 6 条）应用不会替你打：0.1.64 里 `resumeSessionAt` 那行仍没有 `forkSession`
+  （`lib/index.mjs` 约 2985 行）。要手动把补丁文件放进 `~/.dsh/profiles/desktop/patches/`，在 `pnpm-workspace.yaml`
+  加 `patchedDependencies`，再用自带 pnpm 重新 install —— 应用**关着**的时候做。
 
 ### 真机验证过的（桌面 host + 无头 Edge，2026-09-29）
 

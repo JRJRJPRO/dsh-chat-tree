@@ -107,6 +107,8 @@ node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图
    `$DSH_HOME/profiles/web/patches/`，由 `pnpm-workspace.yaml` 的 `patchedDependencies`
    重放；升级 dsh-claude 后先确认上游是否已带 `forkSession`，没带就把补丁改成新版本号。
    已经共用的旧会话用 `tools/split-shared-claude.mjs` 拆（**dsh 停着时**）。
+   桌面版（0.2）要装 dsh-claude **0.1.64+**，profile 在 `~/.dsh/profiles/desktop`，补丁同样放它的
+   `patches/` 并写进 `pnpm-workspace.yaml`；0.1.64 仍没带 `forkSession`（NATIVE-BASELINE.md 末尾）。
 
 ## 5. 已知问题（按优先级）
 
