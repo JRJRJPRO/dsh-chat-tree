@@ -78,6 +78,10 @@ export function buildGraph(sessions, currentId, cuts, adopted) {
 			previous = node
 			if (!rewound) live = node
 		}
+		// 【未读】这条会话跑完了、而你当时没在看它（宿主会话列表里的 `completed`）：
+		// 它最后一轮标成未读，树上是个绿点。打开这条会话宿主就清掉 completed，
+		// 节点自然变回普通 —— "读过"的判据交给宿主，两边一致。压缩节点不盖：它自己的记号更要紧。
+		if (session.completed === true && live !== anchor && live.kind === 'normal') live.kind = 'unread'
 	}
 
 	// ③ 剪边：被"分离"的节点断开与父亲的连接，自成一棵树。

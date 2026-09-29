@@ -281,3 +281,61 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 但这整件事在新方案里已经**不需要了**——`turnOutline` 投影把同样的信息
 以结构化、增量、跨平台的形式直接送到前端。把上面这张表留在这里，
 只是为了记住「绕开框架自己读文件」的代价长什么样。
+
+---
+
+## 附：dsh 0.2.0-rc.1（桌面版）复查
+
+> 2026-09-29 实探，对象：`E:\Programs\DeepSeek-Harness-Desktop`（Electron 44，
+> `resources/app.asar/dsh/node_modules/@deepseek-ai/*` 全是 0.2.0-rc.1），
+> profile 固定在 `~/.dsh/profiles/desktop`（bundles = dsh-base + dsh-web-app）。
+> 方法：把 asar 解到临时目录，逐包和 0.1.5-rc.2 的 `lib/index.js` / `lib/client.js` 做 diff，
+> 再用桌面版自己的 host 进程（`dsh-desktop-host`，IPC 子进程，端口固定 19387）跑真机验证。
+
+### 一样的（插件不用动）
+
+| 我们用的 | 证据 |
+|---|---|
+| `webServer.register({kind:'exact', path, handler})` | `dsh-host-webserver/lib/index.js` 两版只差 1 行 |
+| `connection.requestRejection(req)`（Host/Origin 围栏 + 签名 cookie，403/401） | `dsh-client-connection` 的 `HostConnectionService.requestRejection` 原样；桌面窗口用 `authenticatedUrl` 带 token 进来换 cookie，之后和浏览器一样 |
+| `sessionPersistence.list()` → `{header, revision}`；`open(id,'read').read()` → `{events}` | `dsh-session-persistence-jsonl` 的 `list / open / read` 签名相同 |
+| `agent/created` 载荷 `{agent, source}`，`agent.session / inbox`，`agents.get(id).status` | `dsh-agent` 的 `announce()`；`agentOf` 两种形状都认 |
+| `sessions.fork(source, boundary)` 的 `parentSession / isSeeded / inheritedEventCount` | `dsh-session` 的 `fork()` |
+| 浏览器半：`dsh.client` 声明、`exports["./client"]`、`/plugins/<id>/…` 路由 | `dsh-client-modules` 的 `parseDshClient` 同款；bundle 改由 `/plugins/??a/client.js,b/client.js&rev=` 合并下发 |
+| `sessions.list` 的 `ids / byId`（`id, displayTitle, running, blank, cwd, parentId, title`） | `dsh-api-session-controller/lib/client.js` 的 `projectList` |
+| `sessions.binding(id)`、`fork({sessionId, atSeq, increaseTitle})`、`create({workspaceId|cwd})` | 同上 |
+| `workspaces.list.archivedSessionIds` | `dsh-api-workspace-controller/lib/client.js` |
+| `shell.overlay` 插槽；`[data-conversation-scroll]`、`[data-chat-turn]`、`TurnNavigator.module.css`、侧栏 `role="tree"/"treeitem"`、`data-ds-dark-theme` | grep 0.2.0 的 client bundle 全在 |
+
+### 变了的（DESIGN.md「设置：两代宿主」「宿主 0.2：浏览器半的三处搬家」）
+
+| 0.1.5 | 0.2 |
+|---|---|
+| `settings.register(ns, schema)` | 没了；读插件 `export const Config`，字段要 `meta.volatile` |
+| 浏览器半 `settingsScope.bind({namespace})` | `configForms.get(entryId)`（返回物形状一样） |
+| `settings.plugin.item` 插槽 | 没了；插件管理页自动出表单，另有 `settings.section` 可挂一节 |
+| `sessions.list.current` | 没了；列表项 `retainedBy.mainView > 0` |
+| `sessions.open(id)` | `uiWorkspace.openSession(id)` |
+| 列表项 `completed` | `uiSession.sessionStatus`（`Map<id, {running, pendingInteraction, completionUnread}>`） |
+| 兼容性门槛 `dsh.engines` | 只看 `peerDependencies` 里的 `@deepseek-ai/dsh*`（`evaluatePluginCompatibility`，含预发布）；我们没声明，不拦 |
+
+### 桌面版怎么装插件
+
+- 官方入口是应用里的 **设置 → 插件 → 安装**，填 `dsh-chat-tree`（npm）/ `github:…` / `link:D:/绝对路径`
+  （`dsh-plugin-manager` 的 `install-spec` 认这三种；本地路径必须是绝对路径）。
+- 桌面版自带的 `dsh` CLI（Electron 当 node 跑 `app.asar/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`）
+  **拒绝** `--profile desktop`：`profile "desktop" is managed exclusively by the Electron application`。
+- 应用没开时也可以手改：profile `package.json` 加 `dependencies["dsh-chat-tree"] = "link:…"`、
+  `dsh.profile.bundles` 追加 `"dsh-chat-tree"`，然后用自带的 pnpm 11.7
+  （`resources/runtime/pnpm/bin/pnpm.mjs`，同样 Electron 当 node 跑）`pnpm --dir <profile> install`。
+  这和管理页做的事一样，`node_modules/dsh-chat-tree` 是指向工作目录的符号链接，改完 build 刷新即生效。
+- 装在 profile 外的插件也能 `import '@deepseek-ai/…'`：`dsh-app-boot` 的 `installRuntimeInterception`
+  把安装范围内的包（含 `@deepseek-ai/schemastery`）从 asar 里解析给任何路径。我们没用，
+  npm 版 schemastery 的 `extra('volatile', true)` 就够。
+
+### 真机验证过的（桌面 host + 无头 Edge，2026-09-29）
+
+四条路由 200 / 无 cookie 401；index 注入里带 `dsh-chat-tree`，合并 bundle 200；
+新建会话后导轨出现在聊天区右缘、`__dshTree()` 报"可写=true 状态=ready 模式=host"；
+设置导航里有「对话树」一节，3 条滑杆 + 12 个色值框。宿主日志里"2 entries did not activate"
+是 telemetry 缺 `serviceVersion`（不经 Electron 壳启动才有），与我们无关。

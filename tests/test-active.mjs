@@ -119,4 +119,26 @@ console.log('用例 6：pinActiveTurn / unpinActiveTurn')
 	check(pinnedTurn() === undefined, '重复解钉不炸')
 }
 
+console.log('用例 7：未读节点读过之后的三段式 —— 先不动、再提示、再化成普通')
+{
+	const { readPhase, readAnimation, nextReadBoundary, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS, READ_ANIM } = pure
+	const t0 = 10000
+	check(readPhase(t0, t0) === 'hold' && readPhase(t0, t0 + READ_HOLD_MS - 1) === 'hold', '头一段原样不动')
+	check(readPhase(t0, t0 + READ_HOLD_MS) === 'fade', '到点开始提示')
+	check(readPhase(t0, t0 + READ_HOLD_MS + READ_FADE_MS) === 'melt', '提示完换配色、颜色化过去')
+	check(readPhase(t0, t0 + READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS) === 'done', '化完就是普通节点')
+	check(readPhase(t0, t0 - 5) === 'done' && readPhase(NaN, t0) === 'done', '时钟倒走 / 坏时刻当作已经结束，不许卡在绿色')
+	check(readAnimation('hold', false, false) === 'none' && readAnimation('melt', false, false) === 'none', '只有 fade 那段有动画')
+	check(readAnimation('fade', false, false).startsWith(READ_ANIM.ring), '圆/方：鼓一下 + 散圈')
+	check(readAnimation('fade', false, true).startsWith(READ_ANIM.spin), '菱形：保住 45°')
+	check(readAnimation('fade', true, true).startsWith(READ_ANIM.flat), '多边形/字/图片：只鼓不散圈（散出来是方的）')
+	// 下一次该重画：取最近的段落边界；结束的记录顺手删掉
+	const readAt = new Map([['a', t0], ['b', t0 - READ_HOLD_MS - 100], ['c', t0 - 99999]])
+	const wait = nextReadBoundary(readAt, t0)
+	check(wait === READ_FADE_MS - 100, `最近的边界是 b 的 fade 结束（还有 ${READ_FADE_MS - 100}ms），实际 ${wait}`)
+	check(!readAt.has('c') && readAt.has('a') && readAt.has('b'), '早就结束的 c 被删掉，别的留着')
+	check(nextReadBoundary(new Map(), t0) === undefined, '没有记录就不用重画')
+	console.log(`  hold ${READ_HOLD_MS}ms → fade ${READ_FADE_MS}ms → melt ${READ_MELT_MS}ms → done；三套关键帧按形状挑`)
+}
+
 report()

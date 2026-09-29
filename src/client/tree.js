@@ -16,6 +16,55 @@
 /** 树根那个空节点的 key。 */
 export const ROOT_KEY = 'root'
 
+// ===== 会话列表：两代宿主的差异在这儿抹平 =====
+//
+// `ctx.sessions.list` 的快照 `{ids, byId}` 两代都有，差的是两件事：
+//   · 当前会话：0.1.5 直接给 `current`；0.2 没有这个字段，改成列表项上的
+//     `retainedBy.mainView > 0`（宿主自己的 ui-session 也是这么判的）。
+//   · 跑完未读：0.1.5 在列表项的 `completed`；0.2 挪到 `uiSession.sessionStatus`
+//     那张 `Map<id, {running, completionUnread}>` 里。
+// 下面两个函数把这些揉回 0.1.5 的形状，别处（rail / sidebar / graph）一律按老形状读。
+
+/**
+ * 当前会话 id。
+ * @param listState - `ctx.sessions.list` 的快照
+ * @returns 会话 id；没有当前会话就 undefined
+ */
+export function currentOf(listState) {
+	if (!listState) return undefined
+	if (typeof listState.current === 'string') return listState.current
+	const byId = listState.byId || {}
+	for (const id of listState.ids || []) {
+		const kept = byId[id] && byId[id].retainedBy
+		if (kept && typeof kept === 'object' && kept.mainView > 0) return id
+	}
+	return undefined
+}
+
+/**
+ * 把 0.2 的状态表并进列表项：有表就按表填 `running` / `completed`，没有原样返回。
+ * @param listState - `ctx.sessions.list` 的快照
+ * @param statuses - `uiSession.sessionStatus` 的快照（Map），0.1.5 上是 undefined
+ * @returns 同形状的快照；没有状态表时**就是传进来的那个对象**（引用不变，别处的 memo 才不会白刷）
+ */
+export function withStatus(listState, statuses) {
+	if (!listState || !statuses || typeof statuses.get !== 'function' || statuses.size === 0) return listState
+	const byId = Object.assign({}, listState.byId || {})
+	let changed = false
+	for (const [id, status] of statuses) {
+		const item = byId[id]
+		if (item === undefined || !status) continue
+		// 宿主自己的写法是 `status.running ?? item.running`：状态表还没见过这条会话时不盖列表项
+		const running = status.running === undefined ? item.running === true : status.running === true
+		const completed = status.completionUnread === true
+		if (item.running === running && (item.completed === true) === completed) continue
+		byId[id] = Object.assign({}, item, { running }, completed ? { completed: true } : {})
+		if (!completed) delete byId[id].completed
+		changed = true
+	}
+	return changed ? Object.assign({}, listState, { byId }) : listState
+}
+
 /**
  * 拼一个节点 key。
  * @param sessionId - 会话 id

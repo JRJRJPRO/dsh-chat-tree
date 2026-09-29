@@ -23,6 +23,7 @@
  */
 import { react } from './runtime.js'
 import { getJson, warn } from './net.js'
+import { currentOf } from './tree.js'
 import { foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
 
 /** 容器上的记号：`group`（工作区分组视图，行间距 2px）/ `flat`（"放在一个列表里"视图）。 */
@@ -40,12 +41,57 @@ const ROW_ATTRS = [
 	'data-dsht-dot', // 树头：状态槽里有没有东西（有的话箭头平时藏着，悬停才盖上去）
 	'data-dsht-holds', // 树头：收起着、而当前会话就在里面
 	'data-dsht-busy', // 树头：收起着、而里面有分支在跑（running）或刚跑完（completed）
-	'data-dsht-hidden', // 分支：收起时藏掉
+	'data-dsht-hidden', // 分支：收起时藏掉（贴在座位上，见 unitOf；行上也顺手清）
 	'data-dsht-last', // 分支：最后一条（连线画成 └ 而不是 ├）
 ]
 
 /** 只有树头才有的那几项，分支行上要清掉。 */
 const HEAD_ATTRS = ROW_ATTRS.filter((name) => !['data-dsht-role', 'data-dsht-hidden', 'data-dsht-last'].includes(name))
+
+/**
+ * 一行在容器里占的那个"座位"元素。
+ *
+ * ⚠️ 宿主的会话行**不是**容器的直接孩子：每一行都被 HoverCard 包在一个
+ *    `<span style="display:block">` 里（悬停预览卡的锚点），工作区标题行也一样。
+ *    座位号（CSS `order`）和"藏起来"必须落在这个包装上 —— 落在行上的话，行藏了
+ *    包装还在，留一条 2px 的空缝；`order` 落在行上更是没用，它根本不是 flex 的孩子。
+ *    第一版就是这么栽的：每行的 parentElement 各不相同，于是"同一个容器里的两行"永远找不到。
+ *
+ * 判法不认 HoverCard 的类名：从行往上爬，爬到父元素是 `[role="tree"]`、或者父元素底下
+ * 有两个以上带 treeitem 的孩子为止 —— 那个父元素就是容器，爬到的就是座位。
+ * 宿主哪天不套那层 span 了，座位就是行本身，照样对。
+ * @param row - `[role="treeitem"]` 那个元素
+ * @returns 座位元素（可能就是行本身）
+ */
+export function unitOf(row) {
+	let unit = row
+	for (let hop = 0; hop < 6; hop += 1) {
+		const parent = unit.parentElement
+		if (parent === null || parent === undefined) return unit
+		if (parent.getAttribute('role') === 'tree') return unit
+		let seats = 0
+		for (const child of parent.children) {
+			if (child.getAttribute('role') === 'treeitem' || child.querySelector('[role="treeitem"]') !== null) seats += 1
+			if (seats >= 2) return unit
+		}
+		unit = parent
+	}
+	return unit
+}
+
+/**
+ * 座位里的那一行。
+ * @param unit - 座位元素
+ * @returns 行；这个座位不是会话行（工作区标题、"还有 n 条"按钮）就 null
+ */
+function rowIn(unit) {
+	return unit.getAttribute('role') === 'treeitem' ? unit : unit.querySelector('[role="treeitem"]')
+}
+
+/** 分叉图标（三个点、一条弯线），当 CSS mask 用 —— 颜色由 background 给，跟主题走。 */
+const FORK_ICON = `url("data:image/svg+xml,${encodeURIComponent(
+	"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='4' cy='3' r='2'/><circle cx='4' cy='13' r='2'/><circle cx='12' cy='5' r='2'/><path d='M4 5v6M12 7c0 3-8 2-8 4' fill='none' stroke='#000' stroke-width='1.6'/></svg>",
+)}")`
 
 /** 折角箭头。收起时朝右，摊开转 90°。 */
 const CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -73,10 +119,19 @@ const STYLE =
 	'[data-dsht-role="branch"][data-dsht-last="1"]::before{bottom:50%}' +
 	'[data-dsht-role="branch"]::after{content:"";position:absolute;left:15px;top:50%;width:7px;height:1px;background:var(--dsw-alias-border-l4);pointer-events:none}' +
 	'[data-dsht-hidden="1"]{display:none!important}' +
+	// 树头右边写"这棵树几条对话"：分叉图标 + 数字，灰的、没底色。带底色的数字角标看着像
+	// "几条新消息"（John 提的）；分叉图标说的是"几条分支"，误会不了。
+	// 宿主那几个 span 先全推到 -1，再把最后两个（时间、"…"菜单）推到 1，
+	// 图标（::before）和数字（::after）就落在标题和时间之间。
+	'[data-dsht-role="head"]>span{order:-1}' +
 	'[data-dsht-role="head"]>span:nth-last-of-type(-n+2){order:1}' +
-	'[data-dsht-role="head"][data-dsht-open="0"]::after{content:attr(data-dsht-count);order:0;flex:none;margin:0 6px 0 4px;min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:9px;font-size:11px;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover)}' +
-	'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="running"]::after{color:#fff;background:var(--dsw-alias-state-business-primary)}' +
-	'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="completed"]::after{color:#fff;background:var(--dsw-alias-state-success-primary,#3fb950)}' +
+	`[data-dsht-role="head"][data-dsht-open="0"]::before{content:"";order:0;flex:none;width:12px;height:12px;margin-left:6px;background:var(--dsw-alias-label-tertiary);-webkit-mask:${FORK_ICON} center/contain no-repeat;mask:${FORK_ICON} center/contain no-repeat}` +
+	'[data-dsht-role="head"][data-dsht-open="0"]::after{content:attr(data-dsht-count);order:0;flex:none;margin:0 6px 0 3px;font-size:11px;line-height:18px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}' +
+	// 折着的树里有分支在跑（蓝）/ 跑完了你还没看（绿）：箭头右上角一个小点。
+	// 点在箭头上，说的就是"里面"—— 和树头自己的状态（宿主画在状态槽里）分得开。
+	`.${FOLD_BUTTON}::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border-radius:50%;background:transparent}` +
+	`[data-dsht-busy="running"]>.${FOLD_BUTTON}::after{background:var(--dsw-alias-state-business-primary)}` +
+	`[data-dsht-busy="completed"]>.${FOLD_BUTTON}::after{background:var(--dsw-alias-state-success-primary,#3fb950)}` +
 	'[data-dsht-role="head"][data-dsht-holds="1"]:not(:hover){background:color-mix(in srgb,var(--dsw-alias-interactive-bg-hover) 55%,transparent)}' +
 	`.${FOLD_BUTTON}{position:absolute;left:6px;top:50%;width:20px;height:20px;margin-top:-10px;padding:0;border:0;border-radius:6px;background:none;color:var(--dsw-alias-label-tertiary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1}` +
 	`.${FOLD_BUTTON}:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}` +
@@ -147,24 +202,32 @@ function put(el, name, value) {
 	} else if (el.getAttribute(name) !== value) el.setAttribute(name, value)
 }
 
-/** 摘掉一行上的全部记号（座位号也清）。 */
+/** 摘掉一行上的全部记号（不含座位号，那个在座位上）。 */
 function unmarkRow(el) {
 	for (const name of ROW_ATTRS) put(el, name, null)
-	if (el.style && el.style.order !== '') el.style.order = ''
 	const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
 	if (button !== null) button.remove()
 }
 
-/** 摘掉一个容器和它所有孩子上的记号。 */
+/** 摘掉一个座位（座位号、藏起来）和它里面那一行的记号。 */
+function unmarkUnit(unit) {
+	put(unit, 'data-dsht-hidden', null)
+	if (unit.style && unit.style.order !== '') unit.style.order = ''
+	const row = rowIn(unit)
+	if (row !== null) unmarkRow(row)
+}
+
+/** 摘掉一个容器和它所有座位上的记号。 */
 function unmarkContainer(el) {
 	put(el, FOLD_ATTR, null)
-	for (const child of el.children) unmarkRow(child)
+	for (const child of el.children) unmarkUnit(child)
 }
 
 /** 把页面上所有记号全摘掉。停用 / 关掉设置时用。 */
 export function clearFold() {
 	if (typeof document === 'undefined') return
 	for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) unmarkContainer(el)
+	for (const el of document.querySelectorAll('[data-dsht-hidden]')) unmarkUnit(el)
 	for (const el of document.querySelectorAll('[data-dsht-role]')) unmarkRow(el)
 	for (const el of document.querySelectorAll(`.${FOLD_BUTTON}`)) el.remove()
 }
@@ -197,7 +260,7 @@ function ensureButton(row, tree, count, open, onToggle) {
 	}
 	button.__dshtToggle = onToggle
 	button.dataset.tree = tree
-	const label = `${open ? '收起' : '展开'} ${count} 条分支`
+	const label = `${open ? '收起' : '展开'}这棵树（${count} 条对话）`
 	put(button, 'aria-label', label)
 	put(button, 'title', label)
 	put(button, 'aria-expanded', open ? 'true' : 'false')
@@ -220,6 +283,18 @@ function busyOf(branches, byId) {
 	return done ? 'completed' : null
 }
 
+/** 最近一次贴完的账：几个容器、几行、认出几行、折了几棵。`__dshTree()` 里看。 */
+let lastFold = { containers: 0, rows: 0, known: 0, folded: 0 }
+
+/**
+ * 最近一次贴完的账，一句人话。自诊断用："一棵都没折"时先看认没认出会话 id。
+ * @returns 描述
+ */
+export function foldReport() {
+	const { containers, rows, known, folded } = lastFold
+	return `容器 ${containers} 个，会话行 ${rows} 行，认出 ${known} 行，折了 ${folded} 棵`
+}
+
 /**
  * 贴一遍。幂等：同样的输入贴两次，DOM 不再变。
  * @param heads - `foldHeads` 的结果
@@ -227,20 +302,26 @@ function busyOf(branches, byId) {
  * @param byId - 会话列表快照的 byId
  * @param current - 当前会话 id
  * @param onToggle - 箭头点了叫谁
+ * @param trees - 树编号 → 全部成员的会话 id（按会话列表算，含被宿主收起的）；缺就按画出来的行算
+ * @param wantMore - 刚被用户摊开的树（Set）；成员被宿主收着的话替他按一下「还有 n 条」，按完划掉
  * @returns 折了几棵树（自诊断 / 测试用）
  */
-export function applyFold(heads, open, byId, current, onToggle) {
+export function applyFold(heads, open, byId, current, onToggle, trees, wantMore) {
 	if (typeof document === 'undefined') return 0
 	const parents = []
 	for (const row of document.querySelectorAll('[role="treeitem"]')) {
-		const parent = row.parentElement
-		if (parent !== null && !parents.includes(parent)) parents.push(parent)
+		const parent = unitOf(row).parentElement
+		if (parent !== null && parent !== undefined && !parents.includes(parent)) parents.push(parent)
 	}
 	const kept = new Set()
 	let folded = 0
+	const tally = { containers: parents.length, rows: 0, known: 0, folded: 0 }
 	for (const parent of parents) {
 		const children = Array.from(parent.children)
-		const ids = children.map((el) => (el.getAttribute('role') === 'treeitem' ? sessionIdOf(el) : undefined))
+		const rows = children.map(rowIn)
+		const ids = rows.map((el) => (el === null ? undefined : sessionIdOf(el)))
+		tally.rows += rows.filter((el) => el !== null).length
+		tally.known += ids.filter((id) => id !== undefined).length
 		const plan = foldRows(ids, heads)
 		if (!plan.some((row) => row.role === 'head')) {
 			unmarkContainer(parent)
@@ -256,42 +337,61 @@ export function applyFold(heads, open, byId, current, onToggle) {
 			branchesOf.set(row.tree, list)
 		}
 		for (const row of plan) {
-			const el = children[row.index]
+			const unit = children[row.index]
 			const order = String(row.order)
-			if (el.style && el.style.order !== order) el.style.order = order
+			if (unit.style && unit.style.order !== order) unit.style.order = order
+			const el = rows[row.index]
+			if (el === null) {
+				put(unit, 'data-dsht-hidden', null)
+				continue
+			}
 			if (row.role === 'head') {
 				const isOpen = open.has(row.tree)
-				const branches = branchesOf.get(row.tree) || []
+				// 这棵树的全部成员按**会话列表**算，不按侧栏画出来的行算：宿主每个工作区只画
+				// 最近 5 条、其余收进「还有 n 条」，被收进去的分支也要算进"几条"、也要算进"里面有没有在跑"
+				const members = trees !== undefined && trees.get(row.tree) !== undefined ? trees.get(row.tree) : (branchesOf.get(row.tree) || []).concat([row.id])
+				const others = members.filter((id) => id !== row.id)
 				const slot = el.querySelector(':scope > span[class*="_slot"]')
 				put(el, 'data-dsht-role', 'head')
 				put(el, 'data-dsht-open', isOpen ? '1' : '0')
-				put(el, 'data-dsht-count', String(row.count))
+				put(el, 'data-dsht-count', String(members.length))
 				put(el, 'data-dsht-slot', slot === null ? null : '1')
 				put(el, 'data-dsht-dot', slot !== null && slot.childElementCount > 0 ? '1' : null)
-				put(el, 'data-dsht-holds', !isOpen && branches.includes(current) ? '1' : null)
-				put(el, 'data-dsht-busy', isOpen ? null : busyOf(branches, byId))
-				put(el, 'data-dsht-hidden', null)
+				put(el, 'data-dsht-holds', !isOpen && others.includes(current) ? '1' : null)
+				put(el, 'data-dsht-busy', isOpen ? null : busyOf(others, byId))
 				put(el, 'data-dsht-last', null)
-				ensureButton(el, row.tree, row.count, isOpen, onToggle)
+				put(unit, 'data-dsht-hidden', null)
+				ensureButton(el, row.tree, members.length, isOpen, onToggle)
+				// 刚摊开、而有成员被宿主收在「还有 n 条」里：替用户把宿主那个按钮按一下，
+				// 否则摊开了也只露出画出来的那几条。只按一次（wantMore 里划掉），之后收不收随宿主。
+				if (isOpen && wantMore !== undefined && wantMore.has(row.tree)) {
+					wantMore.delete(row.tree)
+					if (members.length > row.count + 1) {
+						const more = parent.querySelector('button[class*="_sessionOverflowButton"][aria-expanded="false"]')
+						if (more !== null && typeof more.click === 'function') more.click()
+					}
+				}
 				folded += 1
 			} else if (row.role === 'branch') {
 				const isOpen = open.has(row.tree)
 				const branches = branchesOf.get(row.tree) || []
 				put(el, 'data-dsht-role', 'branch')
-				put(el, 'data-dsht-hidden', isOpen ? null : '1')
 				put(el, 'data-dsht-last', branches[branches.length - 1] === row.id ? '1' : null)
 				for (const name of HEAD_ATTRS) put(el, name, null)
+				// 藏在座位上而不是行上：行藏了包装还在，会留一条 2px 的空缝
+				put(unit, 'data-dsht-hidden', isOpen ? null : '1')
 				const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
 				if (button !== null) button.remove()
 			} else {
 				// 没折的行也要占座（order 已经设了），别的记号全清
-				for (const name of ROW_ATTRS) put(el, name, null)
-				const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
-				if (button !== null) button.remove()
+				put(unit, 'data-dsht-hidden', null)
+				unmarkRow(el)
 			}
 		}
 	}
 	for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) if (!kept.has(el)) unmarkContainer(el)
+	tally.folded = folded
+	lastFold = tally
 	return folded
 }
 
@@ -300,11 +400,15 @@ export function applyFold(heads, open, byId, current, onToggle) {
  *
  * Rail 是常驻组件（shell.overlay），所以侧栏折叠也跟着常驻 —— 不在会话界面时
  * 左边的列表照样在，照样要折。
+ *
+ * **切会话不自动摊开**（John 的原话：不然和直接全列着没什么区别）。当前会话折在
+ * 某棵树里时，树头带一层底色（`data-dsht-holds`）提示"你在里面"，想看就点箭头。
  * @param listState - 会话列表快照（`ctx.sessions.list`）
  * @param shape - Rail 手里的 `shape.json`（改树形的回显也在里面）；没有就自己拉
  * @param enabled - 设置里开着吗
+ * @param archived - 归档集（`ctx.workspaces` 快照的 archivedSessionIds）：归档的不算树的成员
  */
-export function useSidebarFold(listState, shape, enabled) {
+export function useSidebarFold(listState, shape, enabled, archived) {
 	const [own, setOwn] = react.useState(undefined)
 	const [open, setOpen] = react.useState(readOpenTrees)
 	const live = shape || own
@@ -326,31 +430,33 @@ export function useSidebarFold(listState, shape, enabled) {
 		}
 	}, [missing])
 
-	const sessions = react.useMemo(
-		() => (listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined) : []),
-		[listState],
-	)
+	const archivedKey = (archived || []).join(',')
+	const sessions = react.useMemo(() => {
+		const gone = new Set(archived || [])
+		return listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
+	}, [listState, archivedKey]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
 	const heads = react.useMemo(() => foldHeads(sessions, live || {}), [sessions, live])
-	const current = listState ? listState.current : undefined
+	// 树编号 → 全部成员（按会话列表算，含被宿主收进「还有 n 条」的那些）
+	const trees = react.useMemo(() => {
+		const out = new Map()
+		for (const item of sessions) {
+			const tree = heads.get(item.id) || item.id
+			const list = out.get(tree) || []
+			list.push(item.id)
+			out.set(tree, list)
+		}
+		return out
+	}, [sessions, heads])
+	const current = currentOf(listState) // 两代宿主的"当前会话"都认（tree.js）
 	const byId = (listState && listState.byId) || {}
 
-	// 切到一条折在树里的分支 → 把那棵树摊开，不然你正看着的会话在左边找不到。
-	// 只在**切会话那一下**做一次，之后想收照样能收（收了树头会带一层底色提示"当前在里面"）。
-	const seen = react.useRef(undefined)
-	react.useEffect(() => {
-		if (!enabled || typeof current !== 'string' || seen.current === current) return
-		const tree = heads.get(current)
-		if (tree === undefined) return // 列表 / 形状还没到，下一次再看
-		seen.current = current
-		if (tree === current || open.includes(tree)) return
-		const next = nextOpen(open, tree, true)
-		writeOpenTrees(next)
-		setOpen(next)
-	}, [enabled, current, heads, open])
-
+	// 用户刚摊开的树：成员被宿主收着的话，applyFold 替他按一下「还有 n 条」（按完划掉）
+	const wantMore = react.useRef(new Set())
 	const toggle = react.useCallback((tree) => {
 		setOpen((now) => {
-			const next = nextOpen(now, tree, !now.includes(tree))
+			const opening = !now.includes(tree)
+			if (opening) wantMore.current.add(tree)
+			const next = nextOpen(now, tree, opening)
 			writeOpenTrees(next)
 			return next
 		})
@@ -376,7 +482,7 @@ export function useSidebarFold(listState, shape, enabled) {
 		const repaint = () => {
 			frame = 0
 			try {
-				applyFold(heads, openSet, byId, current, toggle)
+				applyFold(heads, openSet, byId, current, toggle, trees, wantMore.current)
 			} catch (error) {
 				warn('侧栏折叠没贴上', error)
 			}
@@ -392,5 +498,5 @@ export function useSidebarFold(listState, shape, enabled) {
 			if (frame !== 0) cancelAnimationFrame(frame)
 			observer.disconnect()
 		}
-	}, [enabled, heads, open, byId, current, toggle])
+	}, [enabled, heads, trees, open, byId, current, toggle])
 }

@@ -5,26 +5,26 @@ import { h, portal, react } from './runtime.js'
 import { C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { ROOT_KEY, branchAction, conversationOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, workspaceOf } from './tree.js'
+import { ROOT_KEY, branchAction, conversationOf, currentOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
 import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
 import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeOf, starSkin } from './shapes.js'
 import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, isRewindPending, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
+import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, nextReadBoundary, readAnimation, readPhase, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
-import { useSidebarFold } from './sidebar.js'
+import { foldReport, useSidebarFold } from './sidebar.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
 import { themeFrom, visibleRange } from './settings-model.js'
 import { Detail } from './ui-detail.js'
 
-/** ⏳ 那句解释。title 和触摸设备上戳开的浮层是同一份，别让它们各写一遍。 */
-export const REWIND_TIP = '这条会话正在跑，暂时读不了它的撤回记录 —— 读那个文件会打断正在跑的这一轮。\n树上画的是上一次读到的状态，撤回过的轮次可能还画着。这一轮跑完会自动更正。'
-
 /** 树本体。 */
 export function Rail(props) {
 	const api = (props && props.api) || {}
-	const listState = useObservable(api.list)
+	const rawList = useObservable(api.list)
+	// 0.2 宿主把"在跑 / 跑完未读"挪到了一张单独的状态表；并回列表项，下面全按老形状读（tree.js 的 withStatus）
+	const statuses = useObservable(api.status)
+	const listState = react.useMemo(() => withStatus(rawList, statuses), [rawList, statuses])
 	const workspaceState = useObservable(api.workspaces)
 	const box = useChatBox()
 	const activeTurn = useActiveTurn()
@@ -41,7 +41,8 @@ export function Rail(props) {
 	const theme = themeFrom(tuned, settings.user)
 	const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
-	const current = listState && listState.current
+	// 0.1.5 直接给 current，0.2 要从列表项的 retainedBy 里找（tree.js 的 currentOf）
+	const current = currentOf(listState)
 	const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
 	// 点击跳转钉住的那一轮只在本会话里有意义：换了会话就解钉。
 	// （jump 自己也会换会话：它是 open 之后隔了 loadThrough + 60ms 才钉，这条效果早就跑完了，不会把它解掉。）
@@ -77,6 +78,19 @@ export function Rail(props) {
 	const favColors = react.useMemo(() => readFavColors(), [tick, outlines])
 	// 刚被点的那颗星，用来播一次性动画（见 hooks.js 的 starAnimation）
 	const [flash, setFlash] = react.useState(null)
+	// 未读节点读过之后的三段式（hooks.js 的 readPhase）：上一帧哪些点是未读、哪些点什么时候变成了读过。
+	// 都是 ref：这是"这一帧和上一帧比"的账，不该触发重画；到点重画由下面那个定时器管。
+	const wasUnread = react.useRef(new Set())
+	const readAt = react.useRef(new Map())
+	const [readTick, setReadTick] = react.useState(0)
+	// 到下一个段落边界就重画一次（hold → fade → melt → done）。每次渲染都重算一遍
+	// 离边界还有多久，所以别的原因引起的重画不会把节奏打乱。
+	react.useEffect(() => {
+		const wait = nextReadBoundary(readAt.current, Date.now())
+		if (wait === undefined) return undefined
+		const timer = setTimeout(() => setReadTick((value) => value + 1), wait)
+		return () => clearTimeout(timer)
+	})
 
 	// 换悬停目标用 hover intent：卡片开着时，鼠标**停下来**才换目标，一直在动就什么都不抢。
 	// 这样从点走到卡片上的 ＋ 全程安全 —— 赶路途中压过多少个点都无所谓。
@@ -171,13 +185,11 @@ export function Rail(props) {
 		document.addEventListener('pointerdown', away, true)
 		return () => document.removeEventListener('pointerdown', away, true)
 	}, [canHover])
-	// ⏳ 的说明在 title 里，而 title 在触摸设备上永远不会出现 —— 戳一下摊开。
-	const [tip, setTip] = react.useState(false)
 
 	// 左侧会话列表按对话树折叠（sidebar.js）。放在下面那个早退**之前**：
 	// 不在会话界面（设置页 / 全局面板）时左边的列表照样在，照样要折。
 	// shape 用 Rail 手里的（改树形的回显也在里面）；还没开任何会话时它是 undefined，钩子自己拉。
-	useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false)
+	useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false, (workspaceState && workspaceState.archivedSessionIds) || [])
 
 	// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 	// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
@@ -195,9 +207,12 @@ export function Rail(props) {
 	// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 	//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
 	//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
+	// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
+	// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
+	const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
 	let graph
 	try {
-		graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
+		graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
 	} catch (error) {
 		warn('建图失败，先拿上一棵顶着', error)
 	}
@@ -212,6 +227,25 @@ export function Rail(props) {
 		}, `对话树拉不到数据：${outlines.error}`)
 	}
 
+	// 【未读 → 读过】和上一帧比：上一帧还是 unread、这一帧成了 normal 的点，记下时刻。
+	// 之后 READ_HOLD_MS 内照旧画成未读，再播一段"要变了"，最后颜色化成普通（见 hooks.js）。
+	{
+		const now = Date.now()
+		const seen = new Set()
+		for (const node of graph.nodes) {
+			if (node.kind === 'unread') seen.add(node.key)
+			else if (node.kind === 'normal' && wasUnread.current.has(node.key) && !readAt.current.has(node.key)) readAt.current.set(node.key, now)
+		}
+		wasUnread.current = seen
+	}
+	const phaseOf = (node) => (readAt.current.has(node.key) ? readPhase(readAt.current.get(node.key), Date.now()) : 'done')
+	/** 这一帧该按什么角色画：读过没多久的仍按未读画。**画点的每一处都得用它**，别直接读 node.kind。 */
+	const kindOf = (node) => {
+		const phase = phaseOf(node)
+		return phase === 'hold' || phase === 'fade' ? 'unread' : node.kind
+	}
+	void readTick // 只为让到点的那次 setReadTick 触发重画；值本身不用
+
 	// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 	// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
 	const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), range.limit, range.mode)
@@ -225,6 +259,7 @@ export function Rail(props) {
 		radiusText: `${range.text}（${range.spec.label}）`,
 		nodes: graph.nodes,
 		sessionCount: (listState.ids || []).length,
+		sidebar: foldReport,
 	})
 
 	// 这棵树上画出来最宽的那个形状占多少像素 —— 列距按它留（见 railLayout）。
@@ -235,8 +270,8 @@ export function Rail(props) {
 		let most = 0
 		for (const node of graph.nodes) {
 			const star = favorites.has(node.key) ? favShape(favIcons[node.key]) : undefined
-			const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star
-			most = Math.max(most, drawnWidth(shape, dotSizeOf(node.kind, size, 1)))
+			const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme) : star
+			most = Math.max(most, drawnWidth(shape, dotSizeOf(kindOf(node), size, 1)))
 		}
 		return most
 	}
@@ -280,13 +315,13 @@ export function Rail(props) {
 	// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
 	// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
 	const fitOf = (node, size) => {
-		const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(node.kind, node.active, theme, spanAt(size))
+		const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(kindOf(node), node.active, theme, spanAt(size))
 		return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
 	}
 	const reachOf = (node) => {
 		const eye = eyeOf(node)
 		// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
-		return reachFor(node.kind, node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(node.kind, dotSize, eye.scale)), starOf(node))
+		return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(kindOf(node), dotSize, eye.scale)), starOf(node))
 	}
 
 	const edge = (node) => {
@@ -310,7 +345,7 @@ export function Rail(props) {
 		const isFocused = isFocusedNode(node, activeTurn)
 		const isHover = hover !== null && hover.node === node
 		const eye = eyeOf(node)
-		const size = dotSizeOf(node.kind, dotSize, eye.scale)
+		const size = dotSizeOf(kindOf(node), dotSize, eye.scale)
 		// 滑上去就把淡出撤掉，但**不改尺寸** —— size 决定 left/top，一变就整个点跳一下，
 		// transition 只过渡 transform/opacity，拦不住这种位移。放大交给已有的 scale(1.4)。
 		const alpha = isHover ? 1 : eye.alpha
@@ -331,8 +366,8 @@ export function Rail(props) {
 		// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
 		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
 		// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-		const shape = star === undefined ? shapeOf(node.kind, node.active, theme, spanAt(size)) : star.shape
-		const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+		const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanAt(size)) : star.shape
+		const skin = star === undefined ? inkOf(kindOf(node), node.active, isFocused, theme) : star
 		// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
 		const drawn = size * fitOf(node, size)
 		parts.push(h('span', {
@@ -340,14 +375,17 @@ export function Rail(props) {
 			style: Object.assign(
 				{ position: 'absolute', left: `${x - drawn / 2}px`, top: `${y - drawn / 2}px`, cursor: 'pointer' },
 				TAPPABLE,
-				dotStyle(node.kind, node.active, isHover, drawn, isFocused, theme, alpha, star),
+				dotStyle(kindOf(node), node.active, isHover, drawn, isFocused, theme, alpha, star),
 				// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 				//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 				//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
-				{ animation: starAnimation(flash, node.key) },
+				//    收藏那一下的动画优先；没有的话看"读过之后要变了"那一段（readAnimation）。
+				{ animation: starAnimation(flash, node.key) !== 'none' ? starAnimation(flash, node.key) : readAnimation(phaseOf(node), shape.poly !== undefined || shape.glyph !== undefined || shape.image !== undefined, shape.spin === true) },
+				// melt 那一段：配色已经是普通的了，但让颜色化过去，别硬切。`transition` 本来就在 dotStyle 里，只是换值，key 集合不变。
+				phaseOf(node) === 'melt' ? { transition: 'border-color .4s ease, background .4s ease, color .4s ease, transform .12s ease, opacity .12s ease' } : {},
 			),
 			onClick: go,
-		}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(node.kind))))
+		}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(kindOf(node)))))
 		// 透明加宽命中区：点很小，直接点很难中
 		parts.push(h('span', {
 			key: `hit${node.key}`,
@@ -382,38 +420,8 @@ export function Rail(props) {
 			style: { position: 'fixed', top: `${top}px`, height: `${height}px`, right: `${right}px`, width: `${railWidth}px`, zIndex: 40, pointerEvents: 'none' },
 			onMouseLeave: release,
 		},
-		// ⏳：这条会话正跑着，撤回记录这一轮读不了（读它会打断那一轮，见 src/host/rewind.js）。
-		// 不说一声的话，撤回完紧接着发的那一轮树上画的还是撤回前的形状，看着就是"这插件又坏了"。
-		// 放在导轨上沿那 16px 空当里，不压到任何一个点；小、淡、鼠标停上去才解释。
-		!isRewindPending(outlines) ? null : h('span', {
-			key: 'rewind-pending',
-			title: REWIND_TIP,
-			style: Object.assign({
-				position: 'absolute', top: '-13px', right: '0px',
-				fontSize: '10px', lineHeight: '12px', color: C.muted,
-				pointerEvents: 'auto', cursor: 'help',
-			}, TAPPABLE),
-			// ⚠️ 这行字只写在 title 里，而 **title 在触摸设备上永远不会出现** ——
-			//    手指上没有"停在上面"这个状态。于是 iPad 用户看到的就是一个不明所以的
-			//    ⏳ 加一棵画着旧形状的树，正是这条提示要避免的那种"这插件又坏了"。
-			//    能悬停的机器上不挂 onClick：那边 title 已经够了，多一个点开的浮层只会碍事。
-			onClick: canHover ? undefined : () => setTip((was) => !was),
-		}, [
-			// ⚠️ 那 0.55 的透明度只能压在这个字上，**不能留在外面那层**：
-			//    opacity 对子元素是连乘的，压在外层的话戳开的说明也跟着半透明，
-			//    小字加半透明，正是这条提示最不该长成的样子。
-			h('span', { key: 'g', style: { opacity: 0.55 } }, '⏳'),
-			!tip || canHover ? null : h('div', {
-				key: 'tip',
-				style: {
-					position: 'absolute', top: '16px', right: '0px', width: `${Z.card}px`, maxWidth: '70vw',
-					background: C.card, color: C.text, border: `1px solid ${C.line}`, borderRadius: '7px',
-					boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
-					font: '11.5px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif',
-					whiteSpace: 'pre-wrap', opacity: 1, zIndex: 1,
-				},
-			}, REWIND_TIP),
-		]),
+		// 会话跑着时撤回记录读不了（见 src/host/rewind.js），树先按上一次读到的画，
+		// 跑完自动重拉更正（hooks.js 的 rewindRetryDelay）。以前这里挂一个 ⏳ 提示，已去掉。
 		h(
 			'div',
 			{

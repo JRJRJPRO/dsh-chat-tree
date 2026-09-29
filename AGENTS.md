@@ -33,6 +33,13 @@ dsh plugin --profile web add link:D:/绝对路径/dsh-chat-tree
 `node_modules/dsh-chat-tree` 会是一个指向工作目录的符号链接：插件市场照样把它列进「已安装」，
 而你改完 `npm run build` 刷新页面就见效，不用重装。
 
+**桌面版（dsh 0.2）**：profile 在 `~/.dsh/profiles/desktop`，CLI 拒绝碰它。应用里
+**设置 → 插件 → 安装** 填 `link:D:/绝对路径/dsh-chat-tree`；或者应用没开时手改 profile 的
+`package.json`（`dependencies` + `dsh.profile.bundles`）再用自带的 pnpm 装，见
+NATIVE-BASELINE.md 末尾。host 半改完要**重启应用**。两代宿主的差异（设置、当前会话、
+开会话、跑完未读）都在 DESIGN.md「设置：两代宿主」「宿主 0.2：浏览器半的三处搬家」，
+`test-lifecycle.mjs` 用例 6 钉着两条路。
+
 ⚠️ **别再往 `cordis.patch.yml` 里写 `file:///…` 的 `insert`** —— 和上面的装法同时用，
 同一个 id 会插两次，cordis 直接拒绝启动。
 

@@ -551,7 +551,7 @@ export function onAccent(hex) {
  */
 export const PALETTE = {
 	normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657',
-	emptyColor: '#58a6ff', favoriteColor: STAR_COLOR,
+	emptyColor: '#58a6ff', unreadColor: '#3fb950', favoriteColor: STAR_COLOR,
 }
 
 /**
@@ -565,6 +565,7 @@ const SHAPE_DEFAULTS = {
 	currentShape: 'circle',
 	compactShape: 'triangle',
 	emptyShape: 'circle',
+	unreadShape: 'circle',
 	favoriteShape: 'star',
 }
 
@@ -825,6 +826,9 @@ export const ROLES = {
 	current: { color: 'currentColor', shape: 'currentShape' },
 	compact: { color: 'compactColor', shape: 'compactShape', own: true },
 	empty: { color: 'emptyColor', shape: 'emptyShape', own: true, dashed: true, plus: 2 },
+	// 未读：别的分支跑完了你还没看（graph.js 按宿主的 completed 标）。绿色，自带颜色 ——
+	// 它永远不在当前路径上（当前会话不会是"没在看"的），own 只是把这条说死。
+	unread: { color: 'unreadColor', shape: 'unreadShape', own: true },
 }
 
 /**

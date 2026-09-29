@@ -11,11 +11,12 @@
  * 【什么东西不该进这张表】碰 DOM / react / fetch 的。那些在 node 里跑不起来，
  * 要测就得先把"算"从"画"里拆出来 —— 拆出来的那半才进这里。
  */
-import { DEPTH, RADIUS, SCALE, Z, scaleZ } from './const.js'
+import { DEPTH, RADIUS, SCALE, SETTINGS_NS, Z, scaleZ } from './const.js'
 import {
 	branchAction,
 	blockedWhy,
 	conversationOf,
+	currentOf,
 	cutPointOf,
 	cutSet,
 	forkBlockedWhy,
@@ -29,12 +30,13 @@ import {
 	treeOf,
 	treeOfSession,
 	visibleTree,
+	withStatus,
 	workspaceOf,
 	ROOT_KEY,
 } from './tree.js'
 import { buildGraph } from './graph.js'
 import { OPEN_KEY, foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
-import { FOLD_ATTR, FOLD_BUTTON, applyFold, clearFold, sessionIdOf } from './sidebar.js'
+import { FOLD_ATTR, FOLD_BUTTON, applyFold, clearFold, foldReport, sessionIdOf, unitOf } from './sidebar.js'
 import { FADE, anchorNode, elide, fisheye, layersAway, stepsAway } from './elide.js'
 import {
 	CUSTOM,
@@ -98,7 +100,7 @@ import {
 	starSkin,
 } from './shapes.js'
 import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, rewindRetryDelay, settlePin, starAnimation, unpinActiveTurn, watchViewport } from './hooks.js'
+import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, settlePin, starAnimation, unpinActiveTurn, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
@@ -108,12 +110,14 @@ import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 export const __pure = {
 	// 选树、归组、节点上能做什么
 	visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
+	// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
+	currentOf, withStatus,
 	cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
 	foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY,
-	applyFold, clearFold, sessionIdOf, FOLD_ATTR, FOLD_BUTTON,
+	applyFold, clearFold, foldReport, sessionIdOf, unitOf, FOLD_ATTR, FOLD_BUTTON,
 	// 画
 	dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
 	// 形状怎么算出来的：面积、按面积配齐的放大倍数、正 n 边形、十字
@@ -145,7 +149,9 @@ export const __pure = {
 	isRewindPending, rewindRetryDelay,
 	// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
 	pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
-	// 设置
-	settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+	// 未读节点读过之后的三段式节奏
+	readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
+	// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
+	SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
 	VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 }

@@ -154,7 +154,8 @@ detail    EPERM: operation not permitted, rename '<旁车>.<pid>.<uuid>.tmp' -> 
 沿用旧值是安全的：**撤回只发生在两轮之间**（按钮在历史消息行上），所以一轮跑着的时候
 缓存必然还是对的。唯一会错的是「撤回完紧接着发下一轮」——那一轮里树上画的还是撤回前的
 形状。前端收到 `rewindPending` 会隔 2s 回来拉一次（撤回不写 dsh 日志，会话列表毫无动静，
-**不自己回来拉就永远等不到**），并在导轨上沿挂一个 ⏳，鼠标停上去说明原因。
+**不自己回来拉就永远等不到**）。以前还在导轨上沿挂一个 ⏳ 提示，树短时它离树隔着半个屏幕，
+看着像多出来的不明图标，已去掉：这段空窗最多 2s，静默更正就够了。
 
 > ⚠️ 别改成「把读的时间缩短就行」（只读文件尾、只读前 64 字节……）：窗口变小不等于没有，
 > 而代价是整轮对话当场失败。
@@ -598,6 +599,57 @@ host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-chat-tree`（*
 `<ul>`）、16px 圆角、点标题行展开、14px 折角箭头转 180°。颜色一律走 `--dsw-alias-*`
 变量而不是写死色号，换主题自动跟随。
 
+### 设置：两代宿主
+
+上面那套是 dsh 0.1.5 的。**dsh 0.2（桌面版 0.2.0-rc.1 起）把设置整个换了**（2026-09-29
+实探桌面版）：`settings.register`、浏览器半的 `settingsScope` 服务、`settings.plugin.item`
+插槽三样全没了，换成 ——
+
+| | 0.1.5 | 0.2 |
+|---|---|---|
+| schema 从哪来 | `settings.register(ns, schema)` | 插件 `export const Config`，宿主自己读（`dsh-settings` 的 `schema(entry)`） |
+| 值存哪 | `$DSH_HOME/settings.yaml` 按 namespace | profile `cordis.patch.yml` 里**这个 entry 的 `config`** |
+| 浏览器半读写 | `settingsScope.bind({namespace})` | `configForms.get(entryId)`，返回的东西**形状一样** |
+| 卡片挂哪 | `settings.plugin.item`（按 namespace 派发） | 没有对应物：插件管理页按 schema 自动出一张表单；我们另挂一节 `settings.section` |
+
+三条硬约束：
+
+- **字段必须标 `meta.volatile`**（`settings.js` 的 `live`）：宿主只把 volatile 字段投影成
+  表单（`volatileForm`），没标的既不显示、写了也被拒（"Config field … is not volatile"）。
+  标了之后改值不会重挂插件 —— cordis-plugin-loader 的 `_commitVolatile` 见 fiber 的 config
+  里没有 volatile 引用就直接算提交（我们用的是 npm 版 schemastery，不生成引用）。
+  只准标**字段**，别标整个 object：宿主要"固定的对象路径"。
+- **namespace = entry id**。0.2 的表单按 cordis entry id 分组，所以 `SETTINGS_NS` 必须和
+  `cordis.patch.yml` 里 `insert` 的 id 一样，`configForms.get` 要的也是它。
+- **认服务，不认版本号**。host 半看 `settings.register` 在不在；浏览器半两条 `ctx.inject`
+  （`settingsScope` / `configForms`）都挂，哪个服务在哪条跑。cordis 的 inject 要的服务
+  不全就静默等着，所以另一条永远不跑，不会双份。
+
+自动出的那张表单没有色板和形状预览，所以我们仍在设置导航里挂一节「对话树」
+（`settings.section`，id 同 entry id）放原来那张卡；这时卡的根元素换成 `<div>`
+（`props.section`），并且默认展开 —— 整节就它一张卡，还要再点一下才露控件就多余了。
+两张都留着：插件管理页那张是宿主的通用入口，有人从那儿改也照样生效（同一份 config）。
+
+### 宿主 0.2：浏览器半的三处搬家
+
+同一次实探还发现 `ctx.sessions` 少了三样，导轨在桌面版整个不出现就是它们（DESIGN 里
+"量不到聊天区 = 收起"那条规则先于一切，而 `current` 一直是 undefined）：
+
+| 0.1.5 | 0.2 | 我们怎么抹平 |
+|---|---|---|
+| `sessions.list` 快照的 `current` | 没了；列表项上多了 `retainedBy`，`mainView > 0` 的就是主视图那条（宿主的 ui-session 也这么判） | `tree.js` 的 `currentOf(listState)`：有 `current` 用它，没有就找 `retainedBy.mainView` |
+| `sessions.open(id)` | 没了；改成 `uiWorkspace.openSession(id)` | `apply.js` 里 `ctx.inject(['uiWorkspace'])` 可选地接，接到了 `api.open / jump / fork / fresh` 全走它 |
+| 列表项上的 `completed`（跑完未读） | 挪到 `uiSession.sessionStatus`：`Map<id, {running, pendingInteraction, completionUnread}>` | `api.status` 转发它；Rail 用 `withStatus(listState, statuses)` 把 `running / completed` 并回列表项，下游（graph / sidebar）一行不改 |
+
+`api.status` 做成转发器而不是直接放服务：Rail 装上时 `uiSession` 可能还没到，转发器先记下
+订阅者，服务到了再接过去并通知一次。`withStatus` 没有状态表时**必须原样返回同一个对象**，
+否则 Rail 的 memo 每帧白刷。
+
+其余（`sessions.list` 的 `ids/byId`、`binding`、`fork({sessionId, atSeq})`、
+`create({workspaceId|cwd})`、`workspaces.list.archivedSessionIds`、`shell.overlay` 插槽、
+`[data-conversation-scroll]` / `[data-chat-turn]` 这些宿主 DOM 记号）两代一样，
+实探清单见 NATIVE-BASELINE.md 末尾。
+
 ⚠️ `writable` 要**逐帧**判断。第一帧几乎必然是 `status:'loading'` + `writable:false`，
 当时若把 `set` 删掉就再也加不回来，滑杆永远是灰的（踩过，test-elide.mjs 用例 8 钉着）。
 
@@ -629,11 +681,35 @@ schema，别再去动卡片。**字段名两边必须一模一样**。
 | 普通轮次 | 正圆 | `normalShape` |
 | 在当前路径上 | 正圆 + 边框变亮、填充淡色、不透明 | `currentShape` + `active` |
 | **压缩轮次** | **倒三角**（尖朝下）+ 橙色 | `compactShape` |
+| **未读** | 绿色（形状同普通轮次） | `unreadShape`；`graph.js` 按宿主的 `completed` 标 |
 | 树根空节点 | 虚线（形状同普通轮次） | `kind` |
 | 正看着这一轮 | 实心填充 + 外发光 | `focused` |
 
 三个角色的形状**各自独立**：`shapeOf(kind, active, theme)` 先看是不是压缩，再看在不在
 当前路径上。
+
+**未读**（John 提的）：别的分支跑完了、你没在看 —— 宿主会话列表上那个 `completed`
+（"finished while not selected and not yet opened"，侧栏的绿点）。Rail 建图前把它抄到
+分支上，`graph.js` 把那条分支**最后一轮**标成 `unread`。"读过"的判据交给宿主：打开那条
+会话它就清掉 `completed`，节点自然变回普通，树上和侧栏永远一致，不用自己记一份已读表。
+压缩节点不盖（它自己的记号更要紧）；撤回掉的最后一轮不算（它不在 `live` 上）。
+
+**读过之后不是当场变灰，分三段**（John 提的：当场变的话根本意识不到"我刚才看的就是那个
+新节点"）。Rail 拿这一帧和上一帧比，上一帧 `unread`、这一帧 `normal` 的点记下时刻
+（`readAt`，ref，不落盘），然后按 `hooks.js` 的 `readPhase` 走：
+
+| 段 | 多久 | 画成什么 |
+|---|---|---|
+| hold | 1200ms | 原样绿着 —— 让人看清"在看的就是它" |
+| fade | 800ms | 仍是绿的，鼓一下 + 散一圈同色涟漪 —— "要变普通了哦" |
+| melt | 400ms | 换成普通配色，颜色用 `transition` 化过去，不硬切 |
+| done | | 和别的普通节点一样，记录删掉 |
+
+到点重画靠一个定时器（`nextReadBoundary` 算离最近的段落边界还有多久），每次渲染重算，
+别的原因引起的重画不会打乱节奏。**画点的每一处都走 `kindOf(node)`**，别直接读
+`node.kind` —— hold / fade 两段它返回 `unread`，宽度、命中、形状、颜色才会一致。
+涟漪用 `box-shadow` 不写颜色（= `currentColor`），跟用户配的未读色走；菱形另配一套关键帧
+保住 45°；多边形 / 字 / 图片没有方框，散出来的圈是方的，只鼓不散。
 
 > ⚠️ 别再把 current 和 normal 合成一个。合了之后设置里"当前路径形状"怎么改都没反应
 > —— John 报的"改了好像没反应"就是这条（用例 12 钉着，合回去炸 6 条）。
@@ -1452,10 +1528,21 @@ settings 里。
 
 宿主的侧栏一条会话一行，fork 出来的分支也各占一行 —— 树一多，左边就是十几条标题几乎
 一样的记录（John 提的）。现在一棵树折成一行：树头留着，分支收在它底下，行首一颗箭头点开；
-收起时标题右边一个数字角标写着底下几条，里面有分支在跑就变蓝、刚跑完变绿，当前会话折在
-里面时树头带一层底色。切到一条折着的分支会自动把那棵树摊开（只在切会话那一下做，之后想收
-照样能收）。摊开清单存 localStorage（`dsh-chat-tree.sidebar-open`）。设置里有开关
-（`sidebarFold`），关掉就回到宿主原样。
+收起时标题右边一个分叉图标加数字，写的是**这棵树一共几条对话**；里面有分支在跑，箭头
+右上角一个蓝点，跑完了你还没看就是绿点；当前会话折在里面时树头带一层底色。摊开清单存
+localStorage（`dsh-chat-tree.sidebar-open`）。设置里有开关（`sidebarFold`），关掉就回到宿主原样。
+
+几条 John 试过之后改掉的：
+
+- **数字是总数，不是分支数**。5 条对话写 4 看着怪。
+- **数字不带底色**，前面加分叉图标。带底色的数字角标是"几条新消息"的通用写法，
+  放在这儿会被当成未读数。"里面有没有新的"另有地方说：箭头角上的那个点。
+- **切会话不自动摊开**。第一版切到折着的分支就把树摊开，"和直接全列着没什么区别"。
+  现在只给树头一层底色提示"你在里面"，想看自己点箭头。
+- **被宿主收进「还有 n 条」的成员也算数**。宿主每个工作区只画最近 5 条，其余收起；
+  树的成员按**会话列表**算（`trees`），数字、箭头上的点、"当前在里面"都算上收起的那些。
+  用户摊开一棵树而它有成员被收着时，替他按一下宿主那个「还有 n 条」（只按这一次，
+  `wantMore` 里划掉），否则摊开了也只露出画出来的那几条。
 
 **怎么定"一棵树"**：和导轨一致但只到会话粒度（`fold.js` 的 `foldHeads`）：顺血缘爬到根；
 剪点所在的会话自己当树头、底下的跟着走；认领过的归剪点那条会话；根被合并登记进别人的组
@@ -1469,6 +1556,15 @@ ui-workspace 已占），单行没有 slot，行上也没有 `data-session-*`。
 - 容器改成 flex 列，每行一个 CSS `order` —— 分支行挪到树头后面，**DOM 一个字节不动**。
   真挪 DOM 的话，React 下次 `insertBefore` 找不到参照物会直接抛错。
 - 行上贴 `data-dsht-*` 属性。React 只管它自己设过的属性和 style 键，不会清掉外人贴的。
+
+⚠️ **会话行不是容器的直接孩子。** 每一行（工作区标题行也一样）都被 HoverCard 包在一个
+`<span style="display:block">` 里当悬停预览的锚点。座位号和"藏起来"必须落在这层 span 上：
+落在行上的话 `order` 根本不起作用（行不是 flex 的孩子），藏了行 span 还在、留一条 2px 空缝。
+第一版就是按"行的父元素"找容器，每行的父元素各不相同，真机上一棵都没折出来。
+现在从行往上爬到座位（`unitOf`）：父元素是 `[role="tree"]`、或者父元素底下有两个以上带
+treeitem 的孩子，就到了 —— 不认 HoverCard 的类名，宿主哪天不套那层 span 了照样对
+（test-fold 用例 12 后半段钉着"没套 span"那条路）。`__dshTree()` 里的「侧栏折叠」一行报
+认出几行、折了几棵，一棵都没折先看它。
 - 树头行第一个位置塞一颗 `<button>` 当箭头。React 增删自己的孩子用的是"插到某个已知兄弟
   前面"，多一个外人不碍事（dsh-claude 的撤回按钮同款路子）。
 

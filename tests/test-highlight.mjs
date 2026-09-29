@@ -141,7 +141,7 @@ console.log('\n用例 5：节点样式 —— key 集合恒定、边框 longhand
 	// 那么从那个形态切回来时 borderColor 被清成 ''，border-color 退回 currentColor
 	// —— 屏幕上就是"滑过一个点白一个"。key 集合恒定就根本不会触发这个清空。
 	const variants = []
-	for (const kind of ['normal', 'compact', 'empty']) {
+	for (const kind of ['normal', 'compact', 'unread', 'empty']) {
 		for (const active of [true, false]) {
 			for (const hover of [true, false]) {
 				for (const focused of [true, false]) {
@@ -977,7 +977,7 @@ console.log('\n用例 15：空节点也归自己管')
 
 	// key 集合照旧
 	const base = Object.keys(pure.dotStyle('normal', true, false, 11, false)).sort()
-	for (const kind of ['normal', 'compact', 'empty']) {
+	for (const kind of ['normal', 'compact', 'unread', 'empty']) {
 		const keys = Object.keys(pure.dotStyle(kind, true, false, 11, false, skin)).sort()
 		check(JSON.stringify(keys) === JSON.stringify(base), `${kind} 的 key 集合变了`)
 	}
@@ -1454,6 +1454,33 @@ console.log('用例 27：手打的六位色值怎么收')
 		check(pure.hexOf(hex) === hex, `${hex} 转一圈变成了 ${pure.hexOf(hex)}`)
 	}
 	console.log('  #/大小写/空格三种宽容；三位缩写与脏值一律不收；出来的都过得了 isHex')
+}
+
+console.log('用例 22：未读 —— 跑完了你没在看的那条分支，最后一轮标成 unread')
+{
+	clock = 0
+	// A: 1-2-3；B 从 A:2 岔出去，自有 4、5；B 跑完了你没在看（宿主 completed）
+	const a = branch('A', undefined, undefined, [1, 2, 3])
+	const b = Object.assign(branch('B', 'A', 2, [4, 5]), { completed: true })
+	const graph = pure.buildGraph([a, b], 'A')
+	const kindOf = (key) => graph.nodes.find((node) => node.key === key).kind
+	check(kindOf('B:5') === 'unread', 'B 的最后一轮是未读')
+	check(kindOf('B:4') === 'normal' && kindOf('A:3') === 'normal', '只标最后一轮，别的分支不动')
+	// 打开 B 之后宿主清掉 completed → 变回普通
+	const read = pure.buildGraph([a, Object.assign({}, b, { completed: false })], 'B')
+	check(read.nodes.find((node) => node.key === 'B:5').kind === 'normal', 'completed 清掉就变回普通')
+	// 最后一轮是压缩的：压缩记号优先
+	const packed = Object.assign(branch('C', 'A', 2, [4]), { completed: true })
+	packed.turns[packed.turns.length - 1].compact = true
+	check(pure.buildGraph([a, packed], 'A').nodes.find((node) => node.key === 'C:4').kind === 'compact', '压缩节点不被未读盖掉')
+	// 没有自有轮次的空分支：没有节点可标，不许炸
+	const empty = Object.assign(branch('D', 'A', 2, []), { completed: true })
+	check(pure.buildGraph([a, empty], 'A').nodes.every((node) => node.kind !== 'unread'), '没有自有轮次就没有未读节点')
+	// 画法：未读自带绿色，不随"在不在当前路径上"变；形状跟 unreadShape
+	const skin = Object.assign({}, pure.THEME, { unreadColor: '#3fb950', unreadShape: 'diamond' })
+	check(pure.inkOf('unread', true, false, skin).ink === '#3fb950' && pure.inkOf('unread', false, false, skin).ink === '#3fb950', '未读的颜色不看 active')
+	check(pure.shapeOf('unread', false, skin).value === 'diamond', '未读的形状跟 unreadShape')
+	console.log('  B:5 未读 → 打开后普通；压缩优先；空分支不炸；颜色形状各有各的设置项')
 }
 
 report()

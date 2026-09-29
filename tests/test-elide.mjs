@@ -273,13 +273,16 @@ console.log('用例 7：真实日志回归 —— 任意半径下留下的节点
 	}
 }
 
-console.log('用例 8：设置 store —— 第一帧不可写，之后必须能恢复')
-{
-	// 假的 settingsScope：先给 loading/不可写，再给 ready/可写，模拟真实时序
+console.log('用例 8：设置 store —— 第一帧不可写，之后必须能恢复（两代宿主各跑一遍）')
+// 0.1.5 的宿主给 settingsScope.bind({namespace})，0.2（桌面版）给 configForms.get(entryId)。
+// 两个返回的东西形状一样，store 必须两条路都认，而且要的 namespace / entryId 都得是 SETTINGS_NS。
+for (const generation of [1, 2]) {
+	// 假的宿主 scope：先给 loading/不可写，再给 ready/可写，模拟真实时序
 	let snapshot = { status: 'loading', value: undefined, user: undefined, writable: false, mode: 'host' }
 	const radiusOf = (store) => store.getSnapshot().values.visibleRadius
 	const fans = new Set()
 	const written = []
+	const asked = []
 	const scope = {
 		getSnapshot: () => snapshot,
 		subscribe: (fn) => {
@@ -299,11 +302,16 @@ console.log('用例 8：设置 store —— 第一帧不可写，之后必须能
 		snapshot = next
 		for (const fn of [...fans]) fn()
 	}
+	const services = generation === 1
+		? { settingsScope: { bind: (spec) => (asked.push(spec.namespace), scope) } }
+		: { configForms: { get: (id) => (asked.push(id), scope) } }
 	const ctx = {
-		inject: (_deps, run) => run({ settingsScope: { bind: () => scope }, effect: (make) => make() }),
+		// 照抄 cordis：要的服务全在才跑回调
+		inject: (deps, run) => (deps.every((one) => one in services) ? run(Object.assign({ effect: (make) => make() }, services)) : undefined),
 	}
 
 	const store = pure.settingsStore(ctx)
+	check(asked.length === 1 && asked[0] === pure.SETTINGS_NS, `第 ${generation} 代宿主：要的 namespace/entryId 该是 ${pure.SETTINGS_NS}，实际 ${JSON.stringify(asked)}`)
 	check(radiusOf(store) === pure.RADIUS.fallback, `第一帧该退回默认 ${pure.RADIUS.fallback}，实际 ${radiusOf(store)}`)
 	check(store.getSnapshot().values.nodeScale === pure.SCALE.fallback, `缩放第一帧该是 ${pure.SCALE.fallback}`)
 	check(store.getSnapshot().writable === false, '第一帧该是不可写')
@@ -322,7 +330,7 @@ console.log('用例 8：设置 store —— 第一帧不可写，之后必须能
 	store.reset('nodeScale')
 	const want = [['visibleRadius', 12], ['nodeScale', 80], ['nodeScale', 'unset']]
 	check(JSON.stringify(written) === JSON.stringify(want), `写入路径不对：${JSON.stringify(written)}`)
-	console.log(`  loading→ready 全程 set 健在，写入 ${JSON.stringify(written)}`)
+	console.log(`  第 ${generation} 代宿主（${generation === 1 ? 'settingsScope' : 'configForms'}）：loading→ready 全程 set 健在，写入 ${JSON.stringify(written)}`)
 }
 
 console.log('用例 10：缩放 —— 100% 必须与原尺寸逐字段相等，其余等比例')

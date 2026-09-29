@@ -26,7 +26,7 @@ import { check, loadClientPure, report } from './test-kit.mjs'
 // ===== 第 1 步：取 client 的真函数 =====
 
 const pure = await loadClientPure()
-const { foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY, applyFold, clearFold, sessionIdOf, FOLD_ATTR, FOLD_BUTTON } = pure
+const { foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY, applyFold, clearFold, sessionIdOf, unitOf, FOLD_ATTR, FOLD_BUTTON } = pure
 
 /** 造一条会话。 */
 const session = (id, parentId, extra) => Object.assign({ id, parentId, running: false, updatedAt: 0 }, extra || {})
@@ -253,6 +253,7 @@ class FakeElement {
 	}
 	/** 模拟点一下（只跑自己的监听，顺便记一下有没有 stopPropagation）。 */
 	click() {
+		this.clicks = (this.clicks || 0) + 1
 		const event = { stopped: false, prevented: false, preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true } }
 		if (this.listeners.click) this.listeners.click(event)
 		return event
@@ -312,19 +313,30 @@ function fakeRow(id, opts) {
 	return row
 }
 
-/** 造一个分组容器：标题行 + 若干会话行 + "还有 n 条"按钮。 */
+/**
+ * 宿主的 HoverCard：每一行（标题行也一样）外面套一层 `<span style="display:block">`。
+ * 座位号和"藏起来"必须落在这层上 —— 第一版落在行上，真机上一棵都没折出来。
+ */
+function hoverWrap(row) {
+	const seat = new FakeElement('span')
+	seat.className = 'X_root'
+	seat.appendChild(row)
+	return seat
+}
+
+/** 造一个分组容器：标题行 + 若干会话行 + "还有 n 条"按钮，行都套着 HoverCard 的 span。 */
 function fakeGroup(ids) {
 	const group = new FakeElement('div')
 	group.className = 'X_groupSection'
 	const header = new FakeElement('div')
 	header.setAttribute('role', 'treeitem')
 	header.className = 'X_projectRow'
-	group.appendChild(header)
+	group.appendChild(hoverWrap(header))
 	const rows = new Map()
 	for (const id of ids) {
 		const row = fakeRow(id)
 		rows.set(id, row)
-		group.appendChild(row)
+		group.appendChild(hoverWrap(row))
 	}
 	const more = new FakeElement('button')
 	more.className = 'X_sessionOverflowButton'
@@ -334,11 +346,17 @@ function fakeGroup(ids) {
 
 // ===== 第 6 步：applyFold / clearFold =====
 
+/** 座位里的那一行（座位可能就是行本身）。 */
+const rowOf = (seat) => (seat.getAttribute('role') === 'treeitem' ? seat : seat.querySelector('[role="treeitem"]'))
+
 const visualOrder = (container) =>
 	container.children
 		.slice()
 		.sort((left, right) => Number(left.style.order) - Number(right.style.order))
-		.map((el) => (el.className.includes('projectRow') ? '#' : el.className.includes('Overflow') ? '+' : sessionIdOf(el)))
+		.map((seat) => {
+			const row = rowOf(seat)
+			return row === null ? '+' : row.className.includes('projectRow') ? '#' : sessionIdOf(row)
+		})
 		.join(',')
 
 console.log('用例 10：贴记号 —— 座位、箭头、角标、藏分支')
@@ -350,20 +368,24 @@ console.log('用例 10：贴记号 —— 座位、箭头、角标、藏分支')
 	const heads = new Map([['a', 'a'], ['b', 'a'], ['c', 'a'], ['x', 'x']])
 	const byId = { a: { running: false }, b: { running: true }, c: { running: false, completed: true }, x: { running: false } }
 	const toggled = []
-	const folded = applyFold(heads, new Set(), byId, 'c', (tree) => toggled.push(tree))
+	const trees = new Map([['a', ['a', 'b', 'c']], ['x', ['x']]])
+	const folded = applyFold(heads, new Set(), byId, 'c', (tree) => toggled.push(tree), trees)
 	check(folded === 1, `折了一棵树，实际 ${folded}`)
 	check(group.getAttribute(FOLD_ATTR) === 'group', '分组容器标成 group')
 	check(visualOrder(group) === '#,a,b,c,x,+', `视觉顺序：标题, a, b, c, x, 按钮；实际 ${visualOrder(group)}`)
-	check(header.style.order === '0' && more.style.order !== '', '标题行和"还有 n 条"按钮也拿到座位号，不会跑到别处去')
+	check(unitOf(header).style.order === '0' && more.style.order !== '', '标题行和"还有 n 条"按钮也拿到座位号，不会跑到别处去')
 	const a = rows.get('a')
-	check(a.getAttribute('data-dsht-role') === 'head' && a.getAttribute('data-dsht-open') === '0' && a.getAttribute('data-dsht-count') === '2', '树头：收起、两条分支')
+	check(unitOf(a) !== a && unitOf(a).className === 'X_root' && unitOf(a).parentElement === group, '座位是 HoverCard 那层 span，容器是分组')
+	check(unitOf(a).style.order !== '' && a.style.order === '', '座位号贴在 span 上，不在行上（行不是 flex 的孩子）')
+	check(a.getAttribute('data-dsht-role') === 'head' && a.getAttribute('data-dsht-open') === '0' && a.getAttribute('data-dsht-count') === '3', '树头：收起，数字是这棵树一共几条对话（不是分支数，5 个叶子写 4 看着怪 —— John 提的）')
 	check(a.getAttribute('data-dsht-slot') === '1' && a.getAttribute('data-dsht-dot') === null, '有状态槽、槽里没东西')
 	check(a.getAttribute('data-dsht-holds') === '1', '当前会话 c 折在里面 → holds')
 	check(a.getAttribute('data-dsht-busy') === 'running', 'b 在跑 → busy=running（跑的优先于跑完的）')
 	const button = a.querySelector(`:scope > .${FOLD_BUTTON}`)
 	check(button !== null && a.firstChild === button, '箭头插在第一个位置')
-	check(button !== null && button.getAttribute('aria-expanded') === 'false' && button.getAttribute('aria-label') === '展开 2 条分支', '箭头的无障碍标签')
-	check(rows.get('b').getAttribute('data-dsht-role') === 'branch' && rows.get('b').getAttribute('data-dsht-hidden') === '1', 'b 是分支，收起时藏掉')
+	check(button !== null && button.getAttribute('aria-expanded') === 'false' && button.getAttribute('aria-label') === '展开这棵树（3 条对话）', '箭头的无障碍标签')
+	check(rows.get('b').getAttribute('data-dsht-role') === 'branch' && unitOf(rows.get('b')).getAttribute('data-dsht-hidden') === '1', 'b 是分支，收起时整个座位藏掉')
+	check(rows.get('b').getAttribute('data-dsht-hidden') === null, '"藏起来"不贴在行上 —— 行藏了 span 还在，会留一条空缝')
 	check(rows.get('c').getAttribute('data-dsht-last') === '1' && rows.get('b').getAttribute('data-dsht-last') === null, 'c 是最后一条分支（画 └）')
 	check(rows.get('x').getAttribute('data-dsht-role') === null && rows.get('x').querySelector(`:scope > .${FOLD_BUTTON}`) === null, 'x 不折：没记号没箭头')
 	// 点箭头：拦住冒泡（否则宿主会把它当成点了整行 → 打开会话），并把树号交出去
@@ -374,22 +396,28 @@ console.log('用例 10：贴记号 —— 座位、箭头、角标、藏分支')
 	// 摊开：分支露出来，角标状态清掉，箭头还是同一颗（不重建，悬停态不丢）
 	applyFold(heads, new Set(['a']), byId, 'c', () => {})
 	check(a.getAttribute('data-dsht-open') === '1' && a.getAttribute('data-dsht-holds') === null && a.getAttribute('data-dsht-busy') === null, '摊开后 holds / busy 清掉')
-	check(rows.get('b').getAttribute('data-dsht-hidden') === null, '摊开后分支不再藏')
+	check(unitOf(rows.get('b')).getAttribute('data-dsht-hidden') === null, '摊开后分支不再藏')
 	check(a.querySelector(`:scope > .${FOLD_BUTTON}`) === button && button.getAttribute('aria-expanded') === 'true', '箭头复用同一颗，只改状态')
 	check(a.children.length === 5, '树头行的孩子数：箭头 + 4 个 span，没多插')
 
 	// 幂等：同样输入再贴一遍，DOM 不变
-	const before = JSON.stringify(group.children.map((el) => [el.style.order, [...el.attrs.entries()], el.children.length]))
+	const snapshot = () =>
+		JSON.stringify(
+			group.children.map((seat) => {
+				const row = rowOf(seat)
+				return [seat.style.order, [...seat.attrs.entries()], row === null ? null : [[...row.attrs.entries()], row.children.length]]
+			}),
+		)
+	const before = snapshot()
 	applyFold(heads, new Set(['a']), byId, 'c', () => {})
-	const after = JSON.stringify(group.children.map((el) => [el.style.order, [...el.attrs.entries()], el.children.length]))
-	check(before === after, '同样的输入贴两遍，DOM 一个字节不变')
+	check(before === snapshot(), '同样的输入贴两遍，DOM 一个字节不变')
 
 	// 树散了（比如 b、c 被归档，列表里只剩 a、x）：记号全摘
-	rows.get('b').remove()
-	rows.get('c').remove()
+	unitOf(rows.get('b')).remove()
+	unitOf(rows.get('c')).remove()
 	applyFold(heads, new Set(['a']), byId, 'a', () => {})
 	check(group.getAttribute(FOLD_ATTR) === null, '没得折了，容器记号摘掉')
-	check(a.getAttribute('data-dsht-role') === null && a.querySelector(`:scope > .${FOLD_BUTTON}`) === null && a.style.order === '', '树头的记号、箭头、座位号全摘')
+	check(a.getAttribute('data-dsht-role') === null && a.querySelector(`:scope > .${FOLD_BUTTON}`) === null && unitOf(a).style.order === '', '树头的记号、箭头、座位号全摘')
 }
 
 console.log('用例 11：树头被宿主藏掉时最靠前那行代班；"一个列表"视图标成 flat；没有状态槽要腾地方')
@@ -401,11 +429,12 @@ console.log('用例 11：树头被宿主藏掉时最靠前那行代班；"一个
 	doc.appendChild(list)
 	const c = fakeRow('c', { slot: false })
 	const b = fakeRow('b', { slot: false, dot: false })
-	list.appendChild(c)
-	list.appendChild(b)
+	list.appendChild(hoverWrap(c))
+	list.appendChild(hoverWrap(b))
 	const heads = new Map([['a', 'a'], ['b', 'a'], ['c', 'a']])
 	applyFold(heads, new Set(), {}, undefined, () => {})
 	check(list.getAttribute(FOLD_ATTR) === 'flat', 'role=tree 的容器标成 flat（不加行距）')
+	check(unitOf(c).parentElement === list && unitOf(b).getAttribute('data-dsht-hidden') === '1', '座位是 span，容器是 role=tree 那层；b 的座位藏掉')
 	check(c.getAttribute('data-dsht-role') === 'head' && c.getAttribute('data-dsht-slot') === null, 'c 代班树头，而且没有状态槽（CSS 据此补 padding）')
 	const button = c.querySelector(`:scope > .${FOLD_BUTTON}`)
 	check(button !== null && button.dataset.tree === 'a', '箭头记的是树号 a，不是代班的 c')
@@ -421,17 +450,56 @@ console.log('用例 12：认不出来就一动不动（fail open）')
 	check([...rows.values()].every((row) => sessionIdOf(row) === undefined), '没 fiber 的行认不出会话 id')
 	const folded = applyFold(new Map([['a', 'a'], ['b', 'a']]), new Set(), {}, 'a', () => {})
 	check(folded === 0 && group.getAttribute(FOLD_ATTR) === null, '一棵都不折，容器没记号')
-	check([...rows.values()].every((row) => row.style.order === '' && row.attrs.size === 1), '行上除了 role 什么都没贴')
-	// 状态槽里有点：箭头平时藏着（data-dsht-dot），悬停才盖上去 —— 这里只验属性
+	check([...rows.values()].every((row) => unitOf(row).style.order === '' && row.attrs.size === 1), '行上除了 role 什么都没贴，座位也没座位号')
+	// 状态槽里有点：箭头平时藏着（data-dsht-dot），悬停才盖上去 —— 这里只验属性。
+	// 顺便：这里的行**没套** HoverCard 的 span，座位就是行本身，照样要能折（宿主哪天不套了也不坏）
 	const doc2 = fakeDocument()
 	globalThis.document = doc2
 	const holder = new FakeElement('div')
 	doc2.appendChild(holder)
 	const head = fakeRow('a', { dot: true })
+	const tail = fakeRow('b')
 	holder.appendChild(head)
-	holder.appendChild(fakeRow('b'))
+	holder.appendChild(tail)
 	applyFold(new Map([['a', 'a'], ['b', 'a']]), new Set(), {}, 'a', () => {})
 	check(head.getAttribute('data-dsht-dot') === '1', '槽里有点 → data-dsht-dot=1')
+	check(unitOf(head) === head && head.style.order !== '' && tail.getAttribute('data-dsht-hidden') === '1', '没套 span 时座位就是行本身：座位号和藏起来都落在行上')
+}
+
+console.log('用例 14：被宿主收进「还有 n 条」的成员也算数；刚摊开就替用户按那个按钮')
+{
+	const doc = fakeDocument()
+	globalThis.document = doc
+	// 容器里只画了 a、b；d、e 被宿主收着（不在 DOM 里），"还有 n 条"按钮 aria-expanded=false
+	const { group, rows, more } = fakeGroup(['a', 'b'])
+	more.setAttribute('aria-expanded', 'false')
+	doc.appendChild(group)
+	const heads = new Map([['a', 'a'], ['b', 'a'], ['d', 'a'], ['e', 'a']])
+	const trees = new Map([['a', ['a', 'b', 'd', 'e']]])
+	const byId = { a: {}, b: {}, d: { running: true }, e: { completed: true } }
+	applyFold(heads, new Set(), byId, 'e', () => {}, trees, new Set())
+	const a = rows.get('a')
+	check(a.getAttribute('data-dsht-count') === '4', '数字按会话列表算：4 条（含被宿主收着的 d、e）')
+	check(a.getAttribute('data-dsht-busy') === 'running', '被收着的 d 在跑 → 箭头上的点是蓝的')
+	check(a.getAttribute('data-dsht-holds') === '1', '当前会话 e 被收着也算"在里面"')
+	check((more.clicks || 0) === 0, '没摊开就不碰宿主的按钮')
+	// 用户摊开：wantMore 里有 a → 按一下宿主的「还有 n 条」，按完划掉
+	const wantMore = new Set(['a'])
+	applyFold(heads, new Set(['a']), byId, 'e', () => {}, trees, wantMore)
+	check(more.clicks === 1 && wantMore.size === 0, '摊开时替用户按了一下「还有 n 条」，并且只按这一次')
+	applyFold(heads, new Set(['a']), byId, 'e', () => {}, trees, wantMore)
+	check(more.clicks === 1, '再贴一遍不重复按')
+	// 成员都画出来了就不按：宿主按钮上 aria-expanded=false 也不碰
+	const doc2 = fakeDocument()
+	globalThis.document = doc2
+	const g2 = fakeGroup(['a', 'b'])
+	g2.more.setAttribute('aria-expanded', 'false')
+	doc2.appendChild(g2.group)
+	applyFold(heads, new Set(['a']), byId, undefined, () => {}, new Map([['a', ['a', 'b']]]), new Set(['a']))
+	check((g2.more.clicks || 0) === 0, '成员都在 DOM 里就不去按宿主的按钮')
+	// 不传 trees：退回按画出来的行算（a + b = 2）
+	applyFold(heads, new Set(), byId, undefined, () => {})
+	check(g2.rows.get('a').getAttribute('data-dsht-count') === '2', '没有 trees 时按画出来的行算')
 }
 
 console.log('用例 13：clearFold 把页面上的记号全摘干净')
@@ -444,7 +512,7 @@ console.log('用例 13：clearFold 把页面上的记号全摘干净')
 	check(group.getAttribute(FOLD_ATTR) === 'group' && rows.get('a').querySelector(`:scope > .${FOLD_BUTTON}`) !== null, '先确认贴上了')
 	clearFold()
 	check(group.getAttribute(FOLD_ATTR) === null, '容器记号摘掉')
-	check([...rows.values()].every((row) => row.attrs.size === 1 && row.style.order === ''), '行上只剩 role')
+	check([...rows.values()].every((row) => row.attrs.size === 1 && unitOf(row).style.order === '' && unitOf(row).attrs.size === 0), '行上只剩 role，座位上什么都不剩')
 	check(doc.querySelectorAll(`.${FOLD_BUTTON}`).length === 0, '箭头全拔掉')
 	// 没有 document 也不许炸
 	delete globalThis.document

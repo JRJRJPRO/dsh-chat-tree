@@ -44,6 +44,16 @@ export const name = 'tree'
  */
 export const inject = ['webServer', 'sessionPersistence', 'agents', 'connection']
 
+/**
+ * 插件配置的 schema —— cordis 的约定出口名。
+ *
+ * dsh 0.2 起（桌面版就是）宿主不再有 `settings.register`，而是读插件导出的 `Config`
+ * 自动生成设置表单，值写进 profile `cordis.patch.yml` 里这个 entry 的 `config`。
+ * 我们 host 半不读 config（浏览器半自己去拉），导出它只为让宿主认得这些字段。
+ * 0.1.5 的宿主也会拿它校验 entry 的 config —— 那儿 config 是空的，全走默认，无害。
+ */
+export const Config = SETTINGS_SCHEMA
+
 // 对外出口。测试和别人从这里取，别直接 import src/ 里的文件 ——
 // 那些是内部结构，哪天拆了合了不该惊动外面。
 export { SETTINGS_NS, SETTINGS_SCHEMA, graft, reshape }
@@ -84,10 +94,20 @@ export function apply(ctx) {
 
 	// 设置 namespace。ctx.settings 是可选服务，所以走 ctx.inject 而不是顶层 inject
 	// —— 写进顶层 inject 的话，没挂设置提供方的部署会让整个 fiber 永远 pending。
+	//
+	// 两代宿主在这儿分岔（DESIGN.md「设置：两代宿主」）：
+	//   · 0.1.5 的 settings 服务有 `register`，按 namespace 登记 schema；
+	//   · 0.2 的 settings 服务（SettingsForms）没有它，宿主直接读上面的 `Config`，
+	//     这里什么都不用做。**别在没有 register 时抛错**：回调跑在宿主的 fiber 里，
+	//     抛出去只会在日志里留一条红字，设置照样不工作，还让人以为插件坏了。
 	try {
 		ctx.inject(['settings'], (scoped) => {
-			scoped.settings.register(SETTINGS_NS, SETTINGS_SCHEMA)
-			scoped.logger?.info?.(`dsh-chat-tree: 设置 namespace ${SETTINGS_NS} 已注册`)
+			if (typeof scoped.settings.register === 'function') {
+				scoped.settings.register(SETTINGS_NS, SETTINGS_SCHEMA)
+				scoped.logger?.info?.(`dsh-chat-tree: 设置 namespace ${SETTINGS_NS} 已注册`)
+			} else {
+				scoped.logger?.info?.('dsh-chat-tree: 宿主按插件导出的 Config 生成设置表单（dsh ≥ 0.2），不用登记 namespace')
+			}
 		})
 	} catch (error) {
 		ctx.logger?.warn?.(`dsh-chat-tree: 注册设置失败，前端会按默认半径画（${error}）`)

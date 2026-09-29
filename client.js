@@ -769,6 +769,55 @@ window.__ModuleLoader__.load({
 		/** 树根那个空节点的 key。 */
 		const ROOT_KEY = 'root'
 
+		// ===== 会话列表：两代宿主的差异在这儿抹平 =====
+		//
+		// `ctx.sessions.list` 的快照 `{ids, byId}` 两代都有，差的是两件事：
+		//   · 当前会话：0.1.5 直接给 `current`；0.2 没有这个字段，改成列表项上的
+		//     `retainedBy.mainView > 0`（宿主自己的 ui-session 也是这么判的）。
+		//   · 跑完未读：0.1.5 在列表项的 `completed`；0.2 挪到 `uiSession.sessionStatus`
+		//     那张 `Map<id, {running, completionUnread}>` 里。
+		// 下面两个函数把这些揉回 0.1.5 的形状，别处（rail / sidebar / graph）一律按老形状读。
+
+		/**
+		 * 当前会话 id。
+		 * @param listState - `ctx.sessions.list` 的快照
+		 * @returns 会话 id；没有当前会话就 undefined
+		 */
+		function currentOf(listState) {
+			if (!listState) return undefined
+			if (typeof listState.current === 'string') return listState.current
+			const byId = listState.byId || {}
+			for (const id of listState.ids || []) {
+				const kept = byId[id] && byId[id].retainedBy
+				if (kept && typeof kept === 'object' && kept.mainView > 0) return id
+			}
+			return undefined
+		}
+
+		/**
+		 * 把 0.2 的状态表并进列表项：有表就按表填 `running` / `completed`，没有原样返回。
+		 * @param listState - `ctx.sessions.list` 的快照
+		 * @param statuses - `uiSession.sessionStatus` 的快照（Map），0.1.5 上是 undefined
+		 * @returns 同形状的快照；没有状态表时**就是传进来的那个对象**（引用不变，别处的 memo 才不会白刷）
+		 */
+		function withStatus(listState, statuses) {
+			if (!listState || !statuses || typeof statuses.get !== 'function' || statuses.size === 0) return listState
+			const byId = Object.assign({}, listState.byId || {})
+			let changed = false
+			for (const [id, status] of statuses) {
+				const item = byId[id]
+				if (item === undefined || !status) continue
+				// 宿主自己的写法是 `status.running ?? item.running`：状态表还没见过这条会话时不盖列表项
+				const running = status.running === undefined ? item.running === true : status.running === true
+				const completed = status.completionUnread === true
+				if (item.running === running && (item.completed === true) === completed) continue
+				byId[id] = Object.assign({}, item, { running }, completed ? { completed: true } : {})
+				if (!completed) delete byId[id].completed
+				changed = true
+			}
+			return changed ? Object.assign({}, listState, { byId }) : listState
+		}
+
 		/**
 		 * 拼一个节点 key。
 		 * @param sessionId - 会话 id
@@ -1382,6 +1431,10 @@ window.__ModuleLoader__.load({
 					previous = node
 					if (!rewound) live = node
 				}
+				// 【未读】这条会话跑完了、而你当时没在看它（宿主会话列表里的 `completed`）：
+				// 它最后一轮标成未读，树上是个绿点。打开这条会话宿主就清掉 completed，
+				// 节点自然变回普通 —— "读过"的判据交给宿主，两边一致。压缩节点不盖：它自己的记号更要紧。
+				if (session.completed === true && live !== anchor && live.kind === 'normal') live.kind = 'unread'
 			}
 
 			// ③ 剪边：被"分离"的节点断开与父亲的连接，自成一棵树。
@@ -2246,7 +2299,7 @@ window.__ModuleLoader__.load({
 		 */
 		const PALETTE = {
 			normalColor: '#6e7681', currentColor: '#58a6ff', compactColor: '#ffa657',
-			emptyColor: '#58a6ff', favoriteColor: STAR_COLOR,
+			emptyColor: '#58a6ff', unreadColor: '#3fb950', favoriteColor: STAR_COLOR,
 		}
 
 		/**
@@ -2260,6 +2313,7 @@ window.__ModuleLoader__.load({
 			currentShape: 'circle',
 			compactShape: 'triangle',
 			emptyShape: 'circle',
+			unreadShape: 'circle',
 			favoriteShape: 'star',
 		}
 
@@ -2520,6 +2574,9 @@ window.__ModuleLoader__.load({
 			current: { color: 'currentColor', shape: 'currentShape' },
 			compact: { color: 'compactColor', shape: 'compactShape', own: true },
 			empty: { color: 'emptyColor', shape: 'emptyShape', own: true, dashed: true, plus: 2 },
+			// 未读：别的分支跑完了你还没看（graph.js 按宿主的 completed 标）。绿色，自带颜色 ——
+			// 它永远不在当前路径上（当前会话不会是"没在看"的），own 只是把这条说死。
+			unread: { color: 'unreadColor', shape: 'unreadShape', own: true },
 		}
 
 		/**
@@ -3322,9 +3379,11 @@ window.__ModuleLoader__.load({
 		function installDiagnostics(facts) {
 			if (typeof window === 'undefined') return
 			window.__dshTree = () => {
-				const { current, cwd, activeTurn, radiusText, view, scale, tuned, settings, picked, nodes, archived, sessionCount } = facts
+				const { current, cwd, activeTurn, radiusText, view, scale, tuned, settings, picked, nodes, archived, sessionCount, sidebar } = facts
 				return {
 					当前会话: current,
+					// 侧栏一棵都没折时先看这行：认出 0 行 = 宿主的行结构变了（sidebar.js 的 sessionIdOf 认不出来）
+					侧栏折叠: typeof sidebar === 'function' ? sidebar() : sidebar,
 					工作目录: cwd,
 					滑到第几轮: activeTurn,
 					显示范围: radiusText,
@@ -3842,7 +3901,21 @@ window.__ModuleLoader__.load({
 					`@keyframes ${STAR_ANIM.off}{` +
 					'0%{transform:scale(1.45) rotate(0);opacity:.9}' +
 					'45%{transform:scale(.75) rotate(-18deg);opacity:.5}' +
-					'100%{transform:scale(1) rotate(0);opacity:1}}'
+					'100%{transform:scale(1) rotate(0);opacity:1}}' +
+					// 未读读过之后的"要变了"：鼓一下 + 一圈同色的涟漪散开（box-shadow 不写颜色就是 currentColor，
+					// 跟用户配的未读色走）。菱形要保住 45° 的旋转；多边形 / 字 / 图片没有方框，只鼓不散圈。
+					`@keyframes ${READ_ANIM.ring}{` +
+					'0%{transform:scale(1);box-shadow:0 0 0 0 currentColor}' +
+					'35%{transform:scale(1.3)}' +
+					'100%{transform:scale(1);box-shadow:0 0 0 9px transparent}}' +
+					`@keyframes ${READ_ANIM.spin}{` +
+					'0%{transform:scale(1) rotate(45deg);box-shadow:0 0 0 0 currentColor}' +
+					'35%{transform:scale(1.3) rotate(45deg)}' +
+					'100%{transform:scale(1) rotate(45deg);box-shadow:0 0 0 9px transparent}}' +
+					`@keyframes ${READ_ANIM.flat}{` +
+					'0%{transform:scale(1)}' +
+					'35%{transform:scale(1.3)}' +
+					'100%{transform:scale(1)}}'
 				document.head.appendChild(tag)
 				return () => tag.remove()
 			} catch {
@@ -3862,6 +3935,82 @@ window.__ModuleLoader__.load({
 		function starAnimation(flash, key) {
 			if (flash === null || flash === undefined || flash.key !== key) return 'none'
 			return `${flash.on ? STAR_ANIM.on : STAR_ANIM.off} ${STAR_ANIM_MS}ms cubic-bezier(.34,1.4,.64,1)`
+		}
+
+		// ===== 未读节点读过之后：先不动、再提示、再变普通 =====
+		//
+		// 宿主一打开那条会话就清掉 completed，节点按理当场变回普通 —— 但那样用户根本
+		// 意识不到"我刚才看的就是那个新节点"（John 提的）。所以分三段：
+		//   hold  先原样绿着（READ_HOLD_MS）：让人看清"哦，我在看的就是它"；
+		//   fade  鼓一下、散一圈涟漪（READ_FADE_MS）："这个点要变普通了哦"；
+		//   melt  换成普通配色，但颜色用 transition 化过去（READ_MELT_MS），不是硬切；
+		//   done  彻底和别的普通节点一样，记录也删掉。
+		// 时刻由 Rail 自己记（谁从 unread 变成了 normal、什么时候），不落盘 —— 刷新页面就没了，
+		// 而刷新之后本来也没什么"刚读过"可言。
+
+		/** 读过之后先原样绿着多久。 */
+		const READ_HOLD_MS = 1200
+
+		/** "要变了"的提示动画播多久。 */
+		const READ_FADE_MS = 800
+
+		/** 换成普通配色之后颜色化过去要多久。 */
+		const READ_MELT_MS = 400
+
+		/** 三套关键帧：圆/方/菱形 → 鼓一下 + 散圈；菱形另配一套保住 45°；多边形/字/图片只鼓不散圈。 */
+		const READ_ANIM = { ring: 'dsh-chat-tree-read', spin: 'dsh-chat-tree-read-spin', flat: 'dsh-chat-tree-read-flat' }
+
+		/**
+		 * 读过之后走到哪一段了。**纯函数**。
+		 * @param since - 变成"读过"的时刻（ms）
+		 * @param now - 现在
+		 * @returns 'hold' | 'fade' | 'melt' | 'done'
+		 */
+		function readPhase(since, now) {
+			const gone = now - since
+			if (!Number.isFinite(gone) || gone < 0) return 'done'
+			if (gone < READ_HOLD_MS) return 'hold'
+			if (gone < READ_HOLD_MS + READ_FADE_MS) return 'fade'
+			if (gone < READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS) return 'melt'
+			return 'done'
+		}
+
+		/**
+		 * 这一段该挂什么 `animation`。只有 fade 那一段有动画。
+		 * @param phase - `readPhase` 的结果
+		 * @param flat - 这个形状没有方框（多边形 / 字 / 图片），散圈会散成方的，所以只鼓不散
+		 * @param spin - 这个形状是转了 45° 画的（菱形），关键帧里要保住
+		 * @returns CSS 的 `animation` 值
+		 */
+		function readAnimation(phase, flat, spin) {
+			if (phase !== 'fade') return 'none'
+			const name = flat ? READ_ANIM.flat : spin ? READ_ANIM.spin : READ_ANIM.ring
+			return `${name} ${READ_FADE_MS}ms cubic-bezier(.34,1.3,.64,1)`
+		}
+
+		/**
+		 * 离下一次该重画还有多久：所有"读过"记录里最近的那个段落边界。**纯函数**，顺手把 done 的删掉。
+		 * @param readAt - key → 变成"读过"的时刻
+		 * @param now - 现在
+		 * @returns 毫秒；没有待播的就 undefined
+		 */
+		function nextReadBoundary(readAt, now) {
+			let soonest
+			for (const [key, since] of readAt) {
+				const gone = now - since
+				if (!Number.isFinite(gone) || gone >= READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS) {
+					readAt.delete(key)
+					continue
+				}
+				for (const edge of [READ_HOLD_MS, READ_HOLD_MS + READ_FADE_MS, READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS]) {
+					if (edge > gone) {
+						const wait = edge - gone
+						if (soonest === undefined || wait < soonest) soonest = wait
+						break
+					}
+				}
+			}
+			return soonest
 		}
 
 		// ===== sidebar.js ==============================================
@@ -3905,12 +4054,57 @@ window.__ModuleLoader__.load({
 			'data-dsht-dot', // 树头：状态槽里有没有东西（有的话箭头平时藏着，悬停才盖上去）
 			'data-dsht-holds', // 树头：收起着、而当前会话就在里面
 			'data-dsht-busy', // 树头：收起着、而里面有分支在跑（running）或刚跑完（completed）
-			'data-dsht-hidden', // 分支：收起时藏掉
+			'data-dsht-hidden', // 分支：收起时藏掉（贴在座位上，见 unitOf；行上也顺手清）
 			'data-dsht-last', // 分支：最后一条（连线画成 └ 而不是 ├）
 		]
 
 		/** 只有树头才有的那几项，分支行上要清掉。 */
 		const HEAD_ATTRS = ROW_ATTRS.filter((name) => !['data-dsht-role', 'data-dsht-hidden', 'data-dsht-last'].includes(name))
+
+		/**
+		 * 一行在容器里占的那个"座位"元素。
+		 *
+		 * ⚠️ 宿主的会话行**不是**容器的直接孩子：每一行都被 HoverCard 包在一个
+		 *    `<span style="display:block">` 里（悬停预览卡的锚点），工作区标题行也一样。
+		 *    座位号（CSS `order`）和"藏起来"必须落在这个包装上 —— 落在行上的话，行藏了
+		 *    包装还在，留一条 2px 的空缝；`order` 落在行上更是没用，它根本不是 flex 的孩子。
+		 *    第一版就是这么栽的：每行的 parentElement 各不相同，于是"同一个容器里的两行"永远找不到。
+		 *
+		 * 判法不认 HoverCard 的类名：从行往上爬，爬到父元素是 `[role="tree"]`、或者父元素底下
+		 * 有两个以上带 treeitem 的孩子为止 —— 那个父元素就是容器，爬到的就是座位。
+		 * 宿主哪天不套那层 span 了，座位就是行本身，照样对。
+		 * @param row - `[role="treeitem"]` 那个元素
+		 * @returns 座位元素（可能就是行本身）
+		 */
+		function unitOf(row) {
+			let unit = row
+			for (let hop = 0; hop < 6; hop += 1) {
+				const parent = unit.parentElement
+				if (parent === null || parent === undefined) return unit
+				if (parent.getAttribute('role') === 'tree') return unit
+				let seats = 0
+				for (const child of parent.children) {
+					if (child.getAttribute('role') === 'treeitem' || child.querySelector('[role="treeitem"]') !== null) seats += 1
+					if (seats >= 2) return unit
+				}
+				unit = parent
+			}
+			return unit
+		}
+
+		/**
+		 * 座位里的那一行。
+		 * @param unit - 座位元素
+		 * @returns 行；这个座位不是会话行（工作区标题、"还有 n 条"按钮）就 null
+		 */
+		function rowIn(unit) {
+			return unit.getAttribute('role') === 'treeitem' ? unit : unit.querySelector('[role="treeitem"]')
+		}
+
+		/** 分叉图标（三个点、一条弯线），当 CSS mask 用 —— 颜色由 background 给，跟主题走。 */
+		const FORK_ICON = `url("data:image/svg+xml,${encodeURIComponent(
+			"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='4' cy='3' r='2'/><circle cx='4' cy='13' r='2'/><circle cx='12' cy='5' r='2'/><path d='M4 5v6M12 7c0 3-8 2-8 4' fill='none' stroke='#000' stroke-width='1.6'/></svg>",
+		)}")`
 
 		/** 折角箭头。收起时朝右，摊开转 90°。 */
 		const CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -3938,10 +4132,19 @@ window.__ModuleLoader__.load({
 			'[data-dsht-role="branch"][data-dsht-last="1"]::before{bottom:50%}' +
 			'[data-dsht-role="branch"]::after{content:"";position:absolute;left:15px;top:50%;width:7px;height:1px;background:var(--dsw-alias-border-l4);pointer-events:none}' +
 			'[data-dsht-hidden="1"]{display:none!important}' +
+			// 树头右边写"这棵树几条对话"：分叉图标 + 数字，灰的、没底色。带底色的数字角标看着像
+			// "几条新消息"（John 提的）；分叉图标说的是"几条分支"，误会不了。
+			// 宿主那几个 span 先全推到 -1，再把最后两个（时间、"…"菜单）推到 1，
+			// 图标（::before）和数字（::after）就落在标题和时间之间。
+			'[data-dsht-role="head"]>span{order:-1}' +
 			'[data-dsht-role="head"]>span:nth-last-of-type(-n+2){order:1}' +
-			'[data-dsht-role="head"][data-dsht-open="0"]::after{content:attr(data-dsht-count);order:0;flex:none;margin:0 6px 0 4px;min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:9px;font-size:11px;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-interactive-bg-hover)}' +
-			'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="running"]::after{color:#fff;background:var(--dsw-alias-state-business-primary)}' +
-			'[data-dsht-role="head"][data-dsht-open="0"][data-dsht-busy="completed"]::after{color:#fff;background:var(--dsw-alias-state-success-primary,#3fb950)}' +
+			`[data-dsht-role="head"][data-dsht-open="0"]::before{content:"";order:0;flex:none;width:12px;height:12px;margin-left:6px;background:var(--dsw-alias-label-tertiary);-webkit-mask:${FORK_ICON} center/contain no-repeat;mask:${FORK_ICON} center/contain no-repeat}` +
+			'[data-dsht-role="head"][data-dsht-open="0"]::after{content:attr(data-dsht-count);order:0;flex:none;margin:0 6px 0 3px;font-size:11px;line-height:18px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}' +
+			// 折着的树里有分支在跑（蓝）/ 跑完了你还没看（绿）：箭头右上角一个小点。
+			// 点在箭头上，说的就是"里面"—— 和树头自己的状态（宿主画在状态槽里）分得开。
+			`.${FOLD_BUTTON}::after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border-radius:50%;background:transparent}` +
+			`[data-dsht-busy="running"]>.${FOLD_BUTTON}::after{background:var(--dsw-alias-state-business-primary)}` +
+			`[data-dsht-busy="completed"]>.${FOLD_BUTTON}::after{background:var(--dsw-alias-state-success-primary,#3fb950)}` +
 			'[data-dsht-role="head"][data-dsht-holds="1"]:not(:hover){background:color-mix(in srgb,var(--dsw-alias-interactive-bg-hover) 55%,transparent)}' +
 			`.${FOLD_BUTTON}{position:absolute;left:6px;top:50%;width:20px;height:20px;margin-top:-10px;padding:0;border:0;border-radius:6px;background:none;color:var(--dsw-alias-label-tertiary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1}` +
 			`.${FOLD_BUTTON}:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}` +
@@ -4012,24 +4215,32 @@ window.__ModuleLoader__.load({
 			} else if (el.getAttribute(name) !== value) el.setAttribute(name, value)
 		}
 
-		/** 摘掉一行上的全部记号（座位号也清）。 */
+		/** 摘掉一行上的全部记号（不含座位号，那个在座位上）。 */
 		function unmarkRow(el) {
 			for (const name of ROW_ATTRS) put(el, name, null)
-			if (el.style && el.style.order !== '') el.style.order = ''
 			const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
 			if (button !== null) button.remove()
 		}
 
-		/** 摘掉一个容器和它所有孩子上的记号。 */
+		/** 摘掉一个座位（座位号、藏起来）和它里面那一行的记号。 */
+		function unmarkUnit(unit) {
+			put(unit, 'data-dsht-hidden', null)
+			if (unit.style && unit.style.order !== '') unit.style.order = ''
+			const row = rowIn(unit)
+			if (row !== null) unmarkRow(row)
+		}
+
+		/** 摘掉一个容器和它所有座位上的记号。 */
 		function unmarkContainer(el) {
 			put(el, FOLD_ATTR, null)
-			for (const child of el.children) unmarkRow(child)
+			for (const child of el.children) unmarkUnit(child)
 		}
 
 		/** 把页面上所有记号全摘掉。停用 / 关掉设置时用。 */
 		function clearFold() {
 			if (typeof document === 'undefined') return
 			for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) unmarkContainer(el)
+			for (const el of document.querySelectorAll('[data-dsht-hidden]')) unmarkUnit(el)
 			for (const el of document.querySelectorAll('[data-dsht-role]')) unmarkRow(el)
 			for (const el of document.querySelectorAll(`.${FOLD_BUTTON}`)) el.remove()
 		}
@@ -4062,7 +4273,7 @@ window.__ModuleLoader__.load({
 			}
 			button.__dshtToggle = onToggle
 			button.dataset.tree = tree
-			const label = `${open ? '收起' : '展开'} ${count} 条分支`
+			const label = `${open ? '收起' : '展开'}这棵树（${count} 条对话）`
 			put(button, 'aria-label', label)
 			put(button, 'title', label)
 			put(button, 'aria-expanded', open ? 'true' : 'false')
@@ -4085,6 +4296,18 @@ window.__ModuleLoader__.load({
 			return done ? 'completed' : null
 		}
 
+		/** 最近一次贴完的账：几个容器、几行、认出几行、折了几棵。`__dshTree()` 里看。 */
+		let lastFold = { containers: 0, rows: 0, known: 0, folded: 0 }
+
+		/**
+		 * 最近一次贴完的账，一句人话。自诊断用："一棵都没折"时先看认没认出会话 id。
+		 * @returns 描述
+		 */
+		function foldReport() {
+			const { containers, rows, known, folded } = lastFold
+			return `容器 ${containers} 个，会话行 ${rows} 行，认出 ${known} 行，折了 ${folded} 棵`
+		}
+
 		/**
 		 * 贴一遍。幂等：同样的输入贴两次，DOM 不再变。
 		 * @param heads - `foldHeads` 的结果
@@ -4092,20 +4315,26 @@ window.__ModuleLoader__.load({
 		 * @param byId - 会话列表快照的 byId
 		 * @param current - 当前会话 id
 		 * @param onToggle - 箭头点了叫谁
+		 * @param trees - 树编号 → 全部成员的会话 id（按会话列表算，含被宿主收起的）；缺就按画出来的行算
+		 * @param wantMore - 刚被用户摊开的树（Set）；成员被宿主收着的话替他按一下「还有 n 条」，按完划掉
 		 * @returns 折了几棵树（自诊断 / 测试用）
 		 */
-		function applyFold(heads, open, byId, current, onToggle) {
+		function applyFold(heads, open, byId, current, onToggle, trees, wantMore) {
 			if (typeof document === 'undefined') return 0
 			const parents = []
 			for (const row of document.querySelectorAll('[role="treeitem"]')) {
-				const parent = row.parentElement
-				if (parent !== null && !parents.includes(parent)) parents.push(parent)
+				const parent = unitOf(row).parentElement
+				if (parent !== null && parent !== undefined && !parents.includes(parent)) parents.push(parent)
 			}
 			const kept = new Set()
 			let folded = 0
+			const tally = { containers: parents.length, rows: 0, known: 0, folded: 0 }
 			for (const parent of parents) {
 				const children = Array.from(parent.children)
-				const ids = children.map((el) => (el.getAttribute('role') === 'treeitem' ? sessionIdOf(el) : undefined))
+				const rows = children.map(rowIn)
+				const ids = rows.map((el) => (el === null ? undefined : sessionIdOf(el)))
+				tally.rows += rows.filter((el) => el !== null).length
+				tally.known += ids.filter((id) => id !== undefined).length
 				const plan = foldRows(ids, heads)
 				if (!plan.some((row) => row.role === 'head')) {
 					unmarkContainer(parent)
@@ -4121,42 +4350,61 @@ window.__ModuleLoader__.load({
 					branchesOf.set(row.tree, list)
 				}
 				for (const row of plan) {
-					const el = children[row.index]
+					const unit = children[row.index]
 					const order = String(row.order)
-					if (el.style && el.style.order !== order) el.style.order = order
+					if (unit.style && unit.style.order !== order) unit.style.order = order
+					const el = rows[row.index]
+					if (el === null) {
+						put(unit, 'data-dsht-hidden', null)
+						continue
+					}
 					if (row.role === 'head') {
 						const isOpen = open.has(row.tree)
-						const branches = branchesOf.get(row.tree) || []
+						// 这棵树的全部成员按**会话列表**算，不按侧栏画出来的行算：宿主每个工作区只画
+						// 最近 5 条、其余收进「还有 n 条」，被收进去的分支也要算进"几条"、也要算进"里面有没有在跑"
+						const members = trees !== undefined && trees.get(row.tree) !== undefined ? trees.get(row.tree) : (branchesOf.get(row.tree) || []).concat([row.id])
+						const others = members.filter((id) => id !== row.id)
 						const slot = el.querySelector(':scope > span[class*="_slot"]')
 						put(el, 'data-dsht-role', 'head')
 						put(el, 'data-dsht-open', isOpen ? '1' : '0')
-						put(el, 'data-dsht-count', String(row.count))
+						put(el, 'data-dsht-count', String(members.length))
 						put(el, 'data-dsht-slot', slot === null ? null : '1')
 						put(el, 'data-dsht-dot', slot !== null && slot.childElementCount > 0 ? '1' : null)
-						put(el, 'data-dsht-holds', !isOpen && branches.includes(current) ? '1' : null)
-						put(el, 'data-dsht-busy', isOpen ? null : busyOf(branches, byId))
-						put(el, 'data-dsht-hidden', null)
+						put(el, 'data-dsht-holds', !isOpen && others.includes(current) ? '1' : null)
+						put(el, 'data-dsht-busy', isOpen ? null : busyOf(others, byId))
 						put(el, 'data-dsht-last', null)
-						ensureButton(el, row.tree, row.count, isOpen, onToggle)
+						put(unit, 'data-dsht-hidden', null)
+						ensureButton(el, row.tree, members.length, isOpen, onToggle)
+						// 刚摊开、而有成员被宿主收在「还有 n 条」里：替用户把宿主那个按钮按一下，
+						// 否则摊开了也只露出画出来的那几条。只按一次（wantMore 里划掉），之后收不收随宿主。
+						if (isOpen && wantMore !== undefined && wantMore.has(row.tree)) {
+							wantMore.delete(row.tree)
+							if (members.length > row.count + 1) {
+								const more = parent.querySelector('button[class*="_sessionOverflowButton"][aria-expanded="false"]')
+								if (more !== null && typeof more.click === 'function') more.click()
+							}
+						}
 						folded += 1
 					} else if (row.role === 'branch') {
 						const isOpen = open.has(row.tree)
 						const branches = branchesOf.get(row.tree) || []
 						put(el, 'data-dsht-role', 'branch')
-						put(el, 'data-dsht-hidden', isOpen ? null : '1')
 						put(el, 'data-dsht-last', branches[branches.length - 1] === row.id ? '1' : null)
 						for (const name of HEAD_ATTRS) put(el, name, null)
+						// 藏在座位上而不是行上：行藏了包装还在，会留一条 2px 的空缝
+						put(unit, 'data-dsht-hidden', isOpen ? null : '1')
 						const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
 						if (button !== null) button.remove()
 					} else {
 						// 没折的行也要占座（order 已经设了），别的记号全清
-						for (const name of ROW_ATTRS) put(el, name, null)
-						const button = el.querySelector(`:scope > .${FOLD_BUTTON}`)
-						if (button !== null) button.remove()
+						put(unit, 'data-dsht-hidden', null)
+						unmarkRow(el)
 					}
 				}
 			}
 			for (const el of document.querySelectorAll(`[${FOLD_ATTR}]`)) if (!kept.has(el)) unmarkContainer(el)
+			tally.folded = folded
+			lastFold = tally
 			return folded
 		}
 
@@ -4165,11 +4413,15 @@ window.__ModuleLoader__.load({
 		 *
 		 * Rail 是常驻组件（shell.overlay），所以侧栏折叠也跟着常驻 —— 不在会话界面时
 		 * 左边的列表照样在，照样要折。
+		 *
+		 * **切会话不自动摊开**（John 的原话：不然和直接全列着没什么区别）。当前会话折在
+		 * 某棵树里时，树头带一层底色（`data-dsht-holds`）提示"你在里面"，想看就点箭头。
 		 * @param listState - 会话列表快照（`ctx.sessions.list`）
 		 * @param shape - Rail 手里的 `shape.json`（改树形的回显也在里面）；没有就自己拉
 		 * @param enabled - 设置里开着吗
+		 * @param archived - 归档集（`ctx.workspaces` 快照的 archivedSessionIds）：归档的不算树的成员
 		 */
-		function useSidebarFold(listState, shape, enabled) {
+		function useSidebarFold(listState, shape, enabled, archived) {
 			const [own, setOwn] = react.useState(undefined)
 			const [open, setOpen] = react.useState(readOpenTrees)
 			const live = shape || own
@@ -4191,31 +4443,33 @@ window.__ModuleLoader__.load({
 				}
 			}, [missing])
 
-			const sessions = react.useMemo(
-				() => (listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined) : []),
-				[listState],
-			)
+			const archivedKey = (archived || []).join(',')
+			const sessions = react.useMemo(() => {
+				const gone = new Set(archived || [])
+				return listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
+			}, [listState, archivedKey]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
 			const heads = react.useMemo(() => foldHeads(sessions, live || {}), [sessions, live])
-			const current = listState ? listState.current : undefined
+			// 树编号 → 全部成员（按会话列表算，含被宿主收进「还有 n 条」的那些）
+			const trees = react.useMemo(() => {
+				const out = new Map()
+				for (const item of sessions) {
+					const tree = heads.get(item.id) || item.id
+					const list = out.get(tree) || []
+					list.push(item.id)
+					out.set(tree, list)
+				}
+				return out
+			}, [sessions, heads])
+			const current = currentOf(listState) // 两代宿主的"当前会话"都认（tree.js）
 			const byId = (listState && listState.byId) || {}
 
-			// 切到一条折在树里的分支 → 把那棵树摊开，不然你正看着的会话在左边找不到。
-			// 只在**切会话那一下**做一次，之后想收照样能收（收了树头会带一层底色提示"当前在里面"）。
-			const seen = react.useRef(undefined)
-			react.useEffect(() => {
-				if (!enabled || typeof current !== 'string' || seen.current === current) return
-				const tree = heads.get(current)
-				if (tree === undefined) return // 列表 / 形状还没到，下一次再看
-				seen.current = current
-				if (tree === current || open.includes(tree)) return
-				const next = nextOpen(open, tree, true)
-				writeOpenTrees(next)
-				setOpen(next)
-			}, [enabled, current, heads, open])
-
+			// 用户刚摊开的树：成员被宿主收着的话，applyFold 替他按一下「还有 n 条」（按完划掉）
+			const wantMore = react.useRef(new Set())
 			const toggle = react.useCallback((tree) => {
 				setOpen((now) => {
-					const next = nextOpen(now, tree, !now.includes(tree))
+					const opening = !now.includes(tree)
+					if (opening) wantMore.current.add(tree)
+					const next = nextOpen(now, tree, opening)
 					writeOpenTrees(next)
 					return next
 				})
@@ -4241,7 +4495,7 @@ window.__ModuleLoader__.load({
 				const repaint = () => {
 					frame = 0
 					try {
-						applyFold(heads, openSet, byId, current, toggle)
+						applyFold(heads, openSet, byId, current, toggle, trees, wantMore.current)
 					} catch (error) {
 						warn('侧栏折叠没贴上', error)
 					}
@@ -4257,7 +4511,7 @@ window.__ModuleLoader__.load({
 					if (frame !== 0) cancelAnimationFrame(frame)
 					observer.disconnect()
 				}
-			}, [enabled, heads, open, byId, current, toggle])
+			}, [enabled, heads, trees, open, byId, current, toggle])
 		}
 
 		// ===== settings-model.js =======================================
@@ -4370,6 +4624,7 @@ window.__ModuleLoader__.load({
 			{ key: 'normal', label: '普通节点', hint: '不在当前路径上的节点。' },
 			{ key: 'current', label: '当前路径', hint: '当前路径上的节点与连线，以及正在看的那一轮。' },
 			{ key: 'compact', label: '压缩节点', hint: '被 /compact 压缩掉的那一轮。' },
+			{ key: 'unread', label: '未读节点', hint: '别的分支跑完了、你还没去看的那一轮。点开那条分支就变回普通节点。' },
 			{
 				key: 'empty',
 				label: '空节点',
@@ -4456,6 +4711,12 @@ window.__ModuleLoader__.load({
 		 * ⚠️ 别在 `writable === false` 时把 `set` 删掉：第一帧几乎必然是
 		 *    `status:'loading'` + `writable:false`，删了就再也加不回来，滑杆永远是灰的。
 		 *    可写与否交给快照逐帧说了算，别做成一次性的。
+		 *
+		 * 两代宿主给的是**同一个形状**的东西（`getSnapshot / subscribe / set / unset`，
+		 * 快照里 `value / user / writable / status / mode`），只是拿法不同：
+		 *   · 0.1.5：`settingsScope.bind({namespace})`
+		 *   · 0.2（桌面版起）：`configForms.get(entryId)`，entryId 就是 SETTINGS_NS
+		 * 两条 `ctx.inject` 都挂上，宿主有哪个服务哪条就跑；先到的算数。
 		 * @param ctx - 浏览器根 context
 		 */
 		function settingsStore(ctx) {
@@ -4484,29 +4745,37 @@ window.__ModuleLoader__.load({
 			const same = (a, b) =>
 				a.writable === b.writable && a.status === b.status && a.mode === b.mode &&
 				FIELDS.every((spec) => a.values[spec.field] === b.values[spec.field] && a.user[spec.field] === b.user[spec.field])
-			try {
-				ctx.inject(['settingsScope'], (scoped) => {
-					scope = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
-					const pull = () => {
-						const snapshot = scope.getSnapshot() || {}
-						const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
-						const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
-						const next = blank()
-						next.writable = snapshot.writable === true
-						next.status = snapshot.status
-						next.mode = snapshot.mode
-						for (const spec of FIELDS) {
-							if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
-							next.user[spec.field] = spec.field in raw
-						}
-						if (same(next, state)) return
-						state = next
-						for (const fn of listeners) fn()
+			/**
+			 * 接上一个宿主给的 scope，从此快照跟着它走。
+			 * @param scoped - 带 effect 的 context
+			 * @param found - 宿主的 scope（两代形状一样）
+			 */
+			const attach = (scoped, found) => {
+				if (scope !== undefined || found === undefined || found === null) return
+				scope = found
+				const pull = () => {
+					const snapshot = scope.getSnapshot() || {}
+					const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
+					const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
+					const next = blank()
+					next.writable = snapshot.writable === true
+					next.status = snapshot.status
+					next.mode = snapshot.mode
+					for (const spec of FIELDS) {
+						if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
+						next.user[spec.field] = spec.field in raw
 					}
-					pull()
-					// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
-					scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
-				})
+					if (same(next, state)) return
+					state = next
+					for (const fn of listeners) fn()
+				}
+				pull()
+				// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
+				scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
+			}
+			try {
+				ctx.inject(['settingsScope'], (scoped) => attach(scoped, scoped.settingsScope.bind({ namespace: SETTINGS_NS })))
+				ctx.inject(['configForms'], (scoped) => attach(scoped, scoped.configForms.get(SETTINGS_NS)))
 			} catch (error) {
 				warn('设置服务不可用，按默认值画', error)
 			}
@@ -5492,12 +5761,18 @@ window.__ModuleLoader__.load({
 		 * 容器归我们自己画 —— 宿主的契约是"带前端的插件自己拥有自己的卡"，它只铺一个
 		 * `<ul>` 再按 namespace 派发，所以这里**必须是 `<li>`**，样式也照抄 PluginCard：
 		 * 收起时只有标题+说明+箭头，点开才露出控件。
+		 *
+		 * 0.2 起的宿主没有那个 `<ul>`：这张卡自己占设置导航里的一节（`settings.section`），
+		 * 那时 `props.section` 为真 —— 根元素换成 `<div>`（`<li>` 不能没有列表），
+		 * 而且一进来就是展开的：整节就这一张卡，还要人再点一下才露控件就多余了。
 		 * @param props.store - 半径 store
+		 * @param props.section - 是不是独占一节（0.2 的宿主）
 		 */
 		function SettingsCard(props) {
 			const store = props.store || {}
 			const state = useObservable(store) || {}
-			const [open, setOpen] = react.useState(false)
+			const section = props.section === true
+			const [open, setOpen] = react.useState(section)
 			const [hover, setHover] = react.useState(false)
 			const [failed, setFailed] = react.useState('')
 			const dark = useColorScheme()
@@ -5769,7 +6044,7 @@ window.__ModuleLoader__.load({
 				])
 			}
 
-			return h('li', {
+			return h(section ? 'div' : 'li', {
 				style: S.card(open, hover),
 				onMouseEnter: () => setHover(true),
 				onMouseLeave: () => setHover(false),
@@ -5800,13 +6075,13 @@ window.__ModuleLoader__.load({
 		 * 树本体：把 graph + elide 的结果画成一条贴着聊天区右缘的导轨。
 		 */
 
-		/** ⏳ 那句解释。title 和触摸设备上戳开的浮层是同一份，别让它们各写一遍。 */
-		const REWIND_TIP = '这条会话正在跑，暂时读不了它的撤回记录 —— 读那个文件会打断正在跑的这一轮。\n树上画的是上一次读到的状态，撤回过的轮次可能还画着。这一轮跑完会自动更正。'
-
 		/** 树本体。 */
 		function Rail(props) {
 			const api = (props && props.api) || {}
-			const listState = useObservable(api.list)
+			const rawList = useObservable(api.list)
+			// 0.2 宿主把"在跑 / 跑完未读"挪到了一张单独的状态表；并回列表项，下面全按老形状读（tree.js 的 withStatus）
+			const statuses = useObservable(api.status)
+			const listState = react.useMemo(() => withStatus(rawList, statuses), [rawList, statuses])
 			const workspaceState = useObservable(api.workspaces)
 			const box = useChatBox()
 			const activeTurn = useActiveTurn()
@@ -5823,7 +6098,8 @@ window.__ModuleLoader__.load({
 			const theme = themeFrom(tuned, settings.user)
 			const scale = Number.isFinite(tuned.nodeScale) ? tuned.nodeScale : SCALE.fallback
 
-			const current = listState && listState.current
+			// 0.1.5 直接给 current，0.2 要从列表项的 retainedBy 里找（tree.js 的 currentOf）
+			const current = currentOf(listState)
 			const cwd = current && listState.byId[current] ? listState.byId[current].cwd : undefined
 			// 点击跳转钉住的那一轮只在本会话里有意义：换了会话就解钉。
 			// （jump 自己也会换会话：它是 open 之后隔了 loadThrough + 60ms 才钉，这条效果早就跑完了，不会把它解掉。）
@@ -5859,6 +6135,19 @@ window.__ModuleLoader__.load({
 			const favColors = react.useMemo(() => readFavColors(), [tick, outlines])
 			// 刚被点的那颗星，用来播一次性动画（见 hooks.js 的 starAnimation）
 			const [flash, setFlash] = react.useState(null)
+			// 未读节点读过之后的三段式（hooks.js 的 readPhase）：上一帧哪些点是未读、哪些点什么时候变成了读过。
+			// 都是 ref：这是"这一帧和上一帧比"的账，不该触发重画；到点重画由下面那个定时器管。
+			const wasUnread = react.useRef(new Set())
+			const readAt = react.useRef(new Map())
+			const [readTick, setReadTick] = react.useState(0)
+			// 到下一个段落边界就重画一次（hold → fade → melt → done）。每次渲染都重算一遍
+			// 离边界还有多久，所以别的原因引起的重画不会把节奏打乱。
+			react.useEffect(() => {
+				const wait = nextReadBoundary(readAt.current, Date.now())
+				if (wait === undefined) return undefined
+				const timer = setTimeout(() => setReadTick((value) => value + 1), wait)
+				return () => clearTimeout(timer)
+			})
 
 			// 换悬停目标用 hover intent：卡片开着时，鼠标**停下来**才换目标，一直在动就什么都不抢。
 			// 这样从点走到卡片上的 ＋ 全程安全 —— 赶路途中压过多少个点都无所谓。
@@ -5953,13 +6242,11 @@ window.__ModuleLoader__.load({
 				document.addEventListener('pointerdown', away, true)
 				return () => document.removeEventListener('pointerdown', away, true)
 			}, [canHover])
-			// ⏳ 的说明在 title 里，而 title 在触摸设备上永远不会出现 —— 戳一下摊开。
-			const [tip, setTip] = react.useState(false)
 
 			// 左侧会话列表按对话树折叠（sidebar.js）。放在下面那个早退**之前**：
 			// 不在会话界面（设置页 / 全局面板）时左边的列表照样在，照样要折。
 			// shape 用 Rail 手里的（改树形的回显也在里面）；还没开任何会话时它是 undefined，钩子自己拉。
-			useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false)
+			useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false, (workspaceState && workspaceState.archivedSessionIds) || [])
 
 			// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 			// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
@@ -5977,9 +6264,12 @@ window.__ModuleLoader__.load({
 			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 			//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
 			//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
+			// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
+			// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
+			const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
 			let graph
 			try {
-				graph = picked.length > 0 ? buildGraph(picked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
+				graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
 			} catch (error) {
 				warn('建图失败，先拿上一棵顶着', error)
 			}
@@ -5994,6 +6284,25 @@ window.__ModuleLoader__.load({
 				}, `对话树拉不到数据：${outlines.error}`)
 			}
 
+			// 【未读 → 读过】和上一帧比：上一帧还是 unread、这一帧成了 normal 的点，记下时刻。
+			// 之后 READ_HOLD_MS 内照旧画成未读，再播一段"要变了"，最后颜色化成普通（见 hooks.js）。
+			{
+				const now = Date.now()
+				const seen = new Set()
+				for (const node of graph.nodes) {
+					if (node.kind === 'unread') seen.add(node.key)
+					else if (node.kind === 'normal' && wasUnread.current.has(node.key) && !readAt.current.has(node.key)) readAt.current.set(node.key, now)
+				}
+				wasUnread.current = seen
+			}
+			const phaseOf = (node) => (readAt.current.has(node.key) ? readPhase(readAt.current.get(node.key), Date.now()) : 'done')
+			/** 这一帧该按什么角色画：读过没多久的仍按未读画。**画点的每一处都得用它**，别直接读 node.kind。 */
+			const kindOf = (node) => {
+				const phase = phaseOf(node)
+				return phase === 'hold' || phase === 'fade' ? 'unread' : node.kind
+			}
+			void readTick // 只为让到点的那次 setReadTick 触发重画；值本身不用
+
 			// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
 			// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
 			const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), range.limit, range.mode)
@@ -6007,6 +6316,7 @@ window.__ModuleLoader__.load({
 				radiusText: `${range.text}（${range.spec.label}）`,
 				nodes: graph.nodes,
 				sessionCount: (listState.ids || []).length,
+				sidebar: foldReport,
 			})
 
 			// 这棵树上画出来最宽的那个形状占多少像素 —— 列距按它留（见 railLayout）。
@@ -6017,8 +6327,8 @@ window.__ModuleLoader__.load({
 				let most = 0
 				for (const node of graph.nodes) {
 					const star = favorites.has(node.key) ? favShape(favIcons[node.key]) : undefined
-					const shape = star === undefined ? shapeOf(node.kind, node.active, theme) : star
-					most = Math.max(most, drawnWidth(shape, dotSizeOf(node.kind, size, 1)))
+					const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme) : star
+					most = Math.max(most, drawnWidth(shape, dotSizeOf(kindOf(node), size, 1)))
 				}
 				return most
 			}
@@ -6062,13 +6372,13 @@ window.__ModuleLoader__.load({
 			// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
 			// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
 			const fitOf = (node, size) => {
-				const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(node.kind, node.active, theme, spanAt(size))
+				const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(kindOf(node), node.active, theme, spanAt(size))
 				return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
 			}
 			const reachOf = (node) => {
 				const eye = eyeOf(node)
 				// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
-				return reachFor(node.kind, node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(node.kind, dotSize, eye.scale)), starOf(node))
+				return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(kindOf(node), dotSize, eye.scale)), starOf(node))
 			}
 
 			const edge = (node) => {
@@ -6092,7 +6402,7 @@ window.__ModuleLoader__.load({
 				const isFocused = isFocusedNode(node, activeTurn)
 				const isHover = hover !== null && hover.node === node
 				const eye = eyeOf(node)
-				const size = dotSizeOf(node.kind, dotSize, eye.scale)
+				const size = dotSizeOf(kindOf(node), dotSize, eye.scale)
 				// 滑上去就把淡出撤掉，但**不改尺寸** —— size 决定 left/top，一变就整个点跳一下，
 				// transition 只过渡 transform/opacity，拦不住这种位移。放大交给已有的 scale(1.4)。
 				const alpha = isHover ? 1 : eye.alpha
@@ -6113,8 +6423,8 @@ window.__ModuleLoader__.load({
 				// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
 				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-				const shape = star === undefined ? shapeOf(node.kind, node.active, theme, spanAt(size)) : star.shape
-				const skin = star === undefined ? inkOf(node.kind, node.active, isFocused, theme) : star
+				const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanAt(size)) : star.shape
+				const skin = star === undefined ? inkOf(kindOf(node), node.active, isFocused, theme) : star
 				// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
 				const drawn = size * fitOf(node, size)
 				parts.push(h('span', {
@@ -6122,14 +6432,17 @@ window.__ModuleLoader__.load({
 					style: Object.assign(
 						{ position: 'absolute', left: `${x - drawn / 2}px`, top: `${y - drawn / 2}px`, cursor: 'pointer' },
 						TAPPABLE,
-						dotStyle(node.kind, node.active, isHover, drawn, isFocused, theme, alpha, star),
+						dotStyle(kindOf(node), node.active, isHover, drawn, isFocused, theme, alpha, star),
 						// ⚠️ 这个键**每一帧都要在**（哪怕是 'none'）。只在播动画那一帧才加的话，
 						//    下一帧 React 会把它当"属性没了"清空，而清空和赋 none 的时机差一帧，
 						//    星星会抖一下（DESIGN.md §5 那条"key 集合必须恒定"的同一个坑）。
-						{ animation: starAnimation(flash, node.key) },
+						//    收藏那一下的动画优先；没有的话看"读过之后要变了"那一段（readAnimation）。
+						{ animation: starAnimation(flash, node.key) !== 'none' ? starAnimation(flash, node.key) : readAnimation(phaseOf(node), shape.poly !== undefined || shape.glyph !== undefined || shape.image !== undefined, shape.spin === true) },
+						// melt 那一段：配色已经是普通的了，但让颜色化过去，别硬切。`transition` 本来就在 dotStyle 里，只是换值，key 集合不变。
+						phaseOf(node) === 'melt' ? { transition: 'border-color .4s ease, background .4s ease, color .4s ease, transform .12s ease, opacity .12s ease' } : {},
 					),
 					onClick: go,
-				}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(node.kind))))
+				}, dotInside(shape, drawn, skin, (1.5 * drawn) / Z.dot, star === undefined && dashedOf(kindOf(node)))))
 				// 透明加宽命中区：点很小，直接点很难中
 				parts.push(h('span', {
 					key: `hit${node.key}`,
@@ -6164,38 +6477,8 @@ window.__ModuleLoader__.load({
 					style: { position: 'fixed', top: `${top}px`, height: `${height}px`, right: `${right}px`, width: `${railWidth}px`, zIndex: 40, pointerEvents: 'none' },
 					onMouseLeave: release,
 				},
-				// ⏳：这条会话正跑着，撤回记录这一轮读不了（读它会打断那一轮，见 src/host/rewind.js）。
-				// 不说一声的话，撤回完紧接着发的那一轮树上画的还是撤回前的形状，看着就是"这插件又坏了"。
-				// 放在导轨上沿那 16px 空当里，不压到任何一个点；小、淡、鼠标停上去才解释。
-				!isRewindPending(outlines) ? null : h('span', {
-					key: 'rewind-pending',
-					title: REWIND_TIP,
-					style: Object.assign({
-						position: 'absolute', top: '-13px', right: '0px',
-						fontSize: '10px', lineHeight: '12px', color: C.muted,
-						pointerEvents: 'auto', cursor: 'help',
-					}, TAPPABLE),
-					// ⚠️ 这行字只写在 title 里，而 **title 在触摸设备上永远不会出现** ——
-					//    手指上没有"停在上面"这个状态。于是 iPad 用户看到的就是一个不明所以的
-					//    ⏳ 加一棵画着旧形状的树，正是这条提示要避免的那种"这插件又坏了"。
-					//    能悬停的机器上不挂 onClick：那边 title 已经够了，多一个点开的浮层只会碍事。
-					onClick: canHover ? undefined : () => setTip((was) => !was),
-				}, [
-					// ⚠️ 那 0.55 的透明度只能压在这个字上，**不能留在外面那层**：
-					//    opacity 对子元素是连乘的，压在外层的话戳开的说明也跟着半透明，
-					//    小字加半透明，正是这条提示最不该长成的样子。
-					h('span', { key: 'g', style: { opacity: 0.55 } }, '⏳'),
-					!tip || canHover ? null : h('div', {
-						key: 'tip',
-						style: {
-							position: 'absolute', top: '16px', right: '0px', width: `${Z.card}px`, maxWidth: '70vw',
-							background: C.card, color: C.text, border: `1px solid ${C.line}`, borderRadius: '7px',
-							boxShadow: '0 6px 20px rgba(0,0,0,.45)', padding: '6px 8px',
-							font: '11.5px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif',
-							whiteSpace: 'pre-wrap', opacity: 1, zIndex: 1,
-						},
-					}, REWIND_TIP),
-				]),
+				// 会话跑着时撤回记录读不了（见 src/host/rewind.js），树先按上一次读到的画，
+				// 跑完自动重拉更正（hooks.js 的 rewindRetryDelay）。以前这里挂一个 ⏳ 提示，已去掉。
 				h(
 					'div',
 					{
@@ -6304,12 +6587,14 @@ window.__ModuleLoader__.load({
 		const __pure = {
 			// 选树、归组、节点上能做什么
 			visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
+			// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
+			currentOf, withStatus,
 			cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
 			foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY,
-			applyFold, clearFold, sessionIdOf, FOLD_ATTR, FOLD_BUTTON,
+			applyFold, clearFold, foldReport, sessionIdOf, unitOf, FOLD_ATTR, FOLD_BUTTON,
 			// 画
 			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
 			// 形状怎么算出来的：面积、按面积配齐的放大倍数、正 n 边形、十字
@@ -6341,8 +6626,10 @@ window.__ModuleLoader__.load({
 			isRewindPending, rewindRetryDelay,
 			// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
 			pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
-			// 设置
-			settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+			// 未读节点读过之后的三段式节奏
+			readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
+			// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
+			SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
 			VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 		}
 
@@ -6380,17 +6667,61 @@ window.__ModuleLoader__.load({
 		 * @param ctx - 浏览器根 context
 		 */
 		function apply(ctx) {
+			// ===== 两代宿主在浏览器半的三处分岔（DESIGN.md「宿主 0.2：浏览器半的三处搬家」）=====
+			//
+			// 0.1.5 的"当前会话 / 打开会话 / 跑完未读"全在 `ctx.sessions` 上；0.2（桌面版起）
+			// 拆到了三个服务：当前会话看列表项的 `retainedBy.mainView`（tree.js 的 currentOf），
+			// 打开会话是 `uiWorkspace.openSession`，跑完未读是 `uiSession.sessionStatus`。
+			// 这两个服务都用 `ctx.inject` 可选地接：0.1.5 没有它们，回调永远不跑，走老路。
+			// **认服务，不认版本号** —— 宿主哪天把这几样搬回来，这里一行都不用改。
+			const hosted = { open: undefined, status: undefined }
+			// 状态表的订阅者。Rail 装上时服务可能还没到，所以订阅先记在这儿，服务到了再接过去并通知一次。
+			const statusFans = new Set()
+			const tellStatusFans = () => {
+				for (const fn of [...statusFans]) fn()
+			}
+			try {
+				ctx.inject(['uiWorkspace'], (scoped) => {
+					hosted.open = (id) => scoped.uiWorkspace.openSession(id)
+				})
+				ctx.inject(['uiSession'], (scoped) => {
+					hosted.status = scoped.uiSession.sessionStatus
+					scoped.effect(() => hosted.status.subscribe(tellStatusFans), 'dsh-chat-tree: 会话状态转发')
+					tellStatusFans()
+				})
+			} catch (error) {
+				warn('接 0.2 宿主的会话服务失败，按 0.1.5 的路走', error)
+			}
+			/**
+			 * 切到某条会话：有 `uiWorkspace` 就走它，否则走 0.1.5 的 `sessions.open`。
+			 * @param id - 会话 id
+			 */
+			const open = (id) => (hosted.open !== undefined ? hosted.open(id) : ctx.sessions.open(id))
+
 			const api = {
 				list: ctx.sessions.list,
 				workspaces: ctx.workspaces.list,
 
+				/**
+				 * 每条会话的实时状态（0.2 宿主：`Map<id, {running, completionUnread}>`），
+				 * 用来标"别的分支跑完了你还没看"。0.1.5 没有这张表（那时 `completed` 就在列表项上），
+				 * 快照永远 undefined。做成转发器而不是直接放服务：Rail 拿到 api 时服务可能还没到。
+				 */
+				status: {
+					getSnapshot: () => (hosted.status === undefined ? undefined : hosted.status.getSnapshot()),
+					subscribe: (fn) => {
+						statusFans.add(fn)
+						return () => statusFans.delete(fn)
+					},
+				},
+
 				/** 切到某条会话。 */
-				open: (id) => attempt('打开会话失败', () => ctx.sessions.open(id)),
+				open: (id) => attempt('打开会话失败', () => open(id)),
 
 				/** 切到某条会话并滚到第 `turn` 轮。 */
 				jump: (id, turn, seq) =>
 					attempt('跳转失败', async () => {
-						ctx.sessions.open(id)
+						open(id)
 						const binding = ctx.sessions.binding(id)
 						if (binding && binding.session && typeof binding.session.loadThrough === 'function') {
 							await binding.session.loadThrough(seq)
@@ -6416,7 +6747,7 @@ window.__ModuleLoader__.load({
 					attempt('开分支失败', async () => {
 						const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
 						if (typeof born === 'function') await born(made)
-						ctx.sessions.open(made)
+						open(made)
 						return made
 					}),
 
@@ -6437,7 +6768,7 @@ window.__ModuleLoader__.load({
 					attempt('新建对话失败', async () => {
 						const id = await ctx.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
 						if (typeof born === 'function') await born(id)
-						ctx.sessions.open(id)
+						open(id)
 						return id
 					}),
 
@@ -6472,11 +6803,24 @@ window.__ModuleLoader__.load({
 				'dsh-chat-tree: rail',
 			)
 
-			// 设置卡片。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。
+			// 设置卡片。两代宿主挂的地方不同（DESIGN.md「设置：两代宿主」）：
+			//   · 0.1.5：设置 → 插件 → 插件配置，一个 `<ul>` 按 namespace 派发
+			//     `settings.plugin.item`。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。
+			//   · 0.2（桌面版起）：那个插槽没了，宿主按 Config 在插件管理页自动出一张表单（能用，
+			//     但没有色板和形状预览）。我们另外在设置导航里挂一节「对话树」（`settings.section`），
+			//     还是原来那张卡。哪代宿主就走哪条：认服务，不认版本号。
 			try {
 				ctx.inject(['settingsScope'], (scoped) =>
 					scoped.slots.inject('settings.plugin.item', () =>
 						scoped.slots.register({ name: 'settings.plugin.item', key: SETTINGS_NS, inject: () => ({ store: api.settings }) }, SettingsCard),
+					),
+				)
+				ctx.inject(['configForms'], (scoped) =>
+					scoped.slots.inject('settings.section', () =>
+						scoped.slots.register(
+							{ name: 'settings.section', id: SETTINGS_NS, order: 60, label: () => '对话树', inject: () => ({ store: api.settings, section: true }) },
+							SettingsCard,
+						),
 					),
 				)
 			} catch (error) {

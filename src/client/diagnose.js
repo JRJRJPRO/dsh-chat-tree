@@ -17,9 +17,11 @@
 export function installDiagnostics(facts) {
 	if (typeof window === 'undefined') return
 	window.__dshTree = () => {
-		const { current, cwd, activeTurn, radiusText, view, scale, tuned, settings, picked, nodes, archived, sessionCount } = facts
+		const { current, cwd, activeTurn, radiusText, view, scale, tuned, settings, picked, nodes, archived, sessionCount, sidebar } = facts
 		return {
 			当前会话: current,
+			// 侧栏一棵都没折时先看这行：认出 0 行 = 宿主的行结构变了（sidebar.js 的 sessionIdOf 认不出来）
+			侧栏折叠: typeof sidebar === 'function' ? sidebar() : sidebar,
 			工作目录: cwd,
 			滑到第几轮: activeTurn,
 			显示范围: radiusText,

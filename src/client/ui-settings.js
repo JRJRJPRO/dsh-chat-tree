@@ -109,12 +109,18 @@ export function Chevron(props) {
  * 容器归我们自己画 —— 宿主的契约是"带前端的插件自己拥有自己的卡"，它只铺一个
  * `<ul>` 再按 namespace 派发，所以这里**必须是 `<li>`**，样式也照抄 PluginCard：
  * 收起时只有标题+说明+箭头，点开才露出控件。
+ *
+ * 0.2 起的宿主没有那个 `<ul>`：这张卡自己占设置导航里的一节（`settings.section`），
+ * 那时 `props.section` 为真 —— 根元素换成 `<div>`（`<li>` 不能没有列表），
+ * 而且一进来就是展开的：整节就这一张卡，还要人再点一下才露控件就多余了。
  * @param props.store - 半径 store
+ * @param props.section - 是不是独占一节（0.2 的宿主）
  */
 export function SettingsCard(props) {
 	const store = props.store || {}
 	const state = useObservable(store) || {}
-	const [open, setOpen] = react.useState(false)
+	const section = props.section === true
+	const [open, setOpen] = react.useState(section)
 	const [hover, setHover] = react.useState(false)
 	const [failed, setFailed] = react.useState('')
 	const dark = useColorScheme()
@@ -386,7 +392,7 @@ export function SettingsCard(props) {
 		])
 	}
 
-	return h('li', {
+	return h(section ? 'div' : 'li', {
 		style: S.card(open, hover),
 		onMouseEnter: () => setHover(true),
 		onMouseLeave: () => setHover(false),

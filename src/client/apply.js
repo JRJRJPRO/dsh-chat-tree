@@ -36,17 +36,61 @@ async function attempt(what, run) {
  * @param ctx - 浏览器根 context
  */
 export function apply(ctx) {
+	// ===== 两代宿主在浏览器半的三处分岔（DESIGN.md「宿主 0.2：浏览器半的三处搬家」）=====
+	//
+	// 0.1.5 的"当前会话 / 打开会话 / 跑完未读"全在 `ctx.sessions` 上；0.2（桌面版起）
+	// 拆到了三个服务：当前会话看列表项的 `retainedBy.mainView`（tree.js 的 currentOf），
+	// 打开会话是 `uiWorkspace.openSession`，跑完未读是 `uiSession.sessionStatus`。
+	// 这两个服务都用 `ctx.inject` 可选地接：0.1.5 没有它们，回调永远不跑，走老路。
+	// **认服务，不认版本号** —— 宿主哪天把这几样搬回来，这里一行都不用改。
+	const hosted = { open: undefined, status: undefined }
+	// 状态表的订阅者。Rail 装上时服务可能还没到，所以订阅先记在这儿，服务到了再接过去并通知一次。
+	const statusFans = new Set()
+	const tellStatusFans = () => {
+		for (const fn of [...statusFans]) fn()
+	}
+	try {
+		ctx.inject(['uiWorkspace'], (scoped) => {
+			hosted.open = (id) => scoped.uiWorkspace.openSession(id)
+		})
+		ctx.inject(['uiSession'], (scoped) => {
+			hosted.status = scoped.uiSession.sessionStatus
+			scoped.effect(() => hosted.status.subscribe(tellStatusFans), 'dsh-chat-tree: 会话状态转发')
+			tellStatusFans()
+		})
+	} catch (error) {
+		warn('接 0.2 宿主的会话服务失败，按 0.1.5 的路走', error)
+	}
+	/**
+	 * 切到某条会话：有 `uiWorkspace` 就走它，否则走 0.1.5 的 `sessions.open`。
+	 * @param id - 会话 id
+	 */
+	const open = (id) => (hosted.open !== undefined ? hosted.open(id) : ctx.sessions.open(id))
+
 	const api = {
 		list: ctx.sessions.list,
 		workspaces: ctx.workspaces.list,
 
+		/**
+		 * 每条会话的实时状态（0.2 宿主：`Map<id, {running, completionUnread}>`），
+		 * 用来标"别的分支跑完了你还没看"。0.1.5 没有这张表（那时 `completed` 就在列表项上），
+		 * 快照永远 undefined。做成转发器而不是直接放服务：Rail 拿到 api 时服务可能还没到。
+		 */
+		status: {
+			getSnapshot: () => (hosted.status === undefined ? undefined : hosted.status.getSnapshot()),
+			subscribe: (fn) => {
+				statusFans.add(fn)
+				return () => statusFans.delete(fn)
+			},
+		},
+
 		/** 切到某条会话。 */
-		open: (id) => attempt('打开会话失败', () => ctx.sessions.open(id)),
+		open: (id) => attempt('打开会话失败', () => open(id)),
 
 		/** 切到某条会话并滚到第 `turn` 轮。 */
 		jump: (id, turn, seq) =>
 			attempt('跳转失败', async () => {
-				ctx.sessions.open(id)
+				open(id)
 				const binding = ctx.sessions.binding(id)
 				if (binding && binding.session && typeof binding.session.loadThrough === 'function') {
 					await binding.session.loadThrough(seq)
@@ -72,7 +116,7 @@ export function apply(ctx) {
 			attempt('开分支失败', async () => {
 				const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
 				if (typeof born === 'function') await born(made)
-				ctx.sessions.open(made)
+				open(made)
 				return made
 			}),
 
@@ -93,7 +137,7 @@ export function apply(ctx) {
 			attempt('新建对话失败', async () => {
 				const id = await ctx.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {})
 				if (typeof born === 'function') await born(id)
-				ctx.sessions.open(id)
+				open(id)
 				return id
 			}),
 
@@ -128,11 +172,24 @@ export function apply(ctx) {
 		'dsh-chat-tree: rail',
 	)
 
-	// 设置卡片。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。
+	// 设置卡片。两代宿主挂的地方不同（DESIGN.md「设置：两代宿主」）：
+	//   · 0.1.5：设置 → 插件 → 插件配置，一个 `<ul>` 按 namespace 派发
+	//     `settings.plugin.item`。host 没注册 namespace 的话宿主根本不会派发这个 key，静默缺席。
+	//   · 0.2（桌面版起）：那个插槽没了，宿主按 Config 在插件管理页自动出一张表单（能用，
+	//     但没有色板和形状预览）。我们另外在设置导航里挂一节「对话树」（`settings.section`），
+	//     还是原来那张卡。哪代宿主就走哪条：认服务，不认版本号。
 	try {
 		ctx.inject(['settingsScope'], (scoped) =>
 			scoped.slots.inject('settings.plugin.item', () =>
 				scoped.slots.register({ name: 'settings.plugin.item', key: SETTINGS_NS, inject: () => ({ store: api.settings }) }, SettingsCard),
+			),
+		)
+		ctx.inject(['configForms'], (scoped) =>
+			scoped.slots.inject('settings.section', () =>
+				scoped.slots.register(
+					{ name: 'settings.section', id: SETTINGS_NS, order: 60, label: () => '对话树', inject: () => ({ store: api.settings, section: true }) },
+					SettingsCard,
+				),
 			),
 		)
 	} catch (error) {

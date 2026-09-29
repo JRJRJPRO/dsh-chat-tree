@@ -109,6 +109,7 @@ export const ROWS = [
 	{ key: 'normal', label: '普通节点', hint: '不在当前路径上的节点。' },
 	{ key: 'current', label: '当前路径', hint: '当前路径上的节点与连线，以及正在看的那一轮。' },
 	{ key: 'compact', label: '压缩节点', hint: '被 /compact 压缩掉的那一轮。' },
+	{ key: 'unread', label: '未读节点', hint: '别的分支跑完了、你还没去看的那一轮。点开那条分支就变回普通节点。' },
 	{
 		key: 'empty',
 		label: '空节点',
@@ -195,6 +196,12 @@ export function themeFrom(values, user) {
  * ⚠️ 别在 `writable === false` 时把 `set` 删掉：第一帧几乎必然是
  *    `status:'loading'` + `writable:false`，删了就再也加不回来，滑杆永远是灰的。
  *    可写与否交给快照逐帧说了算，别做成一次性的。
+ *
+ * 两代宿主给的是**同一个形状**的东西（`getSnapshot / subscribe / set / unset`，
+ * 快照里 `value / user / writable / status / mode`），只是拿法不同：
+ *   · 0.1.5：`settingsScope.bind({namespace})`
+ *   · 0.2（桌面版起）：`configForms.get(entryId)`，entryId 就是 SETTINGS_NS
+ * 两条 `ctx.inject` 都挂上，宿主有哪个服务哪条就跑；先到的算数。
  * @param ctx - 浏览器根 context
  */
 export function settingsStore(ctx) {
@@ -223,29 +230,37 @@ export function settingsStore(ctx) {
 	const same = (a, b) =>
 		a.writable === b.writable && a.status === b.status && a.mode === b.mode &&
 		FIELDS.every((spec) => a.values[spec.field] === b.values[spec.field] && a.user[spec.field] === b.user[spec.field])
-	try {
-		ctx.inject(['settingsScope'], (scoped) => {
-			scope = scoped.settingsScope.bind({ namespace: SETTINGS_NS })
-			const pull = () => {
-				const snapshot = scope.getSnapshot() || {}
-				const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
-				const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
-				const next = blank()
-				next.writable = snapshot.writable === true
-				next.status = snapshot.status
-				next.mode = snapshot.mode
-				for (const spec of FIELDS) {
-					if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
-					next.user[spec.field] = spec.field in raw
-				}
-				if (same(next, state)) return
-				state = next
-				for (const fn of listeners) fn()
+	/**
+	 * 接上一个宿主给的 scope，从此快照跟着它走。
+	 * @param scoped - 带 effect 的 context
+	 * @param found - 宿主的 scope（两代形状一样）
+	 */
+	const attach = (scoped, found) => {
+		if (scope !== undefined || found === undefined || found === null) return
+		scope = found
+		const pull = () => {
+			const snapshot = scope.getSnapshot() || {}
+			const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
+			const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
+			const next = blank()
+			next.writable = snapshot.writable === true
+			next.status = snapshot.status
+			next.mode = snapshot.mode
+			for (const spec of FIELDS) {
+				if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
+				next.user[spec.field] = spec.field in raw
 			}
-			pull()
-			// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
-			scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
-		})
+			if (same(next, state)) return
+			state = next
+			for (const fn of listeners) fn()
+		}
+		pull()
+		// 订阅要挂在 fiber 的 effect 上 —— ctx.inject 的回调返回值不当 disposer 用
+		scoped.effect(() => scope.subscribe(pull), 'dsh-chat-tree: 设置订阅')
+	}
+	try {
+		ctx.inject(['settingsScope'], (scoped) => attach(scoped, scoped.settingsScope.bind({ namespace: SETTINGS_NS })))
+		ctx.inject(['configForms'], (scoped) => attach(scoped, scoped.configForms.get(SETTINGS_NS)))
 	} catch (error) {
 		warn('设置服务不可用，按默认值画', error)
 	}

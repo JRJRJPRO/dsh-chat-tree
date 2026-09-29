@@ -18,6 +18,11 @@
 
 ## Install
 
+**Desktop app** (DeepSeek Harness 0.2): open **Settings → Plugins → Install** and enter
+`dsh-chat-tree`. Its settings live under **Settings → Conversation tree**.
+
+**Web / CLI** (dsh 0.1.5):
+
 ```sh
 dsh plugin --profile web add github:JRJRJPRO/dsh-chat-tree
 ```
@@ -44,10 +49,11 @@ and which path you're on. Named nodes carry their label right on the tree.
 ## The sidebar folds too
 
 In the session list on the left, a tree takes up one row: branches tuck under
-the root, and a chevron at the front of the row unfolds them. While folded, a
-small count sits next to the title, and it turns blue when a branch inside is
-still running. Switching to a branch unfolds its tree for you. Prefer the flat
-list? Turn off **Fold sidebar by conversation** in settings.
+the root, and a chevron at the front of the row unfolds them. While folded, the
+row shows how many conversations the tree holds; a blue dot on the chevron means
+a branch inside is still running, a green one means it finished while you
+weren't looking. Prefer the flat list? Turn off **Fold sidebar by conversation**
+in settings.
 
 ## Every node has a card
 
@@ -76,6 +82,7 @@ A greyed-out button means you can't do it right now — hover it and it will say
 | Blue outline | This node is part of your current conversation |
 | Solid blue | The turn you're looking at |
 | Orange triangle | This turn was compacted |
+| Green | Another branch finished while you weren't looking. Open it and the node goes back to normal |
 | Faded branch | Turns you rewound — no longer pretending to be part of the conversation |
 
 ## Make it yours

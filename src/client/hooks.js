@@ -486,7 +486,21 @@ export function installStarAnimation() {
 			`@keyframes ${STAR_ANIM.off}{` +
 			'0%{transform:scale(1.45) rotate(0);opacity:.9}' +
 			'45%{transform:scale(.75) rotate(-18deg);opacity:.5}' +
-			'100%{transform:scale(1) rotate(0);opacity:1}}'
+			'100%{transform:scale(1) rotate(0);opacity:1}}' +
+			// 未读读过之后的"要变了"：鼓一下 + 一圈同色的涟漪散开（box-shadow 不写颜色就是 currentColor，
+			// 跟用户配的未读色走）。菱形要保住 45° 的旋转；多边形 / 字 / 图片没有方框，只鼓不散圈。
+			`@keyframes ${READ_ANIM.ring}{` +
+			'0%{transform:scale(1);box-shadow:0 0 0 0 currentColor}' +
+			'35%{transform:scale(1.3)}' +
+			'100%{transform:scale(1);box-shadow:0 0 0 9px transparent}}' +
+			`@keyframes ${READ_ANIM.spin}{` +
+			'0%{transform:scale(1) rotate(45deg);box-shadow:0 0 0 0 currentColor}' +
+			'35%{transform:scale(1.3) rotate(45deg)}' +
+			'100%{transform:scale(1) rotate(45deg);box-shadow:0 0 0 9px transparent}}' +
+			`@keyframes ${READ_ANIM.flat}{` +
+			'0%{transform:scale(1)}' +
+			'35%{transform:scale(1.3)}' +
+			'100%{transform:scale(1)}}'
 		document.head.appendChild(tag)
 		return () => tag.remove()
 	} catch {
@@ -506,4 +520,80 @@ export function installStarAnimation() {
 export function starAnimation(flash, key) {
 	if (flash === null || flash === undefined || flash.key !== key) return 'none'
 	return `${flash.on ? STAR_ANIM.on : STAR_ANIM.off} ${STAR_ANIM_MS}ms cubic-bezier(.34,1.4,.64,1)`
+}
+
+// ===== 未读节点读过之后：先不动、再提示、再变普通 =====
+//
+// 宿主一打开那条会话就清掉 completed，节点按理当场变回普通 —— 但那样用户根本
+// 意识不到"我刚才看的就是那个新节点"（John 提的）。所以分三段：
+//   hold  先原样绿着（READ_HOLD_MS）：让人看清"哦，我在看的就是它"；
+//   fade  鼓一下、散一圈涟漪（READ_FADE_MS）："这个点要变普通了哦"；
+//   melt  换成普通配色，但颜色用 transition 化过去（READ_MELT_MS），不是硬切；
+//   done  彻底和别的普通节点一样，记录也删掉。
+// 时刻由 Rail 自己记（谁从 unread 变成了 normal、什么时候），不落盘 —— 刷新页面就没了，
+// 而刷新之后本来也没什么"刚读过"可言。
+
+/** 读过之后先原样绿着多久。 */
+export const READ_HOLD_MS = 1200
+
+/** "要变了"的提示动画播多久。 */
+export const READ_FADE_MS = 800
+
+/** 换成普通配色之后颜色化过去要多久。 */
+export const READ_MELT_MS = 400
+
+/** 三套关键帧：圆/方/菱形 → 鼓一下 + 散圈；菱形另配一套保住 45°；多边形/字/图片只鼓不散圈。 */
+export const READ_ANIM = { ring: 'dsh-chat-tree-read', spin: 'dsh-chat-tree-read-spin', flat: 'dsh-chat-tree-read-flat' }
+
+/**
+ * 读过之后走到哪一段了。**纯函数**。
+ * @param since - 变成"读过"的时刻（ms）
+ * @param now - 现在
+ * @returns 'hold' | 'fade' | 'melt' | 'done'
+ */
+export function readPhase(since, now) {
+	const gone = now - since
+	if (!Number.isFinite(gone) || gone < 0) return 'done'
+	if (gone < READ_HOLD_MS) return 'hold'
+	if (gone < READ_HOLD_MS + READ_FADE_MS) return 'fade'
+	if (gone < READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS) return 'melt'
+	return 'done'
+}
+
+/**
+ * 这一段该挂什么 `animation`。只有 fade 那一段有动画。
+ * @param phase - `readPhase` 的结果
+ * @param flat - 这个形状没有方框（多边形 / 字 / 图片），散圈会散成方的，所以只鼓不散
+ * @param spin - 这个形状是转了 45° 画的（菱形），关键帧里要保住
+ * @returns CSS 的 `animation` 值
+ */
+export function readAnimation(phase, flat, spin) {
+	if (phase !== 'fade') return 'none'
+	const name = flat ? READ_ANIM.flat : spin ? READ_ANIM.spin : READ_ANIM.ring
+	return `${name} ${READ_FADE_MS}ms cubic-bezier(.34,1.3,.64,1)`
+}
+
+/**
+ * 离下一次该重画还有多久：所有"读过"记录里最近的那个段落边界。**纯函数**，顺手把 done 的删掉。
+ * @param readAt - key → 变成"读过"的时刻
+ * @param now - 现在
+ * @returns 毫秒；没有待播的就 undefined
+ */
+export function nextReadBoundary(readAt, now) {
+	let soonest
+	for (const [key, since] of readAt) {
+		const gone = now - since
+		if (!Number.isFinite(gone) || gone >= READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS) {
+			readAt.delete(key)
+			continue
+		}
+		for (const edge of [READ_HOLD_MS, READ_HOLD_MS + READ_FADE_MS, READ_HOLD_MS + READ_FADE_MS + READ_MELT_MS]) {
+			if (edge > gone) {
+				const wait = edge - gone
+				if (soonest === undefined || wait < soonest) soonest = wait
+				break
+			}
+		}
+	}
+	return soonest
 }
