@@ -117,11 +117,38 @@ export function isCovered(el, probe) {
 }
 
 /**
+ * 聊天区里现在挂的是不是**别的页签**（Trajectory 那类），而不是聊天。
+ *
+ * 【为什么要有这条】宿主把「聊天 / Trajectory」做成同一块滚动容器里的页签
+ * （`conversation.view` 插槽，同一时刻只挂一个）。滚动容器 `[data-conversation-scroll]`
+ * 是常驻的，切到 Trajectory 之后它还在、尺寸也没变 —— 于是"量得到聊天区"这条开关照样
+ * 是开的，一整屏 trajectory 上面还叠着一棵树（John 提的）。
+ *
+ * 判法不认 Trajectory，只认聊天自己：聊天页签的正文栏带 `[data-chat-flow]`
+ * （ui-chat 的 ChatView，一轮都没有它也在）。容器里**找得到**它 → 聊天在，露着；
+ * 找不到、但容器里除了输入框（`[data-composer-seat]`）之外**还挂着别的东西** → 那是别的页签，收起。
+ *
+ * ⚠️ 两样都没有（只剩输入框）**不算别的页签**：那是空白会话的欢迎页，或者切会话时聊天子树
+ *    刚卸掉还没挂上 —— 这两种时候树都该照常在（新开的空分支就靠它认路）。
+ * @param el - 聊天区滚动容器
+ * @returns 是否挂着别的页签
+ */
+export function otherViewShown(el) {
+	if (el.querySelector('[data-chat-flow]') !== null) return false
+	for (const child of el.children) {
+		if (typeof child.hasAttribute === 'function' && child.hasAttribute('data-composer-seat')) continue
+		return true
+	}
+	return false
+}
+
+/**
  * 量聊天区滚动容器；量不到退回视口右缘。
  *
  * 返回 `{top, height, right, contentRight}`。`contentRight` 是**正文栏**的右缘，
  * 导轨靠它算自己该落在空当的哪儿（见 geometry.js 的 railRight）。
- * 返回 `undefined` 表示"现在不该露面"：不在会话界面，或者聊天被别的插件整个盖住了。
+ * 返回 `undefined` 表示"现在不该露面"：不在会话界面，聊天被别的插件整个盖住了，
+ * 或者容器里挂的是别的页签（Trajectory）。
  */
 export function useChatBox() {
 	const [box, setBox] = react.useState(undefined)
@@ -129,6 +156,8 @@ export function useChatBox() {
 		let raf = 0
 		let observed
 		let observer
+		let watched = []
+		let mutant
 		let goneAt = 0
 		let graceTimer = 0
 		const measure = () => {
@@ -152,6 +181,20 @@ export function useChatBox() {
 				observer.observe(el)
 				observed = el
 			}
+			// 页签切换只是换掉容器里的子树，容器尺寸纹丝不动，ResizeObserver 不响，光靠 800ms
+			// 轮询会让树在 trajectory 上多挂快一秒。所以盯着容器和它每个直接子代的 childList：
+			// 页签本体挂在子代（viewArea）里面，一换就重量；空白页变成有页签是容器自己的子代变了。
+			if (mutant !== undefined) {
+				const targets = [el, ...el.children]
+				if (targets.length !== watched.length || targets.some((item, index) => item !== watched[index])) {
+					mutant.disconnect()
+					for (const item of targets) mutant.observe(item, { childList: true })
+					watched = targets
+				}
+			}
+			// 容器还在，里面挂的却是别的页签（Trajectory）→ 整屏都是它，树收起来别挡着。
+			// 判法见 otherViewShown，不认任何具体页签。
+			if (otherViewShown(el)) return setBox(undefined)
 			// 聊天被别的插件的浮层整个盖住了（侧栏全屏那种）→ 这时候树该收起来，
 			// 不然屏幕上一句对话都没有，却还挂着一棵树。判法见 isCovered，不认任何具体插件。
 			if (typeof document.elementFromPoint === 'function' && isCovered(el, (x, y) => document.elementFromPoint(x, y))) {
@@ -177,6 +220,7 @@ export function useChatBox() {
 			raf = requestAnimationFrame(measure)
 		}
 		observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
+		mutant = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(schedule)
 		measure()
 		window.addEventListener('resize', schedule)
 		const offViewport = watchViewport(schedule)
@@ -185,6 +229,7 @@ export function useChatBox() {
 			cancelAnimationFrame(raf)
 			clearTimeout(graceTimer)
 			if (observer) observer.disconnect()
+			if (mutant) mutant.disconnect()
 			window.removeEventListener('resize', schedule)
 			offViewport()
 			clearInterval(timer)

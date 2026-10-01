@@ -18,6 +18,7 @@
  *   第6步  用例 5：同一行的横段不许重复画
  *   第7步  用例 6：详情卡贴着那个点放，不贴整棵树的左缘
  *   第8步  用例 7：列距被压过之后，自定义字的框不许叠到隔壁列（issue #1）
+ *   第9步  用例 8：滚动容器里挂的是别的页签（Trajectory）时，树该收起来
  *
  * 跑法：node tests/test-layout.mjs
  *
@@ -382,6 +383,41 @@ const BOX = { top: 0, height: 600, right: 1600 }
 	check(spanOf(undefined) === GLYPH_SPAN && spanOf(NaN) === GLYPH_SPAN && spanOf(99) === GLYPH_SPAN, '不合法 / 超大的 span 都该夹回全宽')
 
 	console.log(`  列距 ${free.lane.toFixed(1)} → 压到 ${tight.lane.toFixed(1)}：框 ${wide(tight.dotSize).toFixed(1)}px → ${boxW.toFixed(1)}px，画成「${squeezed.glyph}」，两列之间留 ${clear.toFixed(1)}px`)
+}
+
+// ===== 第9步：用例 8 —— 容器里挂的是别的页签（Trajectory）时，树该收起来 =====
+{
+	console.log('用例 8：滚动容器常驻，里面换成 Trajectory 页签时树收起；空白欢迎页和切会话的空档不算')
+	const { otherViewShown } = pure
+	// 假 DOM：只给 otherViewShown 用到的三样 —— children / hasAttribute / querySelector（按 [data-xxx] 找子孙）
+	const make = (name, attrs, kids) => {
+		const node = { name, attrs: attrs || [], children: kids || [] }
+		node.hasAttribute = (attr) => node.attrs.includes(attr)
+		const walk = (n, want) => (n.attrs.includes(want) ? n : n.children.map((k) => walk(k, want)).find(Boolean))
+		node.querySelector = (sel) => node.children.map((k) => walk(k, sel.slice(1, -1))).find(Boolean) || null
+		return node
+	}
+	const composer = () => make('输入框', ['data-composer-seat'])
+	const chatFlow = () => make('聊天', [], [make('正文栏', ['data-chat-flow'], [make('一行', ['data-chat-turn'])])])
+
+	const chat = make('滚动容器', [], [make('页签区', [], [chatFlow()]), composer()])
+	check(otherViewShown(chat) === false, '挂着聊天页签 → 露着')
+	const empty = make('滚动容器', [], [make('页签区', [], [make('聊天', [], [make('正文栏', ['data-chat-flow'])])]), composer()])
+	check(otherViewShown(empty) === false, '聊天页签一轮都没有（只有正文栏）→ 也算聊天在，露着')
+
+	const traj = make('滚动容器', [], [make('页签区', [], [make('Trajectory', ['data-trajectory-scroll'])]), composer()])
+	check(otherViewShown(traj) === true, '挂着 Trajectory 页签 → 收起')
+	const future = make('滚动容器', [], [make('页签区', [], [make('以后再加的什么页签', [])]), composer()])
+	check(otherViewShown(future) === true, '挂着不认识的页签 → 同样收起（判法不认具体页签）')
+
+	// ⚠️ 只剩输入框不算别的页签：空白会话的欢迎页、切会话时聊天子树刚卸掉的那几帧，树都该照常在
+	check(otherViewShown(make('滚动容器', [], [composer()])) === false, '只剩输入框（欢迎页 / 切会话空档）→ 不算别的页签')
+	check(otherViewShown(make('滚动容器', [], [])) === false, '容器空着 → 不算别的页签')
+	// 输入框和页签区谁先谁后无所谓
+	check(otherViewShown(make('滚动容器', [], [composer(), make('页签区', [], [make('Trajectory', [])])])) === true, '输入框排前面也认得出别的页签')
+	check(otherViewShown(make('滚动容器', [], [composer(), make('页签区', [], [chatFlow()])])) === false, '输入框排前面也认得出聊天')
+
+	console.log('  聊天在→露着；Trajectory / 不认识的页签→收起；只剩输入框→不动')
 }
 
 report()

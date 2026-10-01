@@ -451,7 +451,7 @@ console.log('用例 12：认不出来就一动不动（fail open）')
 	const folded = applyFold(new Map([['a', 'a'], ['b', 'a']]), new Set(), {}, 'a', () => {})
 	check(folded === 0 && group.getAttribute(FOLD_ATTR) === null, '一棵都不折，容器没记号')
 	check([...rows.values()].every((row) => unitOf(row).style.order === '' && row.attrs.size === 1), '行上除了 role 什么都没贴，座位也没座位号')
-	// 状态槽里有点：箭头平时藏着（data-dsht-dot），悬停才盖上去 —— 这里只验属性。
+	// 状态槽里有点：整行右移给箭头腾地方（data-dsht-dot），箭头照样露着 —— 这里只验属性。
 	// 顺便：这里的行**没套** HoverCard 的 span，座位就是行本身，照样要能折（宿主哪天不套了也不坏）
 	const doc2 = fakeDocument()
 	globalThis.document = doc2

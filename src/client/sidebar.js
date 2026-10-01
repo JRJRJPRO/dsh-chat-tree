@@ -38,7 +38,7 @@ const ROW_ATTRS = [
 	'data-dsht-open', // 树头：1 摊开 / 0 收起
 	'data-dsht-count', // 树头：底下几条分支（收起时画成数字角标）
 	'data-dsht-slot', // 树头：这一行有没有宿主那个 16px 的状态槽（没有的话箭头要自己腾地方）
-	'data-dsht-dot', // 树头：状态槽里有没有东西（有的话箭头平时藏着，悬停才盖上去）
+	'data-dsht-dot', // 树头：状态槽里有没有东西（有的话整行右移，箭头和槽里的点并排都露着）
 	'data-dsht-holds', // 树头：收起着、而当前会话就在里面
 	'data-dsht-busy', // 树头：收起着、而里面有分支在跑（running）或刚跑完（completed）
 	'data-dsht-hidden', // 分支：收起时藏掉（贴在座位上，见 unitOf；行上也顺手清）
@@ -106,14 +106,16 @@ const CHEVRON = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" ari
  *     把最后两个（时间、"…"菜单）推到 1，角标（0，源码顺序在最后）就落在标题之后；
  *   · 分支行的 ├ / └ 用 `::before` / `::after` 画。宿主拖拽时的落点线也用这两个伪元素，
  *     但它的选择器更具体（`.sessionRow.dropBefore:before`），拖的时候它赢，不冲突；
- *   · 树头没有状态槽（"一个列表"视图里没在跑的行）就补 padding 给箭头腾地方。
+ *   · 树头没有状态槽（"一个列表"视图里没在跑的行）就补 padding 给箭头腾地方；
+ *     槽里有东西（在跑的点、桌面版的 leading 插槽）也补，箭头和它并排，**不藏箭头**。
+ *     以前是箭头平时藏着、悬停才盖到点上，桌面版每行槽里都有东西，箭头就永远看不见（John 提的）。
  */
 const STYLE =
 	`[${FOLD_ATTR}]{display:flex;flex-direction:column}` +
 	`[${FOLD_ATTR}="group"]{gap:2px}` +
 	`[${FOLD_ATTR}]>*{flex:none;margin-top:0!important}` +
 	'[data-dsht-role]{position:relative}' +
-	'[data-dsht-role="head"]:not([data-dsht-slot="1"]){padding-left:26px}' +
+	'[data-dsht-role="head"]:not([data-dsht-slot="1"]),[data-dsht-role="head"][data-dsht-dot="1"]{padding-left:26px}' +
 	'[data-dsht-role="branch"]{padding-left:26px}' +
 	'[data-dsht-role="branch"]::before{content:"";position:absolute;left:15px;top:-2px;bottom:0;width:1px;background:var(--dsw-alias-border-l4);pointer-events:none}' +
 	'[data-dsht-role="branch"][data-dsht-last="1"]::before{bottom:50%}' +
@@ -136,10 +138,7 @@ const STYLE =
 	`.${FOLD_BUTTON}{position:absolute;left:6px;top:50%;width:20px;height:20px;margin-top:-10px;padding:0;border:0;border-radius:6px;background:none;color:var(--dsw-alias-label-tertiary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1}` +
 	`.${FOLD_BUTTON}:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}` +
 	`.${FOLD_BUTTON} svg{display:block;transition:transform .15s ease}` +
-	`[data-dsht-open="1"]>.${FOLD_BUTTON} svg{transform:rotate(90deg)}` +
-	`[data-dsht-dot="1"]>.${FOLD_BUTTON}{opacity:0}` +
-	`[data-dsht-dot="1"]:hover>.${FOLD_BUTTON}{opacity:1}` +
-	'[data-dsht-dot="1"]:hover>span[class*="_slot"]>*{visibility:hidden}'
+	`[data-dsht-open="1"]>.${FOLD_BUTTON} svg{transform:rotate(90deg)}`
 
 /**
  * 把样式表塞进页面。整页只要一份。

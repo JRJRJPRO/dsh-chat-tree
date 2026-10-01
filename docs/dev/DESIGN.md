@@ -421,7 +421,7 @@ activities      ← 裁到岔路那一轮（UI 里助手正文的唯一来源）
 | `dsh-api-session-controller` | `ctx.sessions`（列表 / open / fork / jump） |
 | `dsh-api-workspace-controller` | `ctx.workspaces`（归档集） |
 | `dsh-client-ui-layout` | **声明 `shell.overlay` 的就是它**，导轨挂在这 |
-| `dsh-client-ui-chat` | 我们读它的 DOM：`[data-conversation-scroll]`、`[data-chat-turn]`、`TurnNavigator.module.css` |
+| `dsh-client-ui-chat` | 我们读它的 DOM：`[data-chat-turn]`、`[data-chat-flow]`、`TurnNavigator.module.css`（`[data-conversation-scroll]`、`[data-composer-seat]` 在 ui-conversation 的 ConversationRoot 上，我们没 inject 它，只读 DOM）|
 | `dsh-client-ui-settings` | 设置卡片的 `settings.plugin.item` |
 
 > ⚠️ 改挂载点时**必须同步改这里**。从 `conversation.session.header.utilities` 换到
@@ -530,6 +530,35 @@ activities      ← 裁到岔路那一轮（UI 里助手正文的唯一来源）
 - ⚠️ 导轨自己不算遮挡（最外层挂 `RAIL_MARK`，探针认得出来），否则会来回闪。
 - 侧栏是"挤"而不是"盖"的那种（真把聊天区改窄了）不需要这条：容器 rect 跟着变小，
   `ResizeObserver` 那一路本来就跟得上，空当也跟着变窄，居中自然退回贴右缘。
+
+### 切到 Trajectory 页签时，树也要收起来
+
+宿主把「聊天 / Trajectory」做成**同一块滚动容器里的页签**：`conversation.view` 是个
+list 插槽，`ConversationSession` 用 `{ only: active.id }` 一次只挂一个；聊天是 ui-chat
+注册的 `id: "chat"`，Trajectory 是 ui-trajectory 注册的 `id: "trajectory"`。而
+`[data-conversation-scroll]` 在外面一层的 ConversationRoot 上，**常驻**。所以切到
+Trajectory 后容器还在、尺寸也没变，上面"量不到聊天区 = 收起"和"被盖住 = 收起"两条都
+不触发，一整屏 trajectory 上面还叠着一棵树（John 提的）。
+
+宿主没把"现在是哪个页签"写进 DOM（tab 上只有 `aria-selected`，没有 id），存的是
+per-session 的 localStorage 偏好，两边都不适合当依据。`otherViewShown` 只认聊天自己：
+
+| 容器里有什么 | 判定 | 场面 |
+|---|---|---|
+| 找得到 `[data-chat-flow]`（ui-chat ChatView 的正文栏，一轮都没有它也在） | 聊天在，露着 | 正常聊天 |
+| 找不到，但除了 `[data-composer-seat]` 之外还挂着别的子代 | **别的页签**，收起 | Trajectory，或以后再加的页签 |
+| 找不到，容器里只剩输入框（或空着） | 不算，照常 | 空白会话的欢迎页；切会话时聊天子树刚卸掉的几帧 |
+
+- 第三行是关键：`ConversationSession` 在空白会话上直接 `return null`，那时容器里只有
+  输入框。要是把"没有聊天"一律判成收起，新开的空分支就会让整棵树消失，直到你打出第一句。
+- 判法不认 `[data-trajectory-scroll]`，以后宿主再加什么页签都一样收。
+- **切页签时容器尺寸不变**，`ResizeObserver` 不响，光靠 800ms 轮询树会在 trajectory 上多挂
+  快一秒。所以 `useChatBox` 另挂一个 `MutationObserver`，盯容器和它每个直接子代的
+  `childList`（页签本体换在子代 viewArea 里面；欢迎页变有页签是容器自己的子代变了），
+  一换就重量。**不盯 subtree** —— 那会跟着流式输出每个 token 响一次。
+- 两代宿主（0.1.5 网页版 / 0.2 桌面版）这几个记号都在，见 NATIVE-BASELINE.md 末尾。
+
+test-layout.mjs 用例 8 钉着这张表。
 
 ### 省略（`elide`）
 
@@ -1543,6 +1572,9 @@ localStorage（`dsh-chat-tree.sidebar-open`）。设置里有开关（`sidebarFo
   树的成员按**会话列表**算（`trees`），数字、箭头上的点、"当前在里面"都算上收起的那些。
   用户摊开一棵树而它有成员被收着时，替他按一下宿主那个「还有 n 条」（只按这一次，
   `wantMore` 里划掉），否则摊开了也只露出画出来的那几条。
+- **箭头平时就露着**。第一版把箭头放在宿主那个 16px 状态槽的位置上，槽里有东西（在跑的点）
+  就把箭头藏起来、悬停才盖上去。桌面版每行槽里都有东西，箭头就成了"只有悬浮才显示"。
+  现在槽里有东西的树头整行右移 18px，箭头和点并排。
 
 **怎么定"一棵树"**：和导轨一致但只到会话粒度（`fold.js` 的 `foldHeads`）：顺血缘爬到根；
 剪点所在的会话自己当树头、底下的跟着走；认领过的归剪点那条会话；根被合并登记进别人的组
