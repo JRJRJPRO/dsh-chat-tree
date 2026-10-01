@@ -330,6 +330,13 @@ for (const generation of [1, 2]) {
 	store.reset('nodeScale')
 	const want = [['visibleRadius', 12], ['nodeScale', 80], ['nodeScale', 'unset']]
 	check(JSON.stringify(written) === JSON.stringify(want), `写入路径不对：${JSON.stringify(written)}`)
+
+	// 0.2 写完设置只刷新 user 层，value 要等重启才追上：user 必须压过过期的 value
+	push({ status: 'ready', value: { visibleRadius: 7, nodeScale: 150 }, base: { nodeScale: 100 }, user: { visibleRadius: 7, nodeScale: 80 }, writable: true, mode: 'host' })
+	check(store.getSnapshot().values.nodeScale === 80, `user 层的 80 该压过过期 value 的 150，实际 ${store.getSnapshot().values.nodeScale}`)
+	// 重置之后 user 里没了，value 还停在旧值：该退到 base
+	push({ status: 'ready', value: { visibleRadius: 7, nodeScale: 80 }, base: { nodeScale: 100 }, user: { visibleRadius: 7 }, writable: true, mode: 'host' })
+	check(store.getSnapshot().values.nodeScale === 100, `重置后该退回 base 的 100，实际 ${store.getSnapshot().values.nodeScale}`)
 	console.log(`  第 ${generation} 代宿主（${generation === 1 ? 'settingsScope' : 'configForms'}）：loading→ready 全程 set 健在，写入 ${JSON.stringify(written)}`)
 }
 

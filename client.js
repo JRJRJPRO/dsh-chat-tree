@@ -4801,12 +4801,23 @@ window.__ModuleLoader__.load({
 					const snapshot = scope.getSnapshot() || {}
 					const from = snapshot.value !== null && typeof snapshot.value === 'object' ? snapshot.value : {}
 					const raw = snapshot.user !== null && typeof snapshot.user === 'object' ? snapshot.user : {}
+					// 继承层（0.2 的 `base`：默认值那一层，宿主每次都现算，不会过期）。
+					// 用户层里没有的字段先看它再看 `value`：重置一项之后 `value` 可能还停在重启前的旧值。
+					const under = snapshot.base !== null && typeof snapshot.base === 'object' ? snapshot.base : {}
 					const next = blank()
 					next.writable = snapshot.writable === true
 					next.status = snapshot.status
 					next.mode = snapshot.mode
 					for (const spec of FIELDS) {
-						if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
+						// ⚠️ 用户层（`user`）压在生效值（`value`）上面，不能只读 `value`。
+						//    0.2 的宿主写完设置只刷新用户层：`value` 是从插件 fiber 的 config 投影的，
+						//    而 volatile 改动不重挂插件、fiber 的 config 也不重算（我们的 schema 没有
+						//    volatile 引用可供它原地更新），于是 `value` 要到下次重启才追上 ——
+						//    John 报的"设置里调了没反应"就是它：卡片标着"已修改"，树却纹丝不动。
+						//    用户亲手写的值本来就该赢过任何一层，所以先看它；`accept` 照样把关。
+						if (spec.accept(raw[spec.field])) next.values[spec.field] = raw[spec.field]
+						else if (spec.accept(under[spec.field])) next.values[spec.field] = under[spec.field]
+						else if (spec.accept(from[spec.field])) next.values[spec.field] = from[spec.field]
 						next.user[spec.field] = spec.field in raw
 					}
 					if (same(next, state)) return

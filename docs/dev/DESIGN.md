@@ -648,6 +648,9 @@ host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-chat-tree`（*
   标了之后改值不会重挂插件 —— cordis-plugin-loader 的 `_commitVolatile` 见 fiber 的 config
   里没有 volatile 引用就直接算提交（我们用的是 npm 版 schemastery，不生成引用）。
   只准标**字段**，别标整个 object：宿主要"固定的对象路径"。
+  **代价：快照里的 `value` 写完不更新**（它投影自 fiber 的 config，要重启才追上），
+  只有 `user` 层是新的。所以 `settingsStore` 按 `user` → `base` → `value` 取值，
+  不能只读 `value` —— 只读它就是"卡片标着已修改、树纹丝不动"（2026-10-01 沙盒复现并修掉）。
 - **namespace = entry id**。0.2 的表单按 cordis entry id 分组，所以 `SETTINGS_NS` 必须和
   `cordis.patch.yml` 里 `insert` 的 id 一样，`configForms.get` 要的也是它。
 - **认服务，不认版本号**。host 半看 `settings.register` 在不在；浏览器半两条 `ctx.inject`
