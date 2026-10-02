@@ -440,9 +440,18 @@ export function useObservable(observable) {
 export function useOutlines(cwd, listState, nonce) {
 	const [data, setData] = react.useState(undefined)
 	const [again, setAgain] = react.useState(0)
-	const stamp = listState
-		? `${(listState.ids || []).length}:${listState.current}:${(listState.ids || []).map((id) => (listState.byId[id] || {}).updatedAt).join(',')}`
-		: ''
+	const stamp = listStamp(listState)
+	// 有会话从"在跑"变成"跑完"：跑完那一刻列表先变、日志后落盘，紧跟着的那次重拉可能
+	// 还读到旧 revision；隔一会儿再拉一次兜底（settleDelay 的说明）。
+	const runningNow = runningCount(listState)
+	const runningBefore = react.useRef(runningNow)
+	react.useEffect(() => {
+		const wait = settleDelay(runningBefore.current, runningNow)
+		runningBefore.current = runningNow
+		if (wait === 0) return undefined
+		const timer = setTimeout(() => setAgain((value) => value + 1), wait)
+		return () => clearTimeout(timer)
+	}, [runningNow])
 	react.useEffect(() => {
 		if (!cwd) return undefined
 		let alive = true
@@ -451,12 +460,15 @@ export function useOutlines(cwd, listState, nonce) {
 				.then((body) => {
 					if (!alive) return
 					adoptLabels(body && body.labels) // 标注以宿主为准，本地只是缓存
-					setData(body)
+					// 盖上"这是哪个目录的"：拉取期间保留旧数据，Rail 靠这个字段分清手里那份是不是当前目录的
+					// （切目录后、新数据到之前拿旧目录的树顶着，就是"另一组对话了树还是原来的"）。
+					setData(tagOutlines(body, cwd))
 				})
 				.catch((error) => {
 					warn('拉大纲失败，树停在上一帧', error)
-					// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失
-					if (alive) setData((previous) => Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }))
+					// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失。
+					// 出错那份也盖上目录：旧目录的数据带着新目录的错，Rail 才知道该报错而不是顶旧树。
+					if (alive) setData((previous) => tagOutlines(Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }), cwd))
 				})
 		}, 120)
 		return () => {
@@ -475,6 +487,76 @@ export function useOutlines(cwd, listState, nonce) {
 		return () => clearTimeout(timer)
 	}, [data])
 	return data
+}
+
+/**
+ * 会话列表的"指纹"：它一变就重拉大纲。**纯函数**。
+ *
+ * 【为什么要把 running 算进去】两代宿主的 `updatedAt` 含义不一样：
+ *   · 0.1.5 跟着日志走，一轮答完它就动，树自然跟着刷；
+ *   · 0.2 只在**用户发一条消息**时推进（`api-session/activity`，宿主注释原话：
+ *     "from one user-authored durable message"）。回答结束、标题生成、压缩完成
+ *     一概不动它 —— 于是桌面版上一轮答完了，树要等到你发下一句才补画
+ *     （John 报的"树画出来有明显延迟"）。
+ * 0.2 把"在跑 / 跑完未读"放在另一张状态表里（tree.js 的 withStatus 已经并回列表项），
+ * 所以把每条会话的 `running` / `completed` 也算进指纹：一轮开始、一轮结束各刷一次。
+ * 0.1.5 上 `running` 本来就在列表项上，多算一遍无害。
+ * @param listState - `ctx.sessions.list` 的快照（已 withStatus）
+ * @returns 字符串；没有快照就空串
+ */
+export function listStamp(listState) {
+	if (!listState) return ''
+	const ids = listState.ids || []
+	const byId = listState.byId || {}
+	const rows = ids.map((id) => {
+		const item = byId[id] || {}
+		return `${item.updatedAt}${item.running === true ? 'r' : ''}${item.completed === true ? 'c' : ''}`
+	})
+	return `${ids.length}:${listState.current}:${rows.join(',')}`
+}
+
+/**
+ * 列表里有几条会话正在跑。**纯函数**。
+ * @param listState - 会话列表快照
+ * @returns 条数
+ */
+export function runningCount(listState) {
+	if (!listState) return 0
+	const byId = listState.byId || {}
+	let count = 0
+	for (const id of listState.ids || []) if ((byId[id] || {}).running === true) count += 1
+	return count
+}
+
+/**
+ * 有会话刚跑完时，隔多久再补拉一次。**纯函数**。
+ *
+ * 跑完那一刻的顺序是：宿主先把状态表翻成"不在跑"（列表指纹变了，useOutlines 立刻重拉），
+ * 日志的 turn/end 可能还在往盘上落。host 半的大纲按文件 revision 缓存，这次重拉读到的
+ * 还是旧 revision 就还是旧大纲 —— 最后一轮的"答完了"标记、生成的标题要等下一次机会。
+ * 所以跑的条数**减少**时再补一拉。只看减少：开始跑那一下日志已经写了 turn/start，不用等。
+ * @param before - 上一帧在跑的条数
+ * @param after - 这一帧在跑的条数
+ * @returns 毫秒；0 = 不用补
+ */
+export function settleDelay(before, after) {
+	return Number.isFinite(before) && Number.isFinite(after) && after < before ? Z.settleMs : 0
+}
+
+/**
+ * 给一份大纲盖上"它是哪个目录的"。**纯函数**，不改传入的对象。
+ *
+ * 【为什么要盖】`useOutlines` 在拉取期间保留旧数据（图不闪空），而旧数据可能是**上一个目录**的。
+ * Rail 以前拿它当当前目录的数据用：当前会话在里面找不到 → 以为是"刚开的分支还没进大纲" →
+ * 拿上一棵树顶着 —— 于是切到另一组对话之后，旧目录的树一直挂着，直到新数据回来；
+ * 拉取慢或者出错，就一直是旧的。盖上目录之后 Rail 能分清"没数据"和"数据是别人的"。
+ * @param body - `/outlines` 的响应体（或拉失败时拼出来的那份）
+ * @param cwd - 这次是替哪个目录拉的
+ * @returns 带 `cwd` 字段的新对象；body 不是对象就原样返回
+ */
+export function tagOutlines(body, cwd) {
+	if (body === null || typeof body !== 'object') return body
+	return Object.assign({}, body, { cwd })
 }
 
 /**

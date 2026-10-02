@@ -33,12 +33,15 @@ dsh plugin --profile web add link:D:/绝对路径/dsh-chat-tree
 `node_modules/dsh-chat-tree` 会是一个指向工作目录的符号链接：插件市场照样把它列进「已安装」，
 而你改完 `npm run build` 刷新页面就见效，不用重装。
 
-**桌面版（dsh 0.2）**：profile 在 `~/.dsh/profiles/desktop`，CLI 拒绝碰它。应用里
+**桌面版（dsh 0.2）**：profile 在 `$DSH_HOME/profiles/desktop`（没设 `DSH_HOME` 才是
+`~/.dsh/…`；本机设了，和网页版共用同一个 home —— 会话、树形、旁车都是同一份），CLI 拒绝碰它。应用里
 **设置 → 插件 → 安装** 填 `link:D:/绝对路径/dsh-chat-tree`；或者应用没开时手改 profile 的
 `package.json`（`dependencies` + `dsh.profile.bundles`）再用自带的 pnpm 装，见
-NATIVE-BASELINE.md 末尾。host 半改完要**重启应用**。两代宿主的差异（设置、当前会话、
-开会话、跑完未读）都在 DESIGN.md「设置：两代宿主」「宿主 0.2：浏览器半的三处搬家」，
-`test-lifecycle.mjs` 用例 6 钉着两条路。
+NATIVE-BASELINE.md 末尾。host 半改完要**重启应用**（浏览器半 build 完 Ctrl+R 刷新窗口即可）。
+两代宿主的差异（设置、当前会话、开会话、跑完未读、**fork 的切点**、重拉指纹）都在
+DESIGN.md「设置：两代宿主」「宿主 0.2：浏览器半的三处搬家」「宿主 0.2：fork 的切点」，
+`test-lifecycle.mjs` 用例 6 和 `test-cut.mjs` 钉着两条路。桌面版小版本升级后先按
+NATIVE-BASELINE.md 末尾的办法把 asar 抄出来 diff 一遍，再决定要不要动代码。
 
 ⚠️ **别再往 `cordis.patch.yml` 里写 `file:///…` 的 `insert`** —— 和上面的装法同时用，
 同一个 id 会插两次，cordis 直接拒绝启动。
@@ -76,6 +79,7 @@ node tests/test-http.mjs         # 路由外壳：信任围栏、方法分发、
 node tests/test-net.mjs          # 浏览器半：直连被拒时改走 /remote 通道
 node tests/test-lifecycle.mjs    # 启用 / 停用 / 再启用：两半都不许留东西
 node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图 + 3000 棵随机树扫不变式
+node tests/test-cut.mjs          # 开岔路的切点（0.2 宿主按精确切点抄）、空壳轮、重拉指纹
 ```
 
 单独跑某一个之前记得 `npm run build` —— 测的是生成物 `client.js`。
@@ -107,8 +111,13 @@ node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图
    `$DSH_HOME/profiles/web/patches/`，由 `pnpm-workspace.yaml` 的 `patchedDependencies`
    重放；升级 dsh-claude 后先确认上游是否已带 `forkSession`，没带就把补丁改成新版本号。
    已经共用的旧会话用 `tools/split-shared-claude.mjs` 拆（**dsh 停着时**）。
-   桌面版（0.2）要装 dsh-claude **0.1.64+**，profile 在 `~/.dsh/profiles/desktop`，补丁同样放它的
-   `patches/` 并写进 `pnpm-workspace.yaml`；0.1.64 仍没带 `forkSession`（NATIVE-BASELINE.md 末尾）。
+   桌面版（0.2）要装 dsh-claude **0.1.64+**，profile 在 `$DSH_HOME/profiles/desktop`，补丁同样放它的
+   `patches/` 并写进 `pnpm-workspace.yaml`，然后用自带 pnpm install（应用关着时）；0.1.64 仍没带
+   `forkSession`（NATIVE-BASELINE.md 末尾有命令）。**装完要 grep 一下 `forkSession` 确认真的打上了** ——
+   2026-10-01 发现桌面 profile 的 `patches/` 空着、yaml 里也没有 `patchedDependencies`，补丁从没生效过。
+7. **开岔路的切点传这一轮的 turn/end**（`src/client/tree.js` 的 `forkCutSeq`），不是 turn/start。
+   0.2 宿主把 `atSeq` 当精确切点，传 turn/start 新分支就只剩一个空壳轮、模型从上一轮接着记
+   （NATIVE-BASELINE.md「fork 的 atSeq」）。0.1.5 两种传法等价，所以这条在网页版上永远测不出来。
 
 ## 5. 已知问题（按优先级）
 
@@ -119,6 +128,10 @@ node tests/test-tidy.mjs         # 分列算法（紧凑树）：具体那张图
   互相串记忆。补丁很小（`resumeSessionAt` 旁边加 `forkSession: true`），用 pnpm patch
   挂到 `$DSH_HOME/profiles/web/patches/`。不用 Claude 的用户完全碰不到这件事。
 - 已经串了的旧会话用 `node tools/split-shared-claude.mjs --apply` 拆（dsh 停着时跑）。
+- **父会话在跑时开的岔路，"等它跑完再补接"实际接不上**：dsh-claude 自己在 `agent/created` 里就读了
+  新分支的旁车并缓存（`#latest`，"disk is read once"），2s 后补写的文件它不再读，新分支起进程时
+  没有 binding → 全新的 Claude 会话。UI 上 `forkBlockedWhy` 已经不让在跑的 claude 会话上开岔路，
+  原生消息行上的分支按钮挡不住。真要修得上游给个"重读旁车"的口子。
 
 **P1**
 

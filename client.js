@@ -66,7 +66,7 @@ window.__ModuleLoader__.load({
 		 * 代价是各项相对老基准差 ±2% 以内。
 		 * 老基准：row 20 / rowMin 7 / dot 9 / dotMin 6 / dotPad 5 / lane 14 / hit 18
 		 */
-		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, cardOpen: 340, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000 }
+		const Z = { row: 24, rowMin: 8, dot: 11, dotMin: 7, dotPad: 6, lane: 17, hit: 22, laneGap: 5, pad: 16, card: 270, cardOpen: 340, gap: 20, restMs: 140, graceMs: 600, rewindMs: 2000, settleMs: 1500 }
 
 		/**
 		 * 按百分比缩放尺寸。**只缩几何量** —— `restMs` 是时间、`card` 是文字卡片宽度，
@@ -1102,6 +1102,30 @@ window.__ModuleLoader__.load({
 			//    再 fresh 一条只是多出一条一模一样的空会话（和叶子节点同一条道理）。
 			if (node.entry === undefined) return node.children.length === 0 ? 'none' : 'fresh'
 			return node.children.length === 0 ? 'none' : 'fork'
+		}
+
+		/**
+		 * 从某一轮开岔路时，交给宿主 `fork({atSeq})` 的那个 seq —— **这一轮的 turn/end**，
+		 * 不是 turn/start。
+		 *
+		 * 两代宿主对 `atSeq` 的解释不一样（NATIVE-BASELINE.md 末尾「fork 的 atSeq」）：
+		 *   · 0.1.5：取"第一个 seq ≥ atSeq 的 turn/end"做边界，再一直抄到下一个 turn/start 之前。
+		 *     传 turn/start 和传 turn/end 结果一样，都是整轮抄过去。
+		 *   · 0.2（桌面版起）：atSeq 就是**精确的包含式切点**，切在哪就到哪为止；切进一轮中间
+		 *     就补一条 `forked` 的 turn/end 把它合上。传 turn/start 的话，新分支只抄到这一轮的
+		 *     turn/start —— 提问和回答都不在，模型只记得到上一轮。John 报的"分叉就失忆"
+		 *     （deepseek 整轮丢、claude 少一轮）就是它；盘上 2026-10-01 的 TEST 桶里那条
+		 *     `session-054a5154` 就长这样：继承段只有 turn/start，接着就是 end-seed 和 forked。
+		 * 传 turn/end 两代都对：0.1.5 下"≥ 它的第一个 turn/end"就是它自己。
+		 *
+		 * 没有 turn/end（这一轮还在跑）就退回 turn/start —— 0.2 会把它切成空壳、0.1.5 会报
+		 * fork-unavailable，两边都不会多抄一轮；`branchAction` 本来也不该在这种节点上给出 ＋。
+		 * @param entry - 大纲里的一轮（host 半 foldOutline 的产物）
+		 * @returns 交给 `fork` 的 atSeq
+		 */
+		function forkCutSeq(entry) {
+			if (!entry) return undefined
+			return Number.isFinite(entry.endSeq) ? entry.endSeq : entry.seq
 		}
 
 		/**
@@ -3855,9 +3879,18 @@ window.__ModuleLoader__.load({
 		function useOutlines(cwd, listState, nonce) {
 			const [data, setData] = react.useState(undefined)
 			const [again, setAgain] = react.useState(0)
-			const stamp = listState
-				? `${(listState.ids || []).length}:${listState.current}:${(listState.ids || []).map((id) => (listState.byId[id] || {}).updatedAt).join(',')}`
-				: ''
+			const stamp = listStamp(listState)
+			// 有会话从"在跑"变成"跑完"：跑完那一刻列表先变、日志后落盘，紧跟着的那次重拉可能
+			// 还读到旧 revision；隔一会儿再拉一次兜底（settleDelay 的说明）。
+			const runningNow = runningCount(listState)
+			const runningBefore = react.useRef(runningNow)
+			react.useEffect(() => {
+				const wait = settleDelay(runningBefore.current, runningNow)
+				runningBefore.current = runningNow
+				if (wait === 0) return undefined
+				const timer = setTimeout(() => setAgain((value) => value + 1), wait)
+				return () => clearTimeout(timer)
+			}, [runningNow])
 			react.useEffect(() => {
 				if (!cwd) return undefined
 				let alive = true
@@ -3866,12 +3899,15 @@ window.__ModuleLoader__.load({
 						.then((body) => {
 							if (!alive) return
 							adoptLabels(body && body.labels) // 标注以宿主为准，本地只是缓存
-							setData(body)
+							// 盖上"这是哪个目录的"：拉取期间保留旧数据，Rail 靠这个字段分清手里那份是不是当前目录的
+							// （切目录后、新数据到之前拿旧目录的树顶着，就是"另一组对话了树还是原来的"）。
+							setData(tagOutlines(body, cwd))
 						})
 						.catch((error) => {
 							warn('拉大纲失败，树停在上一帧', error)
-							// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失
-							if (alive) setData((previous) => Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }))
+							// 拉不到也要让界面知道为什么：以前这里静悄悄，整条树直接消失。
+							// 出错那份也盖上目录：旧目录的数据带着新目录的错，Rail 才知道该报错而不是顶旧树。
+							if (alive) setData((previous) => tagOutlines(Object.assign({}, previous || { sessions: [] }, { error: String((error && error.message) || error) }), cwd))
 						})
 				}, 120)
 				return () => {
@@ -3890,6 +3926,76 @@ window.__ModuleLoader__.load({
 				return () => clearTimeout(timer)
 			}, [data])
 			return data
+		}
+
+		/**
+		 * 会话列表的"指纹"：它一变就重拉大纲。**纯函数**。
+		 *
+		 * 【为什么要把 running 算进去】两代宿主的 `updatedAt` 含义不一样：
+		 *   · 0.1.5 跟着日志走，一轮答完它就动，树自然跟着刷；
+		 *   · 0.2 只在**用户发一条消息**时推进（`api-session/activity`，宿主注释原话：
+		 *     "from one user-authored durable message"）。回答结束、标题生成、压缩完成
+		 *     一概不动它 —— 于是桌面版上一轮答完了，树要等到你发下一句才补画
+		 *     （John 报的"树画出来有明显延迟"）。
+		 * 0.2 把"在跑 / 跑完未读"放在另一张状态表里（tree.js 的 withStatus 已经并回列表项），
+		 * 所以把每条会话的 `running` / `completed` 也算进指纹：一轮开始、一轮结束各刷一次。
+		 * 0.1.5 上 `running` 本来就在列表项上，多算一遍无害。
+		 * @param listState - `ctx.sessions.list` 的快照（已 withStatus）
+		 * @returns 字符串；没有快照就空串
+		 */
+		function listStamp(listState) {
+			if (!listState) return ''
+			const ids = listState.ids || []
+			const byId = listState.byId || {}
+			const rows = ids.map((id) => {
+				const item = byId[id] || {}
+				return `${item.updatedAt}${item.running === true ? 'r' : ''}${item.completed === true ? 'c' : ''}`
+			})
+			return `${ids.length}:${listState.current}:${rows.join(',')}`
+		}
+
+		/**
+		 * 列表里有几条会话正在跑。**纯函数**。
+		 * @param listState - 会话列表快照
+		 * @returns 条数
+		 */
+		function runningCount(listState) {
+			if (!listState) return 0
+			const byId = listState.byId || {}
+			let count = 0
+			for (const id of listState.ids || []) if ((byId[id] || {}).running === true) count += 1
+			return count
+		}
+
+		/**
+		 * 有会话刚跑完时，隔多久再补拉一次。**纯函数**。
+		 *
+		 * 跑完那一刻的顺序是：宿主先把状态表翻成"不在跑"（列表指纹变了，useOutlines 立刻重拉），
+		 * 日志的 turn/end 可能还在往盘上落。host 半的大纲按文件 revision 缓存，这次重拉读到的
+		 * 还是旧 revision 就还是旧大纲 —— 最后一轮的"答完了"标记、生成的标题要等下一次机会。
+		 * 所以跑的条数**减少**时再补一拉。只看减少：开始跑那一下日志已经写了 turn/start，不用等。
+		 * @param before - 上一帧在跑的条数
+		 * @param after - 这一帧在跑的条数
+		 * @returns 毫秒；0 = 不用补
+		 */
+		function settleDelay(before, after) {
+			return Number.isFinite(before) && Number.isFinite(after) && after < before ? Z.settleMs : 0
+		}
+
+		/**
+		 * 给一份大纲盖上"它是哪个目录的"。**纯函数**，不改传入的对象。
+		 *
+		 * 【为什么要盖】`useOutlines` 在拉取期间保留旧数据（图不闪空），而旧数据可能是**上一个目录**的。
+		 * Rail 以前拿它当当前目录的数据用：当前会话在里面找不到 → 以为是"刚开的分支还没进大纲" →
+		 * 拿上一棵树顶着 —— 于是切到另一组对话之后，旧目录的树一直挂着，直到新数据回来；
+		 * 拉取慢或者出错，就一直是旧的。盖上目录之后 Rail 能分清"没数据"和"数据是别人的"。
+		 * @param body - `/outlines` 的响应体（或拉失败时拼出来的那份）
+		 * @param cwd - 这次是替哪个目录拉的
+		 * @returns 带 `cwd` 字段的新对象；body 不是对象就原样返回
+		 */
+		function tagOutlines(body, cwd) {
+			if (body === null || typeof body !== 'object') return body
+			return Object.assign({}, body, { cwd })
 		}
 
 		/**
@@ -6314,11 +6420,18 @@ window.__ModuleLoader__.load({
 			if (!visible.has(current)) visible.add(current)
 
 			const shape = echo || (outlines && outlines.shape) || {}
-			const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current, shape.groupOf)
+			// ⚠️ 手里这份大纲是不是**这个目录**的。切到别的目录后、新数据到之前，`outlines` 还是上一个
+			//    目录的（useOutlines 拉取期间保留旧数据，图才不闪空）——那份里当然找不到当前会话，
+			//    不能拿它当"当前会话没有轮次"，更不能拿它建图。
+			const fresh = outlines !== undefined && outlines.cwd === cwd
+			const picked = fresh ? conversationOf(visibleTree(outlines.sessions || [], visible), current, shape.groupOf) : []
 
 			// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 			//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
 			//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
+			//    但只许拿**同一个目录**的上一棵顶：切到别的目录（另一组对话）还顶着旧树，就是
+			//    John 报的"完全是另一组对话了，树还显示着原来的那颗"。而且拉取**出了错**也不许顶 ——
+			//    顶着的话错误被整棵旧树盖住，看起来像树卡住了，其实是 host 那边一直在报错。
 			// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
 			// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
 			const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
@@ -6328,11 +6441,12 @@ window.__ModuleLoader__.load({
 			} catch (error) {
 				warn('建图失败，先拿上一棵顶着', error)
 			}
-			if (graph !== undefined) lastGraph.current = graph
-			else graph = lastGraph.current
+			const failed = outlines !== undefined && outlines.error !== undefined
+			if (graph !== undefined) lastGraph.current = { cwd, graph }
+			else if (!failed && lastGraph.current !== undefined && lastGraph.current.cwd === cwd) graph = lastGraph.current.graph
 			// 一棵树都没有、而且宿主那边报了错 → 说一声，别整条导轨静悄悄消失
 			if (graph === undefined) {
-				if (!outlines || !outlines.error) return null
+				if (!failed) return null
 				return h('div', {
 					style: { position: 'fixed', right: '14px', top: `${box.top + Z.pad}px`, zIndex: 40, maxWidth: '220px', pointerEvents: 'none',
 						font: '11px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.muted, whiteSpace: 'pre-wrap' },
@@ -6615,7 +6729,9 @@ window.__ModuleLoader__.load({
 									return patch.session === undefined ? undefined : reshape(patch)
 								})
 							}
-							return api.fork(node.session.id, node.entry.seq, claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
+							// ⚠️ 切点传这一轮的 turn/end，不是 turn/start（forkCutSeq 的说明）：0.2 宿主按精确切点抄，
+							//    传 turn/start 新分支就只剩一个空壳轮，模型从上一轮接着记。
+							return api.fork(node.session.id, forkCutSeq(node.entry), claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
 						},
 					}),
 				),
@@ -6644,7 +6760,7 @@ window.__ModuleLoader__.load({
 			visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
 			// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
 			currentOf, withStatus,
-			cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+			cutPointOf, cutSet, branchAction, forkBlockedWhy, forkCutSeq, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
@@ -6677,8 +6793,8 @@ window.__ModuleLoader__.load({
 			contentRightOf, isCovered, otherViewShown, RAIL_MARK,
 			// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
 			tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
-			// 撤回的重拉节奏
-			isRewindPending, rewindRetryDelay,
+			// 撤回的重拉节奏；会话列表的指纹（0.2 宿主上 updatedAt 不跟回答走，得把 running 算进去）；跑完之后的补拉
+			isRewindPending, rewindRetryDelay, listStamp, runningCount, settleDelay, tagOutlines,
 			// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
 			pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
 			// 未读节点读过之后的三段式节奏

@@ -21,7 +21,7 @@
 
 import { adoptBranch, agentOf, cancelPendingGrafts, forkTurnOf, inheritedPendingIds, scheduleGraftRetry } from './src/host/adopt.js'
 import { collect } from './src/host/collect.js'
-import { effectiveForkTurn, shadowedSeqs } from './src/host/outline.js'
+import { cacheKeyOf, effectiveForkTurn, shadowedSeqs } from './src/host/outline.js'
 import { patchLabels, readLabels } from './src/host/labels.js'
 import { graft } from './src/host/graft.js'
 import { HttpError, raw, route } from './src/host/http.js'
@@ -64,7 +64,7 @@ export const __test = {
 	adoptBranch, forkTurnOf, inheritedPendingIds, lineage, scheduleGraftRetry, cancelPendingGrafts,
 	putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX,
 	statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS,
-	collect, shadowedSeqs, effectiveForkTurn, readLabels, patchLabels,
+	collect, shadowedSeqs, effectiveForkTurn, cacheKeyOf, readLabels, patchLabels,
 }
 
 /**
@@ -115,8 +115,23 @@ export function apply(ctx) {
 
 	// 画树要的全部数据。形状跟大纲一起发：少一个往返，也不会出现
 	// "大纲到了形状没到"那一帧的错分组。
+	// 同一个工作目录的拉取**合并**：浏览器半在一轮开始、结束、跑完补拉这几个点上会接连催几次，
+	// 切会话时上一个目录的请求也可能还没回。每次都是整份 list() + 几十条大纲，排着队跑只会把
+	// 最新那次（真正要画的）拖在后面。正在算的那份直接给后来者共用，算完就清。
+	const inflight = new Map()
 	route(ctx, '/outlines', {
-		GET: async ({ query }) => Object.assign(await collect(ctx, query.get('cwd') || ''), { shape: readShape(), labels: readLabels() }),
+		GET: ({ query }) => {
+			const cwd = query.get('cwd') || ''
+			const running = inflight.get(cwd)
+			if (running !== undefined) return running
+			const task = collect(ctx, cwd)
+				.then((body) => Object.assign(body, { shape: readShape(), labels: readLabels() }))
+				.finally(() => {
+					if (inflight.get(cwd) === task) inflight.delete(cwd)
+				})
+			inflight.set(cwd, task)
+			return task
+		},
 	})
 
 	// 改名 / 收藏 / 收藏图标 / 收藏颜色。存在宿主这边，换浏览器、上手机都还在。

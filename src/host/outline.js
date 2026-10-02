@@ -128,6 +128,9 @@ export function foldOutline(events) {
 					//    盘上 34 条 aborted 也都老老实实带着 turn/end。
 					//    半截和答完的差别只在撤回时才看得出来，见 rewind.js。
 					current.done = (data.reason || {}).kind === 'completed'
+					// 0.2 宿主 fork 切在一轮中间时会补一条 `{kind:'forked'}` 的合成 turn/end
+					// （dsh-session 的 openTurnClosers）。留着这个字段，下面好认出空壳轮。
+					current.endReason = (data.reason || {}).kind
 				}
 				break
 			case 'session/end-seed':
@@ -171,6 +174,19 @@ export function foldOutline(events) {
 		}
 	}
 
+	// 空壳轮不算轮：dsh 0.2 的 fork 把 `atSeq` 当**精确的包含式切点**（0.1.5 是"切到这一轮的
+	// turn/end"）。切点落在 turn/start 和提问之间时，新分支抄到的只有一条 turn/start，
+	// 宿主再补一条 `{kind:'forked'}` 的 turn/end 把它合上 —— 这一轮在新分支里**什么都没有**：
+	// 没有提问、没有回答、模型也不记得它。本插件 0.2.1 以前传的正是 turn/start 的 seq，
+	// 盘上所有在桌面版开出来的分支头上都顶着这么一个空壳（John 报的"分叉就失忆"的另一半：
+	// 树上接在第 N 轮下面，模型实际只记得到 N-1）。
+	// 剔掉它，岔路点才落在模型真正记得的那一轮上；graft 那边（adopt.js 的 forkTurnOf）
+	// 看的是原始事件，合成的 turn/end 不在继承段里，算出来天然就是 N-1，两边一致。
+	// ⚠️ 只剔"forked 且没有提问"的：切在提问之后的半截轮（有提问、没答完）是真的走过一步，留着。
+	const kept = turns.filter((entry) => !(entry.endReason === 'forked' && entry.promptSeq === undefined))
+	turns.length = 0
+	turns.push(...kept)
+
 	// 标出哪些轮是从父分支抄来的 —— 树上只画自己的那部分，
 	// 否则父子两条链都把继承段画一遍，看着像"直线中间拐个弯"而不是分叉。
 	//
@@ -190,13 +206,34 @@ export function foldOutline(events) {
 		for (const entry of turns) if (entry.promptSeq !== undefined && shadowed.has(entry.promptSeq)) entry.rewound = true
 	}
 
-	return { turns, title, model, forkTurn }
+	// `seeded`：日志里有没有 fork 留下的 end-seed。有它却没有 forkTurn 不是半成品 ——
+	// 是继承段里一轮完整的都没有（只有被剔掉的空壳），这条分支从头开始，缓存照常。
+	return { turns, title, model, forkTurn, seeded: seedSeq !== undefined }
 }
 
 // ===== 按 revision 缓存 =====
 
 /** 大纲缓存：sessionId → {revision, outline}。revision 没变就不重读日志。 */
 export const cache = new Map()
+
+/**
+ * 缓存用的 revision：去掉 0.2 宿主给**老格式文件**附加的那截"语料库哈希"。
+ *
+ * 【为什么】0.2 宿主的 `list()` 对还是 v3 的会话（0.1.5 写的、还没在 0.2 里打开过）给的
+ * revision 是 `<文件 stat>:<sha256(全部会话文件的 stat)>`（persistence-jsonl 的
+ * `historicalCorpusRevision`）。后半截只要**任何**一条会话写一个字节就变 —— 正在对话时
+ * 每隔几秒就变一次。于是这些会话的大纲缓存永远命不中，每拉一次树就把它们**全部**重新
+ * 解码 + v3→v4 迁移一遍（宿主只在用户打开会话时才把 v4 落盘，光读不落）。本机 TEST 桶
+ * 51 条、INIT 桶 67 条都是这种，John 报的"切换很慢"大半是它。
+ * 这截哈希对我们没有意义：v3 文件本身不会再被写，前半截的 stat 足够判"变没变"。
+ * v4 会话的 revision 没有这截，原样返回。只认 64 位十六进制，别的冒号一概不动
+ * （前半截自己就是用冒号拼的 dev:ino:size:mtime:ctime）。
+ * @param revision - `list()` 给的 revision
+ * @returns 缓存键
+ */
+export function cacheKeyOf(revision) {
+	return typeof revision === 'string' ? revision.replace(/:[0-9a-f]{64}$/, '') : revision
+}
 
 /**
  * 读一个会话的大纲（命中缓存就不读盘）。
@@ -207,7 +244,8 @@ export const cache = new Map()
 export async function outlineOf(ctx, snapshot) {
 	const id = snapshot.header.id
 	const hit = cache.get(id)
-	if (hit !== undefined && hit.revision === snapshot.revision) return hit.outline
+	const key = cacheKeyOf(snapshot.revision)
+	if (hit !== undefined && hit.revision === key) return hit.outline
 
 	let handle
 	try {
@@ -216,9 +254,11 @@ export async function outlineOf(ctx, snapshot) {
 		const outline = foldOutline(result.events || [])
 		// ⚠️ 半成品不许进缓存：分支刚建出来时 end-seed 可能还没落盘，这时继承轮会被
 		// 全当成"自有"。缓存住的话要等它下次写日志才刷得掉，闲着就一直错。
-		const halfBaked = snapshot.header.isSeeded === true && outline.forkTurn === undefined
+		// 判据是"宿主说它 seeded，日志里却还没有 end-seed"。有 end-seed 但没 forkTurn 的
+		// 不算（继承段只有一个被剔掉的空壳轮，见 foldOutline），那是定局，该缓存。
+		const halfBaked = snapshot.header.isSeeded === true && outline.seeded !== true
 		if (halfBaked) ctx.logger?.warn?.(`dsh-chat-tree: ${id} 的日志还没写完（找不到岔路点），这次不缓存`)
-		else cache.set(id, { revision: snapshot.revision, outline })
+		else cache.set(id, { revision: key, outline })
 		return outline
 	} catch (error) {
 		// 失败降级成空大纲：这个分支在树上只是没有轮次，不影响其它分支。

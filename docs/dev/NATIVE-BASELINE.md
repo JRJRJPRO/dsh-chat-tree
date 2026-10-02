@@ -288,9 +288,25 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 
 > 2026-09-29 实探，对象：`E:\Programs\DeepSeek-Harness-Desktop`（Electron 44，
 > `resources/app.asar/dsh/node_modules/@deepseek-ai/*` 全是 0.2.0-rc.1），
-> profile 固定在 `~/.dsh/profiles/desktop`（bundles = dsh-base + dsh-web-app）。
+> profile 固定在 **`$DSH_HOME/profiles/desktop`**（bundles = dsh-base + dsh-web-app）。
 > 方法：把 asar 解到临时目录，逐包和 0.1.5-rc.2 的 `lib/index.js` / `lib/client.js` 做 diff，
 > 再用桌面版自己的 host 进程（`dsh-desktop-host`，IPC 子进程，端口固定 19387）跑真机验证。
+>
+> ⚠️ profile 路径要看 `DSH_HOME`：没设时才是 `~/.dsh/profiles/desktop`。设了（本机是
+> `E:\Programs\deepseek-harness\home`）就在那底下 —— 和网页版 **同一个 home**：`sessions/`、
+> `storages/`、`plugins/dsh-chat-tree/`（shape / labels / icons）、`plugins/dsh-claude/sessions/`
+> 两代共用，只有 `profiles/web` 和 `profiles/desktop` 各装各的插件。所以"换到桌面版树就不对了"
+> 不是数据没跟过来（2026-10-01 核过，数据一直是同一份），是下面「fork 的 atSeq」那条。
+> 确认当前 profile 的办法：`Get-CimInstance Win32_Process` 看 `dsh-desktop-host` 进程命令行的第三个参数。
+>
+> **2026-10-01 复查 0.2.0-rc.2**（应用 2026-09-30 自动更新，`AppData/Local/@deepseek-aidsh-desktop-updater`）：
+> 289 个 `@deepseek-ai/*` 包和 rc.1 逐文件 diff，和我们相关的**一行逻辑都没改** ——
+> `dsh-api-session-controller` 只多了 `userQuestions` 投影；`ui-sidebar-right / ui-layout /
+> ui-settings-plugins` 只是 CSS module 的哈希换了（我们不靠哈希类名，`hideNativeRail` 是从
+> `<style data-plugin-css>` 里正则出来的，不受影响）。会话文件两版都是 **v4**
+> （`session.v4.jsonl.zstd`，`SESSION_FORMAT_VERSION = 4`），事件格式和 v3 一样；0.1.5 写的 v3
+> 文件被 0.2 打开时会多出一份 v4，`list()` 只认最新一代。小版本升级后照这个办法复查：
+> `D:\tmp\claude\extract-rc2.cjs` 用 Electron 当 node 把 asar 里的 `@deepseek-ai/*` 抄出来再 `diff -rq`。
 
 ### 一样的（插件不用动）
 
@@ -303,7 +319,7 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 | `sessions.fork(source, boundary)` 的 `parentSession / isSeeded / inheritedEventCount` | `dsh-session` 的 `fork()` |
 | 浏览器半：`dsh.client` 声明、`exports["./client"]`、`/plugins/<id>/…` 路由 | `dsh-client-modules` 的 `parseDshClient` 同款；bundle 改由 `/plugins/??a/client.js,b/client.js&rev=` 合并下发 |
 | `sessions.list` 的 `ids / byId`（`id, displayTitle, running, blank, cwd, parentId, title`） | `dsh-api-session-controller/lib/client.js` 的 `projectList` |
-| `sessions.binding(id)`、`fork({sessionId, atSeq, increaseTitle})`、`create({workspaceId|cwd})` | 同上 |
+| `sessions.binding(id)`、`create({workspaceId|cwd})`；`fork({sessionId, atSeq, increaseTitle})` 的**签名** | 同上。⚠️ `atSeq` 的**语义变了**，见下面「fork 的 atSeq」 |
 | `workspaces.list.archivedSessionIds` | `dsh-api-workspace-controller/lib/client.js` |
 | `shell.overlay` 插槽；`[data-conversation-scroll]`、`[data-chat-turn]`、`[data-chat-flow]`、`[data-composer-seat]`、`[data-trajectory-scroll]`、`TurnNavigator.module.css`、侧栏 `role="tree"/"treeitem"`、`data-ds-dark-theme` | grep 0.2.0 的 client bundle 全在；`conversation.view` 页签 `{ only: active.id }` 一次只挂一个、空白会话 `ConversationSession` 返回 null，两代同款 |
 
@@ -318,6 +334,41 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 | `sessions.open(id)` | `uiWorkspace.openSession(id)` |
 | 列表项 `completed` | `uiSession.sessionStatus`（`Map<id, {running, pendingInteraction, completionUnread}>`） |
 | 兼容性门槛 `dsh.engines` | 只看 `peerDependencies` 里的 `@deepseek-ai/dsh*`（`evaluatePluginCompatibility`，含预发布）；我们没声明，不拦 |
+| `fork({atSeq})`：边界 = **第一个 seq ≥ atSeq 的 turn/end**，再抄到下一个 turn/start 之前 | `atSeq` 就是**精确的包含式切点**；切进一轮中间就补 `{kind:'forked'}` 的 turn/end 合上（见下） |
+| `sessions.list` 列表项的 `updatedAt` 跟日志走（答完就动） | 只在用户发消息时推进（`api-session/activity`）；回答结束不动它 —— 重拉指纹得把 `running` 算进去（hooks.js 的 `listStamp`） |
+
+### fork 的 atSeq：同名不同义（2026-10-01 从盘上的失忆分支倒推出来的）
+
+`dsh-api-session-controller` 两版 `fork()` 的边界算法：
+
+```js
+// 0.1.5：取第一个 seq >= atSeq 的 turn/end 做边界，然后一直抄到下一个 turn/start 之前
+const boundary = source.events.find((event) => event.type === "turn/end" && event.seq >= atSeq)
+let cut = boundary.seq + 1
+while (cut < source.events.length && source.events[cut]?.type !== "turn/start") cut++
+
+// 0.2（rc.1、rc.2 一样）：atSeq 就是边界，切到哪算哪；省略时才取"最后一个 turn/end + 后面的零散事件"
+const boundary = atSeq ?? latestCompletedPrefixBoundary(source.events)
+const seed = buildForkSeed(source.events, boundary)   // prefix + end-seed + openTurnClosers(prefix, {kind:'forked'})
+```
+
+插件 0.2.1 以前传的是节点那一轮的 **turn/start** seq。在 0.1.5 上两者无差（往后找到的第一个 turn/end
+就是这一轮的）；在 0.2 上新分支只抄到 turn/start，宿主补一条 `forked` 的 turn/end 把它合上 ——
+盘上 `session-054a5154`（2026-10-01，TEST 桶，deepseek-flash）就长这样：
+
+```
+seq5  agent/inbox/spliced  inserted「在吗」       ← 继承到的最后一条有内容的东西
+seq6  turn/start turn1
+seq7  session/end-seed {inherited:true}
+seq8  turn/end turn1 {reason:{kind:'forked'}}    ← 宿主补的
+seq9  agent/inbox/spliced removedCount:1 outcome:canceled   ← 我们的 adoptBranch 删掉了那条待办（没错，但也说明父会话的第 1 轮整个没抄到）
+seq16 user/message「累加3呢」 turn2 → 助手："当前会话里没有前文"
+```
+
+所以：**切点传这一轮的 turn/end**（`tree.js` 的 `forkCutSeq`），两代都对。空壳轮
+（`forked` 且没有提问）在 `foldOutline` 里剔掉，岔路点才落在模型真正记得的那一轮上。
+Claude 会话同样中招，只是少一轮而不是全丢（`forkTurnOf` 看的是原始事件，合成的 turn/end
+不在继承段里，graft 自然接在 N-1；树却画在 N）。
 
 ### 桌面版怎么装插件
 
@@ -342,8 +393,26 @@ composite 成 `window.__DSH_BOOT__` 的模块图送到浏览器。
 - 装法：应用里 **插件 → 添加插件** 填 `@norman-else/dsh-claude@0.1.64`，装完在「已安装」里把它的开关**拨开**
   （装完默认是关的，不拨不进 `dsh.profile.bundles`），然后**完全退出再打开**应用。新会话的模式选择器里就有「Claude」。
 - forkSession 补丁（AGENTS.md 第 4 节第 6 条）应用不会替你打：0.1.64 里 `resumeSessionAt` 那行仍没有 `forkSession`
-  （`lib/index.mjs` 约 2985 行）。要手动把补丁文件放进 `~/.dsh/profiles/desktop/patches/`，在 `pnpm-workspace.yaml`
-  加 `patchedDependencies`，再用自带 pnpm 重新 install —— 应用**关着**的时候做。
+  （`lib/index.mjs` 第 2985 行，2026-10-01 核过）。要手动把补丁文件放进 `$DSH_HOME/profiles/desktop/patches/`，
+  在 `pnpm-workspace.yaml` 加 `patchedDependencies`，再用自带 pnpm 重新 install —— 应用**关着**的时候做：
+
+  ```powershell
+  $env:ELECTRON_RUN_AS_NODE = 1
+  & "E:\Programs\DeepSeek-Harness-Desktop\DeepSeek Harness.exe" --expose-internals `
+      E:\Programs\DeepSeek-Harness-Desktop\resources\runtime\pnpm\bin\pnpm.mjs `
+      --dir E:\Programs\deepseek-harness\home\profiles\desktop install
+  ```
+
+  装完 `grep forkSession node_modules/@norman-else/dsh-claude/lib/index.mjs` 要能搜到。
+  ⚠️ 2026-10-01 发现桌面 profile 的 `patches/` 一直是空的、`pnpm-workspace.yaml` 也没有
+  `patchedDependencies` —— 9-29 那次只装了 dsh-claude，补丁没跟上。已把补丁文件和 yaml 补好，
+  但 install 要等应用关掉才能跑（跑的时候正在用桌面版和 Claude 对话）。
+- dsh-claude 自己也在 `agent/created` 上读新分支的旁车（`align()` → `sidecar.read()`，缓存进
+  `#latest`，"disk is read once"）。我们的 graft 是**同步**写在同一个事件里的，所以只要父会话
+  空闲，文件先于它那次 `readFile` 落盘，没事；父会话在跑时 graft 要等 2s 后补做，那时 dsh-claude
+  已经把"没有旁车"缓存住了，补上的文件它不会再读 —— 这条"补接"在 0.1.54 / 0.1.64 上都接不上
+  （AGENTS.md 已知问题）。UI 上 `forkBlockedWhy` 挡住了"在跑的 claude 会话上开岔路"，所以日常碰不到；
+  原生消息行上的分支按钮绕得过去。
 
 ### 真机验证过的（桌面 host + 无头 Edge，2026-09-29）
 

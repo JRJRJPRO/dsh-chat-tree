@@ -5,7 +5,7 @@ import { h, portal, react } from './runtime.js'
 import { C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { ROOT_KEY, branchAction, conversationOf, currentOf, cutPointOf, cutSet, forkBlockedWhy, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
+import { ROOT_KEY, branchAction, conversationOf, currentOf, cutPointOf, cutSet, forkBlockedWhy, forkCutSeq, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
 import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
@@ -202,11 +202,18 @@ export function Rail(props) {
 	if (!visible.has(current)) visible.add(current)
 
 	const shape = echo || (outlines && outlines.shape) || {}
-	const picked = conversationOf(visibleTree((outlines && outlines.sessions) || [], visible), current, shape.groupOf)
+	// ⚠️ 手里这份大纲是不是**这个目录**的。切到别的目录后、新数据到之前，`outlines` 还是上一个
+	//    目录的（useOutlines 拉取期间保留旧数据，图才不闪空）——那份里当然找不到当前会话，
+	//    不能拿它当"当前会话没有轮次"，更不能拿它建图。
+	const fresh = outlines !== undefined && outlines.cwd === cwd
+	const picked = fresh ? conversationOf(visibleTree(outlines.sessions || [], visible), current, shape.groupOf) : []
 
 	// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
 	//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
 	//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
+	//    但只许拿**同一个目录**的上一棵顶：切到别的目录（另一组对话）还顶着旧树，就是
+	//    John 报的"完全是另一组对话了，树还显示着原来的那颗"。而且拉取**出了错**也不许顶 ——
+	//    顶着的话错误被整棵旧树盖住，看起来像树卡住了，其实是 host 那边一直在报错。
 	// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
 	// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
 	const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
@@ -216,11 +223,12 @@ export function Rail(props) {
 	} catch (error) {
 		warn('建图失败，先拿上一棵顶着', error)
 	}
-	if (graph !== undefined) lastGraph.current = graph
-	else graph = lastGraph.current
+	const failed = outlines !== undefined && outlines.error !== undefined
+	if (graph !== undefined) lastGraph.current = { cwd, graph }
+	else if (!failed && lastGraph.current !== undefined && lastGraph.current.cwd === cwd) graph = lastGraph.current.graph
 	// 一棵树都没有、而且宿主那边报了错 → 说一声，别整条导轨静悄悄消失
 	if (graph === undefined) {
-		if (!outlines || !outlines.error) return null
+		if (!failed) return null
 		return h('div', {
 			style: { position: 'fixed', right: '14px', top: `${box.top + Z.pad}px`, zIndex: 40, maxWidth: '220px', pointerEvents: 'none',
 				font: '11px/1.5 -apple-system,"Segoe UI","PingFang SC",sans-serif', color: C.muted, whiteSpace: 'pre-wrap' },
@@ -503,7 +511,9 @@ export function Rail(props) {
 							return patch.session === undefined ? undefined : reshape(patch)
 						})
 					}
-					return api.fork(node.session.id, node.entry.seq, claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
+					// ⚠️ 切点传这一轮的 turn/end，不是 turn/start（forkCutSeq 的说明）：0.2 宿主按精确切点抄，
+					//    传 turn/start 新分支就只剩一个空壳轮，模型从上一轮接着记。
+					return api.fork(node.session.id, forkCutSeq(node.entry), claim ? (id) => reshape(claim(id, graph.owner)) : undefined)
 				},
 			}),
 		),

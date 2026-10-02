@@ -352,6 +352,30 @@ export function branchAction(node) {
 }
 
 /**
+ * 从某一轮开岔路时，交给宿主 `fork({atSeq})` 的那个 seq —— **这一轮的 turn/end**，
+ * 不是 turn/start。
+ *
+ * 两代宿主对 `atSeq` 的解释不一样（NATIVE-BASELINE.md 末尾「fork 的 atSeq」）：
+ *   · 0.1.5：取"第一个 seq ≥ atSeq 的 turn/end"做边界，再一直抄到下一个 turn/start 之前。
+ *     传 turn/start 和传 turn/end 结果一样，都是整轮抄过去。
+ *   · 0.2（桌面版起）：atSeq 就是**精确的包含式切点**，切在哪就到哪为止；切进一轮中间
+ *     就补一条 `forked` 的 turn/end 把它合上。传 turn/start 的话，新分支只抄到这一轮的
+ *     turn/start —— 提问和回答都不在，模型只记得到上一轮。John 报的"分叉就失忆"
+ *     （deepseek 整轮丢、claude 少一轮）就是它；盘上 2026-10-01 的 TEST 桶里那条
+ *     `session-054a5154` 就长这样：继承段只有 turn/start，接着就是 end-seed 和 forked。
+ * 传 turn/end 两代都对：0.1.5 下"≥ 它的第一个 turn/end"就是它自己。
+ *
+ * 没有 turn/end（这一轮还在跑）就退回 turn/start —— 0.2 会把它切成空壳、0.1.5 会报
+ * fork-unavailable，两边都不会多抄一轮；`branchAction` 本来也不该在这种节点上给出 ＋。
+ * @param entry - 大纲里的一轮（host 半 foldOutline 的产物）
+ * @returns 交给 `fork` 的 atSeq
+ */
+export function forkCutSeq(entry) {
+	if (!entry) return undefined
+	return Number.isFinite(entry.endSeq) ? entry.endSeq : entry.seq
+}
+
+/**
  * 这个 ＋ 现在为什么按不了。**按不了就说清楚，别开出一条看着正常其实失忆的分支。**
  *
  * 只有一种情况：从一条**托管给外部引擎**（claude 这类）的会话上真的开岔路，

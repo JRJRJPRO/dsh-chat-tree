@@ -20,6 +20,7 @@ import {
 	cutPointOf,
 	cutSet,
 	forkBlockedWhy,
+	forkCutSeq,
 	isBranchHead,
 	indexOf,
 	isFocusedNode,
@@ -100,7 +101,7 @@ import {
 	starSkin,
 } from './shapes.js'
 import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, settlePin, starAnimation, unpinActiveTurn, watchViewport } from './hooks.js'
+import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, runningCount, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
@@ -112,7 +113,7 @@ export const __pure = {
 	visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
 	// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
 	currentOf, withStatus,
-	cutPointOf, cutSet, branchAction, forkBlockedWhy, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+	cutPointOf, cutSet, branchAction, forkBlockedWhy, forkCutSeq, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
@@ -145,8 +146,8 @@ export const __pure = {
 	contentRightOf, isCovered, otherViewShown, RAIL_MARK,
 	// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
 	tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
-	// 撤回的重拉节奏
-	isRewindPending, rewindRetryDelay,
+	// 撤回的重拉节奏；会话列表的指纹（0.2 宿主上 updatedAt 不跟回答走，得把 running 算进去）；跑完之后的补拉
+	isRewindPending, rewindRetryDelay, listStamp, runningCount, settleDelay, tagOutlines,
 	// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
 	pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
 	// 未读节点读过之后的三段式节奏

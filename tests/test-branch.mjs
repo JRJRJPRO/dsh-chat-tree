@@ -91,8 +91,10 @@ for (const bucket of fs.readdirSync(SESSIONS)) {
 	const bucketDir = path.join(SESSIONS, bucket)
 	if (!fs.statSync(bucketDir).isDirectory()) continue
 	for (const dir of fs.readdirSync(bucketDir)) {
-		const file = path.join(bucketDir, dir, 'session.v3.jsonl.zstd')
-		if (!fs.existsSync(file)) continue
+		// dsh 0.2 写 v4（事件格式和 v3 一样，只是文件名换了）；0.1.5 的 v3 文件在被 0.2 打开过之后
+		// 会多出一份 v4，两份都在时以新的为准 —— 宿主自己也只认最新那一代。
+		const file = ['session.v4.jsonl.zstd', 'session.v3.jsonl.zstd'].map((name) => path.join(bucketDir, dir, name)).find((candidate) => fs.existsSync(candidate))
+		if (file === undefined) continue
 		const events = readSession(file)
 		if (events.length > 0) logs.set(dir, events)
 	}

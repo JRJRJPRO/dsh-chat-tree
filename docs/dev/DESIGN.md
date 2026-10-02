@@ -693,6 +693,59 @@ host 半用 `ctx.inject(['settings'], …)` 注册 namespace `dsh-chat-tree`（*
 设置项写在 `FIELDS` 表里，卡片按表渲染、store 按表取值 —— 加一项只改这张表和 host 的
 schema，别再去动卡片。**字段名两边必须一模一样**。
 
+### 宿主 0.2：fork 的切点，和树为什么刷得慢
+
+2026-10-01 John 在桌面版（0.2.0-rc.2）报了三件事：分叉就失忆、树和实际对话对不上、树画出来有延迟。
+三件事都不是"数据没跟过来"（两代共用同一个 `DSH_HOME`，会话、`shape.json`、旁车一直是同一份），
+而是**同名不同义**的两个接口 —— 签名一样，9-29 那次复查只对了签名，没对语义。
+
+**① `fork({atSeq})`。** 0.1.5 把 `atSeq` 当锚点，取第一个 `seq ≥ atSeq` 的 turn/end 做边界，再抄到
+下一个 turn/start 之前；0.2 把它当**精确的包含式切点**，切到哪算哪，切进一轮中间就补一条
+`{kind:'forked'}` 的 turn/end 合上（`dsh-session` 的 `buildForkSeed` + `openTurnClosers`）。
+插件以前传的是节点那一轮的 turn/start。0.1.5 上无差；0.2 上新分支只抄到 turn/start ——
+提问、回答全没抄到，模型从上一轮接着记。盘上证据是 TEST 桶 `session-054a5154`：继承段只有一条
+turn/start，接着就是 end-seed、`forked`，助手第一句话就是"当前会话里没有前文"。
+修法：切点传 turn/end（`tree.js` 的 `forkCutSeq`），两代都对。
+
+顺带一个后果：那条 `forked` 的 turn/end 合出来一个**没有提问的空壳轮**，它在继承段里，于是
+`foldOutline` 算出的岔路点落在它身上（第 N 轮），而模型只记得到 N-1 —— 这就是"树和实际对话对不上"。
+Claude 会话也一样：graft 的 `forkTurnOf` 看的是原始事件，合成的 turn/end 不在继承段里，接在 N-1，
+树却画在 N。现在 `foldOutline` 把"forked 且没有提问"的轮剔掉（有提问的半截轮不剔，那是真走过一步），
+岔路点回到 N-1。剔完继承段可能一轮都不剩（从第 1 轮的 turn/start 处切的），这不是半成品 ——
+`foldOutline` 另外返回 `seeded`，`outlineOf` 按它判"end-seed 到底落盘没"，别再拿 `forkTurn === undefined` 判。
+盘上在桌面版开出来的旧分支（9-29 到 10-01）头上都顶着这么个空壳，不用迁移，重新折一遍就对了。
+
+**② `sessions.list` 的 `updatedAt`。** 0.1.5 跟日志走，一轮答完它就动；0.2 只在**用户发一条消息**时
+推进（`api-session/activity`，宿主注释原话 "from one user-authored durable message"）。
+`useOutlines` 以前只拿 `updatedAt` 当重拉指纹，于是桌面版上回答结束、标题生成、压缩完成树都不动，
+要等你发下一句 —— "树画出来有延迟"。现在指纹（`listStamp`）把每条会话的 `running` / `completed`
+也算进去（0.2 的状态表已由 `withStatus` 并回列表项），一轮开始、结束各刷一次；跑的条数**减少**时
+隔 `Z.settleMs` 再补拉一次（`settleDelay`），因为状态表翻面比日志落盘早半拍，紧跟着那次重拉可能
+还读到旧 revision。只看减少：开始跑那一下 turn/start 早写好了。
+
+**③ 切到另一组对话，树还是原来那棵（2026-10-02 第二轮）。** 两个原因叠在一起：
+
+- *host 半*：0.2 宿主的 `list()` 对**还是 v3 的会话**（0.1.5 写的、没在 0.2 里打开过；本机 TEST 桶 51 条、
+  INIT 桶 67 条）给的 revision 是 `<文件 stat>:<sha256(全部会话文件的 stat)>`
+  （`historicalCorpusRevision`）。后半截只要任何一条会话写一个字节就变 —— 正在对话时每隔几秒
+  一次。我们的大纲缓存按 revision 命中，于是这些会话永远不命中，每拉一次树就把它们全部重新
+  解码 + v3→v4 迁移一遍（宿主只在用户打开会话时才把 v4 落盘，光读不落）。切到这种目录就是
+  "慢"。修法：缓存键去掉那截 64 位十六进制（`cacheKeyOf`）—— v3 文件本身不会再被写，前半截
+  的 stat 足够。另外同一目录的 `/outlines` 并发请求合并成一份（index.js 的 `inflight`），
+  浏览器半在一轮开始、结束、补拉几个点上接连催的那几次不再排队。
+- *浏览器半*：`useOutlines` 拉取期间保留旧数据（图不闪空），而旧数据可能是**上一个目录**的。
+  Rail 在里面找不到当前会话，就按"刚开的分支还没进大纲"处理 —— 拿上一棵树顶着。拉得慢，旧目录
+  的树就一直挂着；拉出错，错误还被这棵旧树盖住，看起来像"卡住了"。现在大纲盖上 `cwd`
+  （`tagOutlines`），Rail 只认当前目录那份；上一棵树也只许在**同一目录、没出错**时顶
+  （`lastGraph` 记着它是哪个目录的）。代价是切目录那一下导轨会空 200ms 左右再出现 ——
+  本来就是另一组对话，空一下比挂着错的树好。
+
+**④ 两个版本号之间（rc.1 → rc.2）什么都没变。** 应用 9-30 自动更新到 rc.2，289 个包逐文件 diff，
+和我们相关的只有 CSS module 哈希换了（`hideNativeRail` 不靠哈希类名）。以后桌面版小版本升级，
+先按 NATIVE-BASELINE.md 末尾那段把 asar 抄出来 diff，**对语义不只对签名** —— 尤其 `fork`、`list`、
+`agent/created` 载荷、`sessionPersistence` 的 revision 这几样。网页版升到 0.2 之后这些差异同样适用，
+到时候两代的代码路径应该能合回一条。
+
 ### 缩放（`scaleZ`）
 
 `Z` 里的几何量按百分比整体缩放：`dot` / `lane` / `hit` / `row`。
