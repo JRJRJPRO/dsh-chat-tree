@@ -68,6 +68,12 @@ archive list — a second click confirms, and anything archived can be restored.
 Only the first turn of a branch can be deleted: a log can't lose its middle, so to
 drop a few turns use rewind on the message row.
 
+An expanded card closes as soon as you click anywhere in the chat.
+
+There is an invisible divider on the left edge of the tree: drag it to give the tree more or
+less room (the chat column re-centres in what is left). The same value is the "tree band
+width" setting; 0 turns it off.
+
 On touch devices, a tap does what hovering does.
 
 <br clear="right">
