@@ -46,6 +46,8 @@ const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
 const spec = (pkg.dependencies || {})[NAME]
 
 function status() {
+	// 重新读一遍：顶上那份 pkg 是改之前的
+	const spec = ((JSON.parse(readFileSync(pkgPath, 'utf8')).dependencies) || {})[NAME]
 	const installed = join(profile, 'node_modules', NAME)
 	let where = '没装'
 	if (existsSync(installed)) {
@@ -63,7 +65,8 @@ if (mode === 'status') {
 	process.exit(0)
 }
 
-const want = mode === 'local' ? `link:${repo.replace(/\\/g, '/')}` : `^${JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version.replace(/^(\d+\.\d+)\.\d+.*$/, '$1.0')}`
+// npm 那头写 `latest`：仓库里的版本号往往还没发布，写死 ^x.y.0 会装不到
+const want = mode === 'local' ? `link:${repo.replace(/\\/g, '/')}` : 'latest'
 if (spec === want) console.log(`依赖已经是 ${want}，只重装一遍确认。`)
 else {
 	pkg.dependencies = Object.assign({}, pkg.dependencies, { [NAME]: want })
