@@ -13,7 +13,7 @@
  * （test-kit.mjs 的 `mount`）。所以"碰 react"不再是进不了这张表的理由；
  * 真进不来的只剩直接 fetch 的那几处（net.js 会在 node 里没有 fetch 时抛）。
  */
-import { C, DEPTH, RADIUS, SCALE, SETTINGS_NS, Z, scaleZ } from './const.js'
+import { BAND, C, DEPTH, RADIUS, SCALE, SETTINGS_NS, Z, scaleZ } from './const.js'
 import {
 	branchAction,
 	blockedWhy,
@@ -107,13 +107,13 @@ import {
 	starPoly,
 	starSkin,
 } from './shapes.js'
-import { CARD_GAP, MIN_RUN, boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, runningCount, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
+import { CARD_GAP, MIN_RUN, bandWidth, boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
+import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, installBand, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, runningCount, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, Detail, FAV_COLORS, FAV_DROP, FAV_SHAPES, FavIconRow, GAP, HexField, LEAVE_MS, MergeList, NameField, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { SettingsCard } from './ui-settings.js'
 import { Rail } from './rail.js'
-import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
+import { BANDS, FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, bandText, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
 import { isDark } from './theme.js'
 import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 
@@ -165,6 +165,8 @@ export const __pure = {
 	readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
 	// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
 	SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z, C,
+	// 给树留的带子：档位、读数、实际宽度的夹法、往宿主 DOM 上垫 padding 的那段样式
+	BAND, BANDS, bandText, bandWidth, installBand,
 	VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 	// 组件：离线测试用 react-lite 挂起来测交互（tests/test-card.mjs 是例子）
 	Detail, NameField, FavIconRow, HexField, MergeList, SettingsCard, Rail,

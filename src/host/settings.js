@@ -43,6 +43,7 @@ const FIELDS = {
 	visibleDepth: Schema.natural().max(30).default(18).description('和当前这一轮差几层以内的节点才画出来；0 = 不省略'),
 	visibleRadius: Schema.natural().max(60).default(30).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
+	railBand: Schema.natural().max(600).default(240).description('聊天区右侧给对话树留的带子宽度（像素）；0 = 不留'),
 	sidebarFold: Schema.boolean().default(true).description('左侧会话列表按对话树折叠：一棵树一行，分支收在树头底下'),
 	// ⚠️ 下面这几个 *Color 的 default 只是"存进配置文件时的样子"。
 	// 真正画树用的是浏览器半的 themeFrom：**没被用户亲手改过的，跟着亮色/暗色现算**。

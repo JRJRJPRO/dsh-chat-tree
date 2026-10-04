@@ -53,6 +53,12 @@ window.__ModuleLoader__.load({
 		 */
 		const DEPTH = { min: 1, max: 30, fallback: 18, off: 0 }
 
+		/**
+		 * 给树留的带子（聊天区右侧垫出来的那一条）宽度，像素。0 = 不垫，树只用宿主本来留的空当。
+		 * 和 host schema 的 railBand 一致（test-contract.mjs 核对）。
+		 */
+		const BAND = { min: 0, max: 600, step: 20, fallback: 240 }
+
 		/** 节点缩放，百分比。 */
 		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
 
@@ -3285,6 +3291,20 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 给树留的带子实际多宽：设置里要多少就多少，但不许超过聊天区的一半，也不许是负的 / 认不得的值。
+		 *
+		 * 小例子：设置 240、聊天区 1200 宽 → 240；设置 600、聊天区 900 宽 → 450；设置 'x' → 默认 BAND.fallback。
+		 * @param want - 设置或拖动给的宽度
+		 * @param boxWidth - 聊天区宽度；不知道就只按 BAND.max 夹
+		 * @returns 像素，恒在 [0, min(BAND.max, boxWidth/2)] 内
+		 */
+		function bandWidth(want, boxWidth) {
+			const value = Number.isFinite(want) ? want : BAND.fallback
+			const cap = Number.isFinite(boxWidth) && boxWidth > 0 ? Math.min(BAND.max, boxWidth / 2) : BAND.max
+			return Math.max(0, Math.min(cap, value))
+		}
+
+		/**
 		 * 导轨离视口右缘多远（CSS 的 `right`，**值越大越靠左**）。
 		 *
 		 * **就是贴着聊天区右缘**，一个像素都不挪。
@@ -3713,6 +3733,29 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 往聊天区右侧垫一条给树的带子：正文栏在剩下的宽度里重新居中，右边就空出整条带子。
+		 *
+		 * 【为什么这么做】宿主的正文栏是 `max-width + margin: 0 auto` 居中在滚动容器里的，
+		 * 屏幕越宽两边空得越多，可树只能用右边那一条（railRoom）。把容器右侧 padding 掉 `px`，
+		 * 居中算的是剩下的宽度，两边仍对称、正文不变窄，树那边却多出整条带子。
+		 * 输入框那一格（`[data-composer-seat]`）同样垫上，否则正文和输入框错开半条带子。
+		 * 只垫滚动容器和输入框，不碰宿主别的任何布局；样式表摘掉就一切恢复。
+		 * @param px - 带子宽度
+		 * @returns 卸载函数
+		 */
+		function installBand(px) {
+			try {
+				const tag = document.createElement('style')
+				tag.dataset.dshTree = 'band'
+				tag.textContent = `[data-conversation-scroll],[data-composer-seat]{padding-right:${Math.round(px)}px !important;box-sizing:border-box}`
+				document.head.appendChild(tag)
+				return () => tag.remove()
+			} catch {
+				return () => {}
+			}
+		}
+
+		/**
 		 * 视口变了就重量一次 —— 但盯的是**视觉视口**，不是 `window.resize`。
 		 *
 		 * ⚠️ 这条只在 iOS / iPadOS 上看得出来，而那正是我们够不着的机器：
@@ -3890,12 +3933,13 @@ window.__ModuleLoader__.load({
 						Math.abs(prev.top - rect.top) < 1 &&
 						Math.abs(prev.height - rect.height) < 1 &&
 						Math.abs(prev.right - rect.right) < 1 &&
+						Math.abs(prev.width - rect.width) < 1 &&
 						// ⚠️ 正文右缘用 4px 的迟滞，不是 1px。聊天行的宽度会被滚动条、
 						//    一张图加载完这类事顶来顶去差个一两像素 —— 按 1px 比的话，
 						//    整棵树会跟着做肉眼可见的左右微抖。
 						Math.abs((prev.contentRight === undefined ? -1e9 : prev.contentRight) - (content === undefined ? -1e9 : content)) < 4
 							? prev
-							: { top: rect.top, height: rect.height, right: rect.right, contentRight: content },
+							: { top: rect.top, height: rect.height, right: rect.right, width: rect.width, contentRight: content },
 					)
 				}
 				const schedule = () => {
@@ -4923,6 +4967,17 @@ window.__ModuleLoader__.load({
 		/** 「按层数」的档位：1..30，最后一格是"不省略"。 */
 		const LAYERS = Array.from({ length: DEPTH.max - DEPTH.min + 1 }, (_, i) => DEPTH.min + i).concat([DEPTH.off])
 
+		/** 占位带子的档位：0..600px，每档 20。 */
+		const BANDS = Array.from({ length: (BAND.max - BAND.min) / BAND.step + 1 }, (_, i) => BAND.min + i * BAND.step)
+
+		/**
+		 * 占位宽度一档的人话。
+		 * @param step - 像素
+		 */
+		function bandText(step) {
+			return step === 0 ? '不占位' : `${step}px`
+		}
+
 		/** 缩放的档位：50%..250%，每档 10。 */
 		const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step + 1 }, (_, i) => SCALE.min + i * SCALE.step)
 
@@ -5061,6 +5116,9 @@ window.__ModuleLoader__.load({
 			})),
 			{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 				hint: '点、连线、列间距、命中区一起等比例缩放。' },
+			// 聊天区右侧给树垫出来的带子。拖树左边那条分隔线也能改，存的是任意像素，滑杆只给整档。
+			{ field: 'railBand', kind: 'range', label: '对话树占位宽度', steps: BANDS, text: bandText, fallback: BAND.fallback, accept: Number.isFinite,
+				hint: '在聊天区右侧给树留一条带子，正文栏在剩下的宽度里居中。也可以直接拖树左边那条分隔线。0 = 不留，树只用正文旁边本来的空当。' },
 			// 左侧会话列表按对话树折叠（sidebar.js）。开关项，默认开。
 			{ field: 'sidebarFold', kind: 'switch', label: '侧栏按对话折叠', fallback: true, accept: (value) => typeof value === 'boolean',
 				hint: '左侧会话列表里，一棵树只占一行，分支收在树头底下，点箭头摊开。关掉就回到宿主原样，每条分支各占一行。' },
@@ -5807,12 +5865,15 @@ window.__ModuleLoader__.load({
 			}, [busy, onLock])
 			react.useEffect(() => () => { if (typeof onLock === 'function') onLock(false) }, [onLock])
 
-			// 展开着时点卡片外面任何地方 → 收回收起档。只靠双击收起太难找；
+			// 展开着时点卡片外面任何地方 → **整张卡消失**（`onDismiss`，Rail 那边清掉悬停）。
+			// 一开始做成"收回收起档"，John 试完说点了外面就是不想要这张卡了，收起档还杵在那儿反而碍事。
+			// 没给 onDismiss（离线测试、老调用方）就退回收起档。
 			// 鼠标设备也没有触摸那条"戳到导轨外面关卡片"（rail.js 的 away）。
 			// 捕获阶段挂：点的多半是聊天区，冒泡不到导轨。
 			// 改名中（busy）不收 —— 和 onMouseLeave 同一条规矩，否则草稿跟着名字框一起没了。
 			// ⚠️ 别和 useFocusGuard 的 pointerdown 合并：那个只记时刻，两件事。
 			const self = react.useRef(null)
+			const onDismiss = props.onDismiss
 			react.useEffect(() => {
 				if (!expanded || busy || typeof document === 'undefined') return undefined
 				const away = (event) => {
@@ -5821,10 +5882,11 @@ window.__ModuleLoader__.load({
 					setExpanded(false)
 					setMerging(false)
 					setNote(null)
+					if (typeof onDismiss === 'function') onDismiss()
 				}
 				document.addEventListener('pointerdown', away, true)
 				return () => document.removeEventListener('pointerdown', away, true)
-			}, [expanded, busy])
+			}, [expanded, busy, onDismiss])
 
 			const commit = (value) => {
 				props.onRename(key, value === null || value === undefined ? '' : value.trim())
@@ -6665,6 +6727,22 @@ window.__ModuleLoader__.load({
 				clearTimeout(closeTimer.current)
 				clearTimeout(restTimer.current)
 			}, [])
+			// 卡片说"我不要了"（展开着点了外面）：计时器全撤、悬停清掉，整张卡当场消失
+			const dismiss = react.useCallback(() => {
+				clearTimeout(closeTimer.current)
+				clearTimeout(restTimer.current)
+				locked.current = false
+				setHover(null)
+			}, [])
+			// ===== 给树留的那条带子（BAND）=====
+			// 宿主把正文栏居中在聊天区里，两边各空一条；树只能挤在右边那条里。这里往聊天区右侧
+			// 垫一段 padding（installBand），正文栏在剩下的宽度里重新居中 —— 右边就多出整条带子给树。
+			// 宽度来自设置 railBand；拖分隔线时先用本地值跟手，松手才写设置。
+			const [bandDrag, setBandDrag] = react.useState(null)
+			const bandWant = bandDrag !== null ? bandDrag : Number.isFinite(tuned.railBand) ? tuned.railBand : BAND.fallback
+			const band = bandWidth(bandWant, box === undefined ? undefined : box.width)
+			const bandOn = box !== undefined && !!listState && !!current
+			react.useEffect(() => (bandOn && band > 0 ? installBand(band) : undefined), [band, bandOn])
 			const release = react.useCallback(() => {
 				if (locked.current) return
 				// ⚠️ 触摸设备上这条**整个不能跑**。手指没有"移开"这个状态，可 iOS 在别处一戳
@@ -7109,7 +7187,7 @@ window.__ModuleLoader__.load({
 						},
 						// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
 						anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
-						railWidth, labels, hold, release, onLock,
+						railWidth, labels, hold, release, onLock, onDismiss: dismiss,
 						favorites, favIcons, favColors,
 						// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 						// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
@@ -7153,7 +7231,37 @@ window.__ModuleLoader__.load({
 					}),
 				),
 			)
-			return typeof document === 'undefined' ? null : portal(shell, document.body)
+			// 分隔线：带子的左缘，一条细线，按住左右拖。松手把宽度写进设置（railBand）。
+			const handleLine = (color) => `linear-gradient(to right, transparent 3px, ${color} 3px, ${color} 4px, transparent 4px)`
+			const handle = band <= 0 && bandDrag === null ? null : h('div', {
+				key: 'band-handle',
+				title: `对话树占位 ${Math.round(band)}px，拖动调整`,
+				style: Object.assign({
+					position: 'fixed', top: `${box.top}px`, height: `${box.height}px`, left: `${box.right - band - 3}px`, width: '7px',
+					zIndex: 39, cursor: 'col-resize', pointerEvents: 'auto',
+					background: bandDrag !== null ? handleLine(C.accent) : 'transparent',
+				}, TAPPABLE),
+				onPointerEnter: (event) => { event.currentTarget.style.background = handleLine(C.line) },
+				onPointerLeave: (event) => { if (bandDrag === null) event.currentTarget.style.background = 'transparent' },
+				onPointerDown: (event) => {
+					event.preventDefault()
+					const right = box.right
+					const width = box.width
+					const move = (ev) => setBandDrag(bandWidth(right - ev.clientX, width))
+					const up = (ev) => {
+						document.removeEventListener('pointermove', move)
+						document.removeEventListener('pointerup', up)
+						const final = bandWidth(right - ev.clientX, width)
+						setBandDrag(null)
+						if (api.settings && typeof api.settings.set === 'function') {
+							Promise.resolve(api.settings.set('railBand', Math.round(final))).catch((error) => warn('占位宽度没存进设置', error))
+						}
+					}
+					document.addEventListener('pointermove', move)
+					document.addEventListener('pointerup', up)
+				},
+			})
+			return typeof document === 'undefined' ? null : portal(h('div', { key: 'dsh-chat-tree-root' }, shell, handle), document.body)
 		}
 
 		// ===== pure.js =================================================
@@ -7222,6 +7330,8 @@ window.__ModuleLoader__.load({
 			readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
 			// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
 			SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z, C,
+			// 给树留的带子：档位、读数、实际宽度的夹法、往宿主 DOM 上垫 padding 的那段样式
+			BAND, BANDS, bandText, bandWidth, installBand,
 			VISIBLE, isMode, visibleRange, stepsAway, layersAway,
 			// 组件：离线测试用 react-lite 挂起来测交互（tests/test-card.mjs 是例子）
 			Detail, NameField, FavIconRow, HexField, MergeList, SettingsCard, Rail,

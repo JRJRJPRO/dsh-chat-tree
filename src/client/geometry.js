@@ -3,7 +3,7 @@
  *
  * 全是纯函数，坐标系一律是"导轨内"（左上角为原点）。
  */
-import { Z, scaleZ } from './const.js'
+import { BAND, Z, scaleZ } from './const.js'
 import { STAR, dotSizeOf, shapeHeight, shapeOf } from './shapes.js'
 
 /**
@@ -199,6 +199,20 @@ export function rowSlots(items, lo, hi, gap) {
 export function boxShift(width, left, right) {
 	if (width >= left + right) return (right - left) / 2
 	return Math.min(Math.max(0, width / 2 - left), right - width / 2)
+}
+
+/**
+ * 给树留的带子实际多宽：设置里要多少就多少，但不许超过聊天区的一半，也不许是负的 / 认不得的值。
+ *
+ * 小例子：设置 240、聊天区 1200 宽 → 240；设置 600、聊天区 900 宽 → 450；设置 'x' → 默认 BAND.fallback。
+ * @param want - 设置或拖动给的宽度
+ * @param boxWidth - 聊天区宽度；不知道就只按 BAND.max 夹
+ * @returns 像素，恒在 [0, min(BAND.max, boxWidth/2)] 内
+ */
+export function bandWidth(want, boxWidth) {
+	const value = Number.isFinite(want) ? want : BAND.fallback
+	const cap = Number.isFinite(boxWidth) && boxWidth > 0 ? Math.min(BAND.max, boxWidth / 2) : BAND.max
+	return Math.max(0, Math.min(cap, value))
 }
 
 /**

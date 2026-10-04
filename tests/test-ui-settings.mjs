@@ -85,7 +85,7 @@ console.log('用例 2：可写时每一项都在；默认读数是 18 层')
 	check(card.byText('18 层') !== undefined, '显示范围默认读数该是 18 层（按层数）')
 	// 三根滑杆：按层数、按步数、节点大小
 	const sliders = ranges(card)
-	check(sliders.length === 3, `该有 3 根滑杆（层数 / 步数 / 大小），实际 ${sliders.length}`)
+	check(sliders.length === 4, `该有 4 根滑杆（层数 / 步数 / 大小 / 占位），实际 ${sliders.length}`)
 	check(Number(sliders[0].props.max) === LAYERS.length - 1 && Number(sliders[1].props.max) === STEPS.length - 1, '两根范围滑杆的档数该等于档位表长度')
 	check(Number(sliders[1].props.value) === STEPS.indexOf(pure.RADIUS.fallback), `按步数滑杆初始该停在默认档 ${pure.RADIUS.fallback}`)
 	card.unmount()
@@ -96,7 +96,8 @@ console.log('用例 3：滑杆 / 量法按钮 / 开关写的是对的字段和�
 {
 	const store = fakeStore()
 	const card = open(store)
-	const [depth, step, size] = ranges(card)
+	const [depth, step, size, band] = ranges(card)
+	void band
 	size.value = '2'
 	card.fire(size, 'onChange', { target: size })
 	await tick()

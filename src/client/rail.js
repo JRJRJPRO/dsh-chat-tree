@@ -2,7 +2,7 @@
  * 树本体：把 graph + elide 的结果画成一条贴着聊天区右缘的导轨。
  */
 import { h, portal, react } from './runtime.js'
-import { C, SCALE, Z } from './const.js'
+import { BAND, C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { branchAction, conversationOf, currentOf, cutPointOf, cutSet, escapeFrom, forkBlockedWhy, forkCutSeq, isFocusedNode, isRootKey, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
@@ -10,8 +10,8 @@ import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
 import { GLYPH_RADIUS, dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeHeight, shapeOf, starSkin } from './shapes.js'
-import { boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, nextReadBoundary, readAnimation, readPhase, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
+import { bandWidth, boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
+import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installBand, installStarAnimation, nextReadBoundary, readAnimation, readPhase, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { foldReport, useSidebarFold } from './sidebar.js'
 import { TAPPABLE, overRail, tapNext, useHover } from './pointer.js'
@@ -123,6 +123,22 @@ export function Rail(props) {
 		clearTimeout(closeTimer.current)
 		clearTimeout(restTimer.current)
 	}, [])
+	// 卡片说"我不要了"（展开着点了外面）：计时器全撤、悬停清掉，整张卡当场消失
+	const dismiss = react.useCallback(() => {
+		clearTimeout(closeTimer.current)
+		clearTimeout(restTimer.current)
+		locked.current = false
+		setHover(null)
+	}, [])
+	// ===== 给树留的那条带子（BAND）=====
+	// 宿主把正文栏居中在聊天区里，两边各空一条；树只能挤在右边那条里。这里往聊天区右侧
+	// 垫一段 padding（installBand），正文栏在剩下的宽度里重新居中 —— 右边就多出整条带子给树。
+	// 宽度来自设置 railBand；拖分隔线时先用本地值跟手，松手才写设置。
+	const [bandDrag, setBandDrag] = react.useState(null)
+	const bandWant = bandDrag !== null ? bandDrag : Number.isFinite(tuned.railBand) ? tuned.railBand : BAND.fallback
+	const band = bandWidth(bandWant, box === undefined ? undefined : box.width)
+	const bandOn = box !== undefined && !!listState && !!current
+	react.useEffect(() => (bandOn && band > 0 ? installBand(band) : undefined), [band, bandOn])
 	const release = react.useCallback(() => {
 		if (locked.current) return
 		// ⚠️ 触摸设备上这条**整个不能跑**。手指没有"移开"这个状态，可 iOS 在别处一戳
@@ -567,7 +583,7 @@ export function Rail(props) {
 				},
 				// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
 				anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
-				railWidth, labels, hold, release, onLock,
+				railWidth, labels, hold, release, onLock, onDismiss: dismiss,
 				favorites, favIcons, favColors,
 				// 卡片上那颗 ☆ 用**这个点自己的**颜色，不是全局那个黄 ——
 				// 不然改完颜色，树上变了、卡片上没变，看着像没生效。
@@ -611,5 +627,35 @@ export function Rail(props) {
 			}),
 		),
 	)
-	return typeof document === 'undefined' ? null : portal(shell, document.body)
+	// 分隔线：带子的左缘，一条细线，按住左右拖。松手把宽度写进设置（railBand）。
+	const handleLine = (color) => `linear-gradient(to right, transparent 3px, ${color} 3px, ${color} 4px, transparent 4px)`
+	const handle = band <= 0 && bandDrag === null ? null : h('div', {
+		key: 'band-handle',
+		title: `对话树占位 ${Math.round(band)}px，拖动调整`,
+		style: Object.assign({
+			position: 'fixed', top: `${box.top}px`, height: `${box.height}px`, left: `${box.right - band - 3}px`, width: '7px',
+			zIndex: 39, cursor: 'col-resize', pointerEvents: 'auto',
+			background: bandDrag !== null ? handleLine(C.accent) : 'transparent',
+		}, TAPPABLE),
+		onPointerEnter: (event) => { event.currentTarget.style.background = handleLine(C.line) },
+		onPointerLeave: (event) => { if (bandDrag === null) event.currentTarget.style.background = 'transparent' },
+		onPointerDown: (event) => {
+			event.preventDefault()
+			const right = box.right
+			const width = box.width
+			const move = (ev) => setBandDrag(bandWidth(right - ev.clientX, width))
+			const up = (ev) => {
+				document.removeEventListener('pointermove', move)
+				document.removeEventListener('pointerup', up)
+				const final = bandWidth(right - ev.clientX, width)
+				setBandDrag(null)
+				if (api.settings && typeof api.settings.set === 'function') {
+					Promise.resolve(api.settings.set('railBand', Math.round(final))).catch((error) => warn('占位宽度没存进设置', error))
+				}
+			}
+			document.addEventListener('pointermove', move)
+			document.addEventListener('pointerup', up)
+		},
+	})
+	return typeof document === 'undefined' ? null : portal(h('div', { key: 'dsh-chat-tree-root' }, shell, handle), document.body)
 }

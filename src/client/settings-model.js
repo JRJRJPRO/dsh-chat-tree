@@ -4,7 +4,7 @@
  * **加一项设置只动三个地方**：host 的 SETTINGS_SCHEMA、这里的 FIELDS、以及（外观类的）ROWS。
  * 卡片和 store 都是按表渲染的，不用改。
  */
-import { DEPTH, RADIUS, SCALE, SETTINGS_NS } from './const.js'
+import { BAND, DEPTH, RADIUS, SCALE, SETTINGS_NS } from './const.js'
 import { warn } from './net.js'
 import { ROLES, THEME, favShape, paletteOf, shapeSpec } from './shapes.js'
 
@@ -13,6 +13,17 @@ export const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) 
 
 /** 「按层数」的档位：1..30，最后一格是"不省略"。 */
 export const LAYERS = Array.from({ length: DEPTH.max - DEPTH.min + 1 }, (_, i) => DEPTH.min + i).concat([DEPTH.off])
+
+/** 占位带子的档位：0..600px，每档 20。 */
+export const BANDS = Array.from({ length: (BAND.max - BAND.min) / BAND.step + 1 }, (_, i) => BAND.min + i * BAND.step)
+
+/**
+ * 占位宽度一档的人话。
+ * @param step - 像素
+ */
+export function bandText(step) {
+	return step === 0 ? '不占位' : `${step}px`
+}
 
 /** 缩放的档位：50%..250%，每档 10。 */
 export const SCALES = Array.from({ length: (SCALE.max - SCALE.min) / SCALE.step + 1 }, (_, i) => SCALE.min + i * SCALE.step)
@@ -152,6 +163,9 @@ export const FIELDS = [
 	})),
 	{ field: 'nodeScale', kind: 'range', label: '节点大小', steps: SCALES, text: scaleText, fallback: SCALE.fallback, accept: Number.isFinite,
 		hint: '点、连线、列间距、命中区一起等比例缩放。' },
+	// 聊天区右侧给树垫出来的带子。拖树左边那条分隔线也能改，存的是任意像素，滑杆只给整档。
+	{ field: 'railBand', kind: 'range', label: '对话树占位宽度', steps: BANDS, text: bandText, fallback: BAND.fallback, accept: Number.isFinite,
+		hint: '在聊天区右侧给树留一条带子，正文栏在剩下的宽度里居中。也可以直接拖树左边那条分隔线。0 = 不留，树只用正文旁边本来的空当。' },
 	// 左侧会话列表按对话树折叠（sidebar.js）。开关项，默认开。
 	{ field: 'sidebarFold', kind: 'switch', label: '侧栏按对话折叠', fallback: true, accept: (value) => typeof value === 'boolean',
 		hint: '左侧会话列表里，一棵树只占一行，分支收在树头底下，点箭头摊开。关掉就回到宿主原样，每条分支各占一行。' },

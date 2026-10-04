@@ -533,4 +533,18 @@ const BOX = { top: 0, height: 600, right: 1600 }
 	}
 }
 
+// ===== 给树留的带子：宽度怎么夹 =====
+console.log('用例 带子：设置多少给多少，但不超过聊天区一半、不超过 BAND.max、认不得就默认')
+{
+	const { bandWidth, BAND } = pure
+	check(bandWidth(240, 1200) === 240, '设置 240、聊天区 1200 → 240')
+	check(bandWidth(600, 900) === 450, `设置 600、聊天区 900 → 夹到一半 450，实际 ${bandWidth(600, 900)}`)
+	check(bandWidth(9999, 4000) === BAND.max, `再大也不超过 BAND.max=${BAND.max}`)
+	check(bandWidth(-5, 1200) === 0, '负数夹到 0')
+	check(bandWidth('x', 1200) === BAND.fallback, '认不得的值退回默认')
+	check(bandWidth(300) === 300, '不知道聊天区宽度时只按 BAND.max 夹')
+	check(pure.BANDS.includes(BAND.fallback) && pure.BANDS[0] === 0, '默认档在档位表里，第一档是 0（不占位）')
+	check(pure.bandText(0) === '不占位' && pure.bandText(240) === '240px', '读数')
+}
+
 report()

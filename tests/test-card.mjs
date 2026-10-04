@@ -266,6 +266,20 @@ console.log('用例 8：展开着点卡片外面就收起；点卡片自己、�
 	dom.document.dispatch('pointerdown', { target: dom.body })
 	check(named() !== undefined, '改名中（框里有光标）点外面不许收 —— 会把字送进聊天框')
 	card.unmount()
+
+	// Rail 给了 onDismiss 的话，点外面是**整张卡消失**（Rail 清悬停），不是退回收起档
+	const gone = openCard(a2, { onDismiss: () => gone.log.push(['onDismiss']) })
+	gone.card.fire(gone.card.el, 'onDoubleClick')
+	dom.document.dispatch('pointerdown', { target: gone.card.el })
+	check(!gone.log.some((one) => one[0] === 'onDismiss'), '点卡片自己不该 onDismiss')
+	dom.document.dispatch('pointerdown', { target: dom.body })
+	check(gone.log.some((one) => one[0] === 'onDismiss'), '展开着点卡片外面该叫 onDismiss（整张卡消失）')
+	gone.log.length = 0
+	gone.card.fire(gone.card.el, 'onDoubleClick')
+	gone.card.find((el) => el.tag === 'input').focus()
+	dom.document.dispatch('pointerdown', { target: dom.body })
+	check(!gone.log.some((one) => one[0] === 'onDismiss'), '改名中点外面不该 onDismiss')
+	gone.card.unmount()
 }
 
 // ===== 第 11 步：用例 9 =====

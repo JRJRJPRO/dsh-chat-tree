@@ -623,12 +623,15 @@ export function Detail(props) {
 	}, [busy, onLock])
 	react.useEffect(() => () => { if (typeof onLock === 'function') onLock(false) }, [onLock])
 
-	// 展开着时点卡片外面任何地方 → 收回收起档。只靠双击收起太难找；
+	// 展开着时点卡片外面任何地方 → **整张卡消失**（`onDismiss`，Rail 那边清掉悬停）。
+	// 一开始做成"收回收起档"，John 试完说点了外面就是不想要这张卡了，收起档还杵在那儿反而碍事。
+	// 没给 onDismiss（离线测试、老调用方）就退回收起档。
 	// 鼠标设备也没有触摸那条"戳到导轨外面关卡片"（rail.js 的 away）。
 	// 捕获阶段挂：点的多半是聊天区，冒泡不到导轨。
 	// 改名中（busy）不收 —— 和 onMouseLeave 同一条规矩，否则草稿跟着名字框一起没了。
 	// ⚠️ 别和 useFocusGuard 的 pointerdown 合并：那个只记时刻，两件事。
 	const self = react.useRef(null)
+	const onDismiss = props.onDismiss
 	react.useEffect(() => {
 		if (!expanded || busy || typeof document === 'undefined') return undefined
 		const away = (event) => {
@@ -637,10 +640,11 @@ export function Detail(props) {
 			setExpanded(false)
 			setMerging(false)
 			setNote(null)
+			if (typeof onDismiss === 'function') onDismiss()
 		}
 		document.addEventListener('pointerdown', away, true)
 		return () => document.removeEventListener('pointerdown', away, true)
-	}, [expanded, busy])
+	}, [expanded, busy, onDismiss])
 
 	const commit = (value) => {
 		props.onRename(key, value === null || value === undefined ? '' : value.trim())

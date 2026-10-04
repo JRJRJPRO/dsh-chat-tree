@@ -25,6 +25,12 @@ export const RADIUS = { min: 10, max: 60, fallback: 30, off: 0 }
  */
 export const DEPTH = { min: 1, max: 30, fallback: 18, off: 0 }
 
+/**
+ * 给树留的带子（聊天区右侧垫出来的那一条）宽度，像素。0 = 不垫，树只用宿主本来留的空当。
+ * 和 host schema 的 railBand 一致（test-contract.mjs 核对）。
+ */
+export const BAND = { min: 0, max: 600, step: 20, fallback: 240 }
+
 /** 节点缩放，百分比。 */
 export const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
 

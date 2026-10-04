@@ -30,6 +30,29 @@ export function hideNativeRail() {
 }
 
 /**
+ * 往聊天区右侧垫一条给树的带子：正文栏在剩下的宽度里重新居中，右边就空出整条带子。
+ *
+ * 【为什么这么做】宿主的正文栏是 `max-width + margin: 0 auto` 居中在滚动容器里的，
+ * 屏幕越宽两边空得越多，可树只能用右边那一条（railRoom）。把容器右侧 padding 掉 `px`，
+ * 居中算的是剩下的宽度，两边仍对称、正文不变窄，树那边却多出整条带子。
+ * 输入框那一格（`[data-composer-seat]`）同样垫上，否则正文和输入框错开半条带子。
+ * 只垫滚动容器和输入框，不碰宿主别的任何布局；样式表摘掉就一切恢复。
+ * @param px - 带子宽度
+ * @returns 卸载函数
+ */
+export function installBand(px) {
+	try {
+		const tag = document.createElement('style')
+		tag.dataset.dshTree = 'band'
+		tag.textContent = `[data-conversation-scroll],[data-composer-seat]{padding-right:${Math.round(px)}px !important;box-sizing:border-box}`
+		document.head.appendChild(tag)
+		return () => tag.remove()
+	} catch {
+		return () => {}
+	}
+}
+
+/**
  * 视口变了就重量一次 —— 但盯的是**视觉视口**，不是 `window.resize`。
  *
  * ⚠️ 这条只在 iOS / iPadOS 上看得出来，而那正是我们够不着的机器：
@@ -207,12 +230,13 @@ export function useChatBox() {
 				Math.abs(prev.top - rect.top) < 1 &&
 				Math.abs(prev.height - rect.height) < 1 &&
 				Math.abs(prev.right - rect.right) < 1 &&
+				Math.abs(prev.width - rect.width) < 1 &&
 				// ⚠️ 正文右缘用 4px 的迟滞，不是 1px。聊天行的宽度会被滚动条、
 				//    一张图加载完这类事顶来顶去差个一两像素 —— 按 1px 比的话，
 				//    整棵树会跟着做肉眼可见的左右微抖。
 				Math.abs((prev.contentRight === undefined ? -1e9 : prev.contentRight) - (content === undefined ? -1e9 : content)) < 4
 					? prev
-					: { top: rect.top, height: rect.height, right: rect.right, contentRight: content },
+					: { top: rect.top, height: rect.height, right: rect.right, width: rect.width, contentRight: content },
 			)
 		}
 		const schedule = () => {
