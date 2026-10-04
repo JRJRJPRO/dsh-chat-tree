@@ -3,7 +3,7 @@
  *
  * 卡片有**两档**：
  *   · 收起（鼠标停在点上就是这档）—— 一行：信息 + ＋ + ☆，**就这两个动作**。
- *   · 展开（在卡片上双击）—— 第一行左边多出改树形那三颗（⇤ / ⇥ / ⊕），
+ *   · 展开（在卡片上双击）—— 第一行左边多出改树形那三颗（⇤ / ⇥ / ⊕），最右多出红色的删除（✕），
  *     底下多出名字框和收藏图标那排。
  *
  * ⚠️ 全部动作按钮都在**第一行**，包括只有展开才露面的那三颗。
@@ -15,7 +15,7 @@
  */
 import { h, react } from './runtime.js'
 import { C, Z } from './const.js'
-import { branchAction, forkBlockedWhy, isBranchHead } from './tree.js'
+import { branchAction, deleteBlockedWhy, deletePlan, forkBlockedWhy, isBranchHead } from './tree.js'
 import { NO_ZOOM, TAPPABLE, useHover } from './pointer.js'
 import { CUSTOM, GLYPH_STORE_MAX, PICTURE, RARE_SHAPES, SHAPES, favShape, preview } from './shapes.js'
 import { upload } from './icon-upload.js'
@@ -120,6 +120,26 @@ export function keepsCard(dirty, typing) {
 
 /** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
 export const CARD_MARK = 'data-dsh-chat-tree-card'
+
+/**
+ * 「删除」那颗和确认行里那个「删除」字的颜色。宿主的 CSS 变量里没找到一个稳定的"危险色"，
+ * 所以写死 —— 这个红在深底和白底上都压得住（和 FAV_COLORS 里那个是同一个）。
+ */
+export const DANGER = '#f85149'
+
+/** 删除按钮的 title。写明是归档、可恢复：归档是宿主的"软删"，不说清楚用户会以为是硬删。 */
+export const DELETE_TITLE = '删除这条支线：归档它和底下的全部分支（可在宿主的归档列表里恢复）'
+
+/**
+ * 确认行上问的那句话。抽成纯函数好测：N 条会话、M 轮、有没有在跑的，三样都得对。
+ * @param plan - `deletePlan` 的结果（能删的那种）
+ * @returns 一句话
+ */
+export function deleteAsk(plan) {
+	const n = plan && Array.isArray(plan.sessions) ? plan.sessions.length : 0
+	const turns = plan && Number.isFinite(plan.turns) ? plan.turns : 0
+	return `归档这 ${n} 条会话（${turns} 轮）？${plan && plan.running === true ? '其中有正在运行的，会停掉正在跑的回答。' : ''}删掉的进宿主的归档列表，可以恢复。`
+}
 
 /**
  * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。
@@ -561,6 +581,8 @@ export function Detail(props) {
 	const [expanded, setExpanded] = react.useState(false)
 	const [draft, setDraft] = react.useState(null)
 	const [merging, setMerging] = react.useState(false)
+	// 删除按了第一下、正在等第二下。是"对**这个**节点"的第一下：换节点、收起卡片都要清。
+	const [confirming, setConfirming] = react.useState(false)
 	// 名字框里有没有光标。和 `dirty` 一起决定"这张卡现在不许关、也不许换点"。
 	const [typing, setTyping] = react.useState(false)
 	// 灰掉的按钮、小牌子上那些理由全写在 `title` 里，而 **title 在触摸设备上
@@ -571,14 +593,20 @@ export function Detail(props) {
 	react.useEffect(() => {
 		setExpanded(false)
 		setMerging(false)
+		setConfirming(false)
 		setDraft(null)
 		setNote(null)
 		setTyping(false)
 	}, [node])
+	// 卡片一收起（双击、点外面、保存），还没按第二下的删除就作废
+	react.useEffect(() => {
+		if (!expanded) setConfirming(false)
+	}, [expanded])
 
 	const shown = node !== null
 	const isEmpty = shown && node.kind === 'empty'
-	const key = !shown ? '' : isEmpty ? 'root' : node.key
+	// 节点 key 只从 node 上拿（树根那个的 key 由 graph.js 用 ROOT_KEY 造），这里不许再手写字面量
+	const key = !shown ? '' : node.key
 	const fallback = !shown ? '' : isEmpty ? node.session.title || '未命名对话' : node.entry.prompt || `第 ${node.entry.turn} 轮`
 	const text = labels[key] || fallback
 	const dirty = isDirty(draft, text)
@@ -594,6 +622,25 @@ export function Detail(props) {
 		if (typeof onLock === 'function') onLock(busy)
 	}, [busy, onLock])
 	react.useEffect(() => () => { if (typeof onLock === 'function') onLock(false) }, [onLock])
+
+	// 展开着时点卡片外面任何地方 → 收回收起档。只靠双击收起太难找；
+	// 鼠标设备也没有触摸那条"戳到导轨外面关卡片"（rail.js 的 away）。
+	// 捕获阶段挂：点的多半是聊天区，冒泡不到导轨。
+	// 改名中（busy）不收 —— 和 onMouseLeave 同一条规矩，否则草稿跟着名字框一起没了。
+	// ⚠️ 别和 useFocusGuard 的 pointerdown 合并：那个只记时刻，两件事。
+	const self = react.useRef(null)
+	react.useEffect(() => {
+		if (!expanded || busy || typeof document === 'undefined') return undefined
+		const away = (event) => {
+			const el = self.current
+			if (el !== null && el !== undefined && el.contains(event.target)) return
+			setExpanded(false)
+			setMerging(false)
+			setNote(null)
+		}
+		document.addEventListener('pointerdown', away, true)
+		return () => document.removeEventListener('pointerdown', away, true)
+	}, [expanded, busy])
 
 	const commit = (value) => {
 		props.onRename(key, value === null || value === undefined ? '' : value.trim())
@@ -620,17 +667,20 @@ export function Detail(props) {
 
 	// 保存 / 不保存那两颗。写成字而不是符号：这是**会丢东西**的抉择，
 	// 得让人一眼读懂，不能让他去猜 ✓ 和 ✗ 各是什么意思。
-	const word = (label, title, action, accent) =>
-		h('span', {
+	// `accent`：true = 强调色；给一个色值就用那个色（删除那颗是红的）。
+	const word = (label, title, action, accent) => {
+		const ink = accent === true ? C.accent : typeof accent === 'string' ? accent : C.muted
+		return h('span', {
 			key: label, title,
 			style: Object.assign({
 				flex: '0 0 auto', cursor: 'pointer', fontSize: '11.5px', lineHeight: '18px',
 				padding: '0 8px', borderRadius: '4px',
-				borderWidth: '1px', borderStyle: 'solid', borderColor: accent ? C.accent : C.line,
-				color: accent ? C.accent : C.muted,
+				borderWidth: '1px', borderStyle: 'solid', borderColor: accent ? ink : C.line,
+				color: ink,
 			}, TAPPABLE),
 			onClick: (event) => { event.stopPropagation(); action() },
 		}, label)
+	}
 
 	// 「撤回」「无上下文」这类小牌子共用一套样子
 	const tag = (slot, label, why) =>
@@ -721,6 +771,17 @@ export function Detail(props) {
 				() => props.onFavorite(key, !starred),
 				starred ? props.starInk : C.muted,
 			),
+		// 删除：只在展开档，排最右、红色。能不能删、删哪些由 tree.js 的 deletePlan 定
+		// （只有支线头一个节点能删，删的是整条支线 = 归档）。**第一下不删**，摊开下面那行确认，
+		// 第二下才叫 onDelete —— 这是全卡片唯一会让东西从树上消失的动作。
+		// 宿主没有归档服务（canDelete 为 false）就整颗不画：画一颗永远灰的只会招来"为什么按不了"。
+		!expanded || props.canDelete !== true
+			? null
+			: dirty
+				? blocked('✕', '先保存或放弃这次改名')
+				: deleteBlockedWhy(node) !== ''
+					? blocked('✕', deleteBlockedWhy(node))
+					: button('✕', DELETE_TITLE, () => setConfirming(!confirming), DANGER),
 	])
 
 	// 收藏图标那一排。**只在收藏过的点上露面** —— 没收藏的话它改的是个看不见的东西。
@@ -772,12 +833,30 @@ export function Detail(props) {
 		iconRow,
 	]
 
+	// ===== 删除的确认行 =====
+	// 只在"展开 + 按过第一下 + 没有草稿"时露面，摊在卡片最下沿。问的话说清楚三样：
+	// 归档几条会话、几轮、有没有在跑的；再说一遍是归档、能恢复。两颗字按钮：取消 / 删除（红）。
+	const plan = shown && expanded && confirming && !dirty && props.canDelete === true ? deletePlan(node) : undefined
+	const confirmLine = plan === undefined || plan.blocked !== undefined ? null : h('div', {
+		key: 'confirm',
+		style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: `${ROOM}px`, width: '100%', marginTop: `${ROOM}px` },
+	}, [
+		h('span', { key: 'ask', style: { flex: '1 1 100%', fontSize: '11.5px', lineHeight: 1.5, color: C.text } }, deleteAsk(plan)),
+		word('取消', '不删了', () => setConfirming(false)),
+		word('删除', '确认归档这条支线（可在宿主的归档列表里恢复）', () => {
+			setConfirming(false)
+			setExpanded(false)
+			if (typeof props.onDelete === 'function') props.onDelete(node, plan)
+		}, DANGER),
+	])
+
 	return h(
 		'div',
 		{
 			// 焦点守卫靠这个记号判断"焦点还落在卡片里（点了卡片上别的东西），
 			// 还是被外人抢走了"。见 useFocusGuard。
 			[CARD_MARK]: '1',
+			ref: self,
 			style: {
 				position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 				transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
@@ -811,6 +890,7 @@ export function Detail(props) {
 		head,
 		noteLine,
 		body,
+		confirmLine,
 		!shown || !expanded || !merging || dirty ? null : h(MergeList, {
 			key: 'merge',
 			targets: props.targets || [],

@@ -8,22 +8,28 @@
  * 【加了新纯函数怎么办】往这张表里加一行。不加也能跑，只是测不到；
  * 而测不到的代码，改坏了没有任何一条断言会响。
  *
- * 【什么东西不该进这张表】碰 DOM / react / fetch 的。那些在 node 里跑不起来，
- * 要测就得先把"算"从"画"里拆出来 —— 拆出来的那半才进这里。
+ * 【组件也在这张表里】Detail / SettingsCard / Rail 这些画界面的也挂出去了 —— 测试用
+ * tests/kit/react-lite.mjs 那份极简 react 把它们真的挂起来、派事件、看结果
+ * （test-kit.mjs 的 `mount`）。所以"碰 react"不再是进不了这张表的理由；
+ * 真进不来的只剩直接 fetch 的那几处（net.js 会在 node 里没有 fetch 时抛）。
  */
-import { DEPTH, RADIUS, SCALE, SETTINGS_NS, Z, scaleZ } from './const.js'
+import { C, DEPTH, RADIUS, SCALE, SETTINGS_NS, Z, scaleZ } from './const.js'
 import {
 	branchAction,
 	blockedWhy,
 	conversationOf,
 	currentOf,
 	cutPointOf,
+	deletePlan,
+	deleteBlockedWhy,
+	escapeFrom,
 	cutSet,
 	forkBlockedWhy,
 	forkCutSeq,
 	isBranchHead,
 	indexOf,
 	isFocusedNode,
+	isRootKey,
 	jumpTarget,
 	keyOf,
 	mergeTargets,
@@ -34,6 +40,7 @@ import {
 	withStatus,
 	workspaceOf,
 	ROOT_KEY,
+	rootKeyOf,
 } from './tree.js'
 import { buildGraph } from './graph.js'
 import { OPEN_KEY, foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
@@ -100,20 +107,24 @@ import {
 	starPoly,
 	starSkin,
 } from './shapes.js'
-import { CARD_GAP, MIN_RUN, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
+import { CARD_GAP, MIN_RUN, boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
 import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, runningCount, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { CARD_MARK, FAV_COLORS, FAV_DROP, FAV_SHAPES, GAP, LEAVE_MS, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
+import { CARD_MARK, Detail, FAV_COLORS, FAV_DROP, FAV_SHAPES, FavIconRow, GAP, HexField, LEAVE_MS, MergeList, NameField, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
+import { SettingsCard } from './ui-settings.js'
+import { Rail } from './rail.js'
 import { FIELDS, LAYERS, ROWS, SCALES, STEPS, VISIBLE, hexOf, isHex, isMode, layerText, scaleText, settingsStore, stepText, themeFrom, visibleRange } from './settings-model.js'
 import { isDark } from './theme.js'
 import { NO_ZOOM, TAPPABLE, hasHover, overRail, tapNext } from './pointer.js'
 
 export const __pure = {
 	// 选树、归组、节点上能做什么
-	visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
+	visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, rootKeyOf, isRootKey, shapeOps,
 	// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
 	currentOf, withStatus,
 	cutPointOf, cutSet, branchAction, forkBlockedWhy, forkCutSeq, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+	// 删除 = 归档整条支线：删哪些、为什么删不了、删之前先切到哪
+	deletePlan, deleteBlockedWhy, escapeFrom,
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
@@ -141,7 +152,7 @@ export const __pure = {
 	// 配色与明暗
 	PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 	// 几何
-	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
+	reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP, rowSlots, boxShift,
 	// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了、容器里挂的是不是别的页签
 	contentRightOf, isCovered, otherViewShown, RAIL_MARK,
 	// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
@@ -153,6 +164,8 @@ export const __pure = {
 	// 未读节点读过之后的三段式节奏
 	readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
 	// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
-	SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+	SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z, C,
 	VISIBLE, isMode, visibleRange, stepsAway, layersAway,
+	// 组件：离线测试用 react-lite 挂起来测交互（tests/test-card.mjs 是例子）
+	Detail, NameField, FavIconRow, HexField, MergeList, SettingsCard, Rail,
 }

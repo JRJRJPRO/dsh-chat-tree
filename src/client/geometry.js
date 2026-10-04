@@ -111,6 +111,97 @@ export function shrinkToLane(wide, lane, gap, dotSize) {
 }
 
 /**
+ * 同一行上每个节点能摊多宽：自定义字的框向**这一行**的空位借地方（BACKLOG T2）。
+ *
+ * 【为什么】老规则按列距一刀切：列距一压，每个字框都只剩"列距 − 间隙"那么宽，
+ * 2~4 个字的名字全画成「…」。可同一行上往往只有一两格有东西 —— 左右的空位白空着。
+ * 这里把一行当成一条线段来分：每个节点圈一块地盘 `[x − left, x + right]`，
+ * 相邻两块之间留 `gap`，字框就画在自己的地盘里（不一定居中，见 `boxShift`）。
+ *
+ * 规矩：
+ *   · 每块地盘至少盖住自己的**核心** `[x − coreL, x + coreR]`。圆点 / 星星的核心就是
+ *     它自己（半个画宽）；字框的核心是"线从框的平边进出、不戳在圆角上"那么宽。
+ *     核心可以不对称：一个节点自己的岔路拐角（横段拐下去的那一列）也算进它的核心 ——
+ *     自己的字框可以盖住自己的拐角（线从框底下出去），邻居借不过来。
+ *   · 两边都要不够时**公平分**（按宽度对半，谁要的少谁先满足）；一边有富余就让给另一边。
+ *     来回扫几遍，富余会顺着一行传过去 —— 夹在中间的那个不会被两头挤成「…」。
+ *   · 两边都够时分界线尽量落在"两个框都居中"的位置，空间够的场面一个像素都不挪。
+ *   · 连线**不算**占位（别人的拐角除外，见上）。
+ *
+ * 小例子（三列全是字、每个想要 44px、导轨 [0, 100]、间隙 5、列在 x = 24.5 / 50 / 75.5）：
+ *   一刀切的老规则：每个框 ≤ 列距 25.5 − 5 = 20.5px → 只剩「…」；
+ *   这里：先按"居中"分出 34.75 / 20.5 / 34.75，再来回扫：两头分给中间，收敛到约 30 / 30 / 30。
+ *
+ * @param items - 这一行的节点（任意顺序），形如 `{x, coreL, coreR, want}`；
+ *                `want` = 它最多想要多宽（字框 = 全宽，圆点 = 自己的宽）
+ * @param lo - 左边最远借到哪（导轨坐标，可以是负数 = 借到导轨外的空当里）
+ * @param hi - 右边最远借到哪
+ * @param gap - 相邻两块地盘之间留多少
+ * @returns 和 `items` 同序的 `{left, right}`：地盘从 x 往左 / 往右各多远（恒非负）
+ */
+export function rowSlots(items, lo, hi, gap) {
+	const g = Number.isFinite(gap) ? gap : 0
+	const num = (value) => (Number.isFinite(value) ? value : 0)
+	const order = items.map((item, at) => ({ item, at })).sort((a, b) => a.item.x - b.item.x)
+	const n = order.length
+	const x = (k) => order[k].item.x
+	const want = (k) => num(order[k].item.want)
+	const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
+	// 第 k 条分界线（夹在第 k 和第 k+1 个之间）能落的范围：两边的核心都得留住
+	const lowOf = (k) => x(k) + num(order[k].item.coreR) + g / 2
+	const highOf = (k) => x(k + 1) - num(order[k + 1].item.coreL) - g / 2
+	const cut = []
+	const stuck = []
+	for (let k = 0; k + 1 < n; k += 1) {
+		// 两个核心已经挤在一起了（列距压到底）：分界线钉在中间，谁也别借
+		stuck[k] = lowOf(k) > highOf(k)
+		// 起点：两个框都居中时，它们外缘的中点
+		const natural = (x(k) + want(k) / 2 + x(k + 1) - want(k + 1) / 2) / 2
+		cut[k] = stuck[k] ? (lowOf(k) + highOf(k)) / 2 : clamp(natural, lowOf(k), highOf(k))
+	}
+	const from = (k) => (k === 0 ? lo : cut[k - 1] + g / 2)
+	const to = (k) => (k === n - 1 ? hi : cut[k] - g / 2)
+	// 来回扫：每次只动一条分界线，看它两边那两块地盘该怎么分。
+	// 扫的遍数和节点数同阶就够让富余从一头传到另一头。
+	for (let sweep = 0; sweep < 2 * n + 2; sweep += 1) {
+		for (let step = 0; step + 1 < n; step += 1) {
+			const k = sweep % 2 === 0 ? step : n - 2 - step
+			if (stuck[k]) continue
+			const a = from(k)
+			const b = to(k + 1)
+			const total = b - a - g
+			let next
+			// 两个都够：分界线别动，除非动了才能两个都装下
+			if (want(k) + want(k + 1) <= total) next = clamp(cut[k], a + want(k) + g / 2, b - want(k + 1) - g / 2)
+			// 不够：对半分，谁要的少谁先满足、剩下的归另一个
+			else next = a + Math.min(want(k), Math.max(total - want(k + 1), total / 2)) + g / 2
+			cut[k] = clamp(next, lowOf(k), highOf(k))
+		}
+	}
+	const out = new Array(n)
+	for (let k = 0; k < n; k += 1) out[order[k].at] = { left: Math.max(0, x(k) - from(k)), right: Math.max(0, to(k) - x(k)) }
+	return out
+}
+
+/**
+ * 一个宽 `width` 的框在地盘 `[x − left, x + right]` 里该往哪边挪多少（正 = 往右）。
+ *
+ * 能居中就居中（返回 0）；居中会出界就贴着那一边，往另一边挪。
+ * 比地盘还宽（只在压到底时发生）就居中在地盘里。
+ *
+ * 小例子（框 44、地盘往左 60、往右 12 —— 第 0 列贴着导轨右缘）：
+ *   居中的话右边要 22 > 12 → 往左挪 10，框 = [x − 32, x + 12]。
+ * @param width - 框宽
+ * @param left - 地盘从 x 往左多远
+ * @param right - 地盘从 x 往右多远
+ * @returns 框中心相对 x 的偏移
+ */
+export function boxShift(width, left, right) {
+	if (width >= left + right) return (right - left) / 2
+	return Math.min(Math.max(0, width / 2 - left), right - width / 2)
+}
+
+/**
  * 导轨离视口右缘多远（CSS 的 `right`，**值越大越靠左**）。
  *
  * **就是贴着聊天区右缘**，一个像素都不挪。
@@ -240,14 +331,19 @@ export function reachFor(kind, active, dotSize, theme, grow, starred) {
  * @param yTo - 子节点圆心 y
  * @param gapFrom - 父这端让开多少
  * @param gapTo - 子这端让开多少
+ * @param sideFrom - 父这端**横向**让开多少（朝孩子那一侧）。缺省 = `gapFrom`。
+ *                   父节点是个横着摊开的字框时，横段得从框边起，不然线从字中间穿过去；
+ *                   框一直盖到孩子那一列的话横段整个不画，竖段从框的下沿起。
  * @returns 若干段 `{tag, left, top, width, height}`，长度为 0 的段不返回
  */
-export function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo) {
+export function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo, sideFrom) {
 	const out = []
 	const half = 0.5 // 线宽的一半：把线的中心对齐到节点中心
-	const bent = xTo !== xFrom
+	const side = Number.isFinite(sideFrom) ? sideFrom : gapFrom
+	// 孩子那一列被父节点的框盖住了：当成"不拐弯"，竖段从框的下沿直接下去
+	const bent = xTo !== xFrom && side < Math.abs(xTo - xFrom)
 	if (bent) {
-		const near = xFrom + (xTo > xFrom ? gapFrom : -gapFrom)
+		const near = xFrom + (xTo > xFrom ? side : -side)
 		// 横段往折角那头多伸半个线宽，好和竖段的笔画严丝合缝（否则拐角缺个小口）
 		const width = Math.abs(near - xTo)
 		if (width > 0) out.push({ tag: 'hz', left: Math.min(xTo, near) - half, top: yFrom - half, width: width + 2 * half, height: 1 })

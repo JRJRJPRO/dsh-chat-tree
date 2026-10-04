@@ -5,12 +5,12 @@ import { h, portal, react } from './runtime.js'
 import { C, SCALE, Z } from './const.js'
 import { warn } from './net.js'
 import { readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
-import { ROOT_KEY, branchAction, conversationOf, currentOf, cutPointOf, cutSet, forkBlockedWhy, forkCutSeq, isFocusedNode, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
+import { branchAction, conversationOf, currentOf, cutPointOf, cutSet, escapeFrom, forkBlockedWhy, forkCutSeq, isFocusedNode, isRootKey, jumpTarget, mergeTargets, shapeOps, treeOfSession, visibleTree, withStatus, workspaceOf } from './tree.js'
 import { buildGraph } from './graph.js'
 import { installDiagnostics } from './diagnose.js'
 import { anchorNode, elide, fisheye } from './elide.js'
-import { dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeOf, starSkin } from './shapes.js'
-import { cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, segments, shrinkToLane, trimRuns } from './geometry.js'
+import { GLYPH_RADIUS, dashedOf, dotInside, dotSizeOf, dotStyle, drawnWidth, fade, favShape, glyphSpanFor, inkOf, shapeHeight, shapeOf, starSkin } from './shapes.js'
+import { boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
 import { RAIL_MARK, STAR_ANIM_MS, hideNativeRail, installStarAnimation, nextReadBoundary, readAnimation, readPhase, starAnimation, unpinActiveTurn, useActiveTurn, useChatBox, useObservable, useOutlines } from './hooks.js'
 import { useColorScheme } from './theme.js'
 import { foldReport, useSidebarFold } from './sidebar.js'
@@ -216,10 +216,15 @@ export function Rail(props) {
 	//    顶着的话错误被整棵旧树盖住，看起来像树卡住了，其实是 host 那边一直在报错。
 	// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
 	// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
-	const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
+	// 「在跑」host 的大纲里有一份（collect.js），但 0.2 宿主的实时状态在会话列表那张表上（withStatus 并进去的）——
+	// 两边取或，开岔路要不要拦、删除要不要带 stopActivity 看的都是它。
+	const marked = picked.map((item) => Object.assign({}, item, {
+		completed: (listState.byId[item.id] || {}).completed === true,
+		running: item.running === true || (listState.byId[item.id] || {}).running === true,
+	}))
 	let graph
 	try {
-		graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
+		graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted, treeOfSession(picked, shape.groupOf, current)) : undefined
 	} catch (error) {
 		warn('建图失败，先拿上一棵顶着', error)
 	}
@@ -283,10 +288,12 @@ export function Rail(props) {
 		}
 		return most
 	}
-	const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, railRoom(box))
+	const room = railRoom(box)
+	const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, room)
 	// 列距被压过之后（横向放不下，见 railLayout 的 `room`），带框的字**按压完的列距重截**：
 	// 框不许比列距宽，字装不下就少画几个加省略号。不这么做的话相邻两列的字框会叠在一起
 	// （youli42 报的 issue #1）。布局那边（widestOf）仍按全宽算，空间够了列距自然会撑回去。
+	// ⚠️ 这只是**不在这一屏上的字框**的退路；画出来的字框按下面 slotOf 给的那一行的空位截（T2）。
 	const spanAt = (size) => glyphSpanFor(lane, z.laneGap, size)
 	// 命中区宽度。列被宽形状撑开时得跟着撑，否则两列之间会裂出一条点不中的缝。
 	// 反过来列距比 Z.hit 窄时**不收窄** —— 命中区互相重叠是故意的（点太小，靠 nodeAt 取最近的那个）。
@@ -305,8 +312,8 @@ export function Rail(props) {
 	//    每层各带一个 opacity，叠出来就比别处黑，看着就是"横线一会粗一会细还上下起伏"
 	//    （John 报的）。竖段各在各的列上，不会撞，直接画。
 	const runs = []
-	const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha, active) => {
-		const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo)
+	const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha, active, sideFrom) => {
+		const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo, sideFrom)
 		for (const part of cut) {
 			const piece = Object.assign({ key, color, alpha, active }, part)
 			if (part.tag === 'hz') runs.push(piece)
@@ -322,14 +329,75 @@ export function Rail(props) {
 	// 极端压缩：列距压到比最窄的框 / 星星还窄时（railLayout 的下限只管圆点分得开），把整个
 	// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
 	// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
+	/** 这个点按什么形状画（`span` 只影响自定义字截到多宽）。 */
+	const shapeAt = (node, span) => (favorites.has(node.key) ? favShape(favIcons[node.key], span) : shapeOf(kindOf(node), node.active, theme, span))
+	/** 这一帧画多大（鱼眼缩过的直径）。 */
+	const sizeOf = (node) => dotSizeOf(kindOf(node), dotSize, eyeOf(node).scale)
+
+	// ===== 自定义字按"这一行"的空位摊开（BACKLOG T2，规则见 geometry.js 的 rowSlots）=====
+	// 老规则按列距一刀切：列距一压，每个字框都只剩"列距 − 间隙"，2~4 个字全成「…」。
+	// 这里把每一行当一条线段分给这一行上的节点：字框能向空着的格子借地方，
+	// 但不压到同一行的邻居（圆点 / 星星原样留住自己那块）、不压到别人的岔路拐角。
+	// 左边最远借到 railRoom 的边上（树没占满那条空当时，最左那列能往导轨外面借一点）。
+	const slotOf = new Map()
+	{
+		const rows = new Map()
+		const itemOf = new Map()
+		for (const node of graph.nodes) {
+			if (!view.shown.has(node)) continue
+			const size = sizeOf(node)
+			const base = shapeAt(node)
+			const item = base.glyph !== undefined
+				// 字框的核心：线从框的平边进出、不戳在圆角上
+				? { glyph: true, x: xOf(node.column), core: shapeHeight(base, size) * GLYPH_RADIUS + 1, want: drawnWidth(base, size) }
+				: { glyph: false, x: xOf(node.column), core: (drawnWidth(base, size) * shrinkToLane(drawnWidth(base, size), lane, z.laneGap, dotSize)) / 2 }
+			item.coreL = item.core
+			item.coreR = item.core
+			if (item.want === undefined) item.want = 2 * item.core
+			itemOf.set(node, item)
+			const row = rowOfNode(node)
+			if (!rows.has(row)) rows.set(row, [])
+			rows.get(row).push(node)
+		}
+		// 自己的岔路拐角并进自己的核心：自己的框可以盖住它（线从框底下出去），邻居借不过来
+		for (const node of graph.nodes) {
+			const item = itemOf.get(node.parent)
+			if (item === undefined || !itemOf.has(node) || node.column === node.parent.column) continue
+			const corner = xOf(node.column)
+			if (corner < item.x) item.coreL = Math.max(item.coreL, item.x - corner + 0.5)
+			else item.coreR = Math.max(item.coreR, corner - item.x + 0.5)
+		}
+		const lo = Math.min(0, railWidth - room)
+		for (const list of rows.values()) {
+			if (!list.some((node) => itemOf.get(node).glyph)) continue // 这一行没有字框，一切照旧
+			const slots = rowSlots(list.map((node) => itemOf.get(node)), lo, railWidth, z.laneGap)
+			list.forEach((node, at) => {
+				if (itemOf.get(node).glyph) slotOf.set(node, slots[at])
+			})
+		}
+	}
+	/** 字最多摊几倍宽：画在这一屏上的字框按它那一行的空位算，别的退回按列距算。 */
+	const spanFor = (node, size) => {
+		const slot = slotOf.get(node)
+		return slot === undefined ? spanAt(size) : glyphSpanFor(slot.left + slot.right, 0, size)
+	}
 	const fitOf = (node, size) => {
-		const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(kindOf(node), node.active, theme, spanAt(size))
-		return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
+		const wide = drawnWidth(shapeAt(node, spanFor(node, size)), size)
+		const slot = slotOf.get(node)
+		return slot === undefined ? shrinkToLane(wide, lane, z.laneGap, dotSize) : shrinkToLane(wide, slot.left + slot.right, 0, dotSize)
+	}
+	/** 字框画出来多宽、相对圆心往哪边挪了多少（不是字框 → undefined）。连线的横段要从框边起。 */
+	const boxOf = (node) => {
+		const slot = slotOf.get(node)
+		if (slot === undefined) return undefined
+		const size = sizeOf(node)
+		const width = drawnWidth(shapeAt(node, spanFor(node, size)), size) * fitOf(node, size)
+		return { width, shift: boxShift(width, slot.left, slot.right) }
 	}
 	const reachOf = (node) => {
 		const eye = eyeOf(node)
 		// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
-		return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(kindOf(node), dotSize, eye.scale)), starOf(node))
+		return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, sizeOf(node)), starOf(node))
 	}
 
 	const edge = (node) => {
@@ -339,7 +407,12 @@ export function Rail(props) {
 		const color = node.active ? fade(theme.currentColor, 0.6) : C.line
 		// 线按**淡的那一头**走：亮点连着淡点时，线跟着亮会显得那个淡点还没退场
 		const alpha = Math.min(eyeOf(node).alpha, eyeOf(node.parent).alpha)
-		line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha, node.active === true)
+		const xFrom = xOf(node.parent.column)
+		const xTo = xOf(node.column)
+		// 父节点是个摊开的字框：横段从框朝孩子那一侧的边起（不然线从字中间穿过去）
+		const owner = boxOf(node.parent)
+		const side = owner === undefined ? undefined : owner.width / 2 + (xTo < xFrom ? -owner.shift : owner.shift) + 1
+		line(node.key, xFrom, xTo, yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha, node.active === true, side)
 	}
 	for (const node of edgeOrder(graph.nodes)) edge(node)
 	// 去重之后再画。出来的横段互不重叠，所以 DOM 先后不再影响观感。
@@ -372,9 +445,12 @@ export function Rail(props) {
 		}
 		// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 		// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
+		const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanFor(node, size)) : undefined
 		// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-		const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanAt(size)) : star.shape
+		const drawnShape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanFor(node, size)) : star.shape
+		// 字框在自己那块地盘里可能不居中（贴着导轨右缘、或者邻居那边挤）：挪多少交给 glyphBoxStyle
+		const placed = boxOf(node)
+		const shape = placed === undefined || placed.shift === 0 ? drawnShape : Object.assign({}, drawnShape, { shift: placed.shift })
 		const skin = star === undefined ? inkOf(kindOf(node), node.active, isFocused, theme) : star
 		// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
 		const drawn = size * fitOf(node, size)
@@ -472,6 +548,23 @@ export function Rail(props) {
 					const at = cutPointOf(node)
 					if (at !== undefined) reshape(shapeOps.cut(at.key))
 				},
+				// 删除 = 归档整条支线（tree.js 的 deletePlan）。宿主没有归档服务就不给按钮。
+				canDelete: api.canArchive === true,
+				// 名单里有正在看的这条时**先切走**：宿主的当前会话一归档主视图就空了（escapeFrom 挑去处）。
+				// 然后一条条归档（失败只告警），最后清掉悬停、催一次重拉。树上消失靠的是归档集
+				// （archivedSessionIds）跟着宿主变，不用自己回显。
+				onDelete: async (node, plan) => {
+					if (!plan || plan.blocked !== undefined || !Array.isArray(plan.sessions)) return undefined
+					if (plan.sessions.includes(current)) {
+						const to = escapeFrom(node, plan, (listState.ids || []).filter((id) => !archived.has(id)))
+						if (to !== undefined) await api.open(to)
+					}
+					await api.archive(plan.sessions, { stopActivity: plan.running === true })
+					clearTimeout(closeTimer.current)
+					setHover(null)
+					setNonce((value) => value + 1)
+					return undefined
+				},
 				// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
 				anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
 				railWidth, labels, hold, release, onLock,
@@ -503,7 +596,7 @@ export function Rail(props) {
 					// 站在拆出去的树上、点的又是**前缀**上的节点（它仍属旧会话）：新会话按血缘会
 					// 掉回旧树，得认领到这棵（issue #4，见 graph.js 的【认领】）。
 					// 点的是子树里的节点就不用：它的父亲本来就在这棵树里。
-					const claim = graph.owner !== ROOT_KEY && node.tree !== graph.owner ? shapeOps.adopt : undefined
+					const claim = !isRootKey(graph.owner) && node.tree !== graph.owner ? shapeOps.adopt : undefined
 					if (action === 'fresh') {
 						// 新对话没有血缘，得登记进当前这棵树（merge）；站在拆出去的树上还要认领（adopt）
 						return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, (id) => {

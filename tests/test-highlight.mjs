@@ -1234,11 +1234,11 @@ console.log('用例 21：收藏清单存得住、删得掉，且不越改越脏'
 
 	// 存进去再读出来（test-kit 的 localStorage 是真存得住的）
 	pure.writeFavorite('s1:3', true)
-	pure.writeFavorite('root', true)
-	check(pure.readFavorites().has('s1:3') && pure.readFavorites().has('root'), '存进去读不出来')
+	pure.writeFavorite(pure.rootKeyOf('s1'), true)
+	check(pure.readFavorites().has('s1:3') && pure.readFavorites().has(pure.rootKeyOf('s1')), '存进去读不出来')
 	pure.writeFavorite('s1:3', false)
 	check(!pure.readFavorites().has('s1:3'), '取消收藏之后还在清单里')
-	check(pure.readFavorites().has('root'), '取消一个把别的也带走了')
+	check(pure.readFavorites().has(pure.rootKeyOf('s1')), '取消一个把别的也带走了')
 	console.log('  集合算术无副作用；存盘读盘对得上；取消不误伤别人')
 }
 
@@ -1418,7 +1418,7 @@ console.log('用例 26：收藏图标存得住，取消收藏不把它一起抹�
 	check(pure.nextFavIcons(one, '', 'cross')['']  === undefined, '空 key 被收进去了')
 
 	pure.writeFavIcon('s9:2', 'char:🔥')
-	pure.writeFavIcon('root', 'hexagon')
+	pure.writeFavIcon(pure.rootKeyOf('s1'), 'hexagon')
 	check(pure.readFavIcons()['s9:2'] === 'char:🔥', '存进去读不出来')
 	// 取消收藏**故意不动图标**：再收藏回来还是上次那个，不用重挑一遍
 	pure.writeFavorite('s9:2', true)
@@ -1426,7 +1426,7 @@ console.log('用例 26：收藏图标存得住，取消收藏不把它一起抹�
 	check(pure.readFavIcons()['s9:2'] === 'char:🔥', '取消收藏把挑好的图标也抹掉了')
 	pure.writeFavIcon('s9:2', '')
 	check(pure.readFavIcons()['s9:2'] === undefined, '恢复默认之后还留在字典里')
-	check(pure.readFavIcons().root === 'hexagon', '删一个把别的也带走了')
+	check(pure.readFavIcons()[pure.rootKeyOf('s1')] === 'hexagon', '删一个把别的也带走了')
 	console.log('  字典算术无副作用；恢复默认是删而不是存 star；取消收藏不误伤图标')
 }
 
@@ -1481,6 +1481,48 @@ console.log('用例 22：未读 —— 跑完了你没在看的那条分支，�
 	check(pure.inkOf('unread', true, false, skin).ink === '#3fb950' && pure.inkOf('unread', false, false, skin).ink === '#3fb950', '未读的颜色不看 active')
 	check(pure.shapeOf('unread', false, skin).value === 'diamond', '未读的形状跟 unreadShape')
 	console.log('  B:5 未读 → 打开后普通；压缩优先；空分支不炸；颜色形状各有各的设置项')
+}
+
+console.log('用例 28：树根空节点的 key 按树区分 —— 收藏 / 改名一棵树的空节点，别的树不跟着变')
+{
+	// John 报的：给一棵树的空节点起了名，另一棵完全不相干的树的空节点也跟着改了名。
+	// 根因是所有树的空节点共用一个 key。两条不变式：
+	//   ① 两棵不相干的树，空节点 key 不同
+	//   ② 同一棵树，站在哪条分支上看，空节点 key 都一样（不然切个分支名字就丢了）
+	const A = branch('A', undefined, undefined, [1, 2, 3])
+	const B = branch('B', 'A', 2, [3])
+	const C = branch('C', undefined, undefined, [1, 2])
+	const sessions = [A, B, C]
+	const visible = new Set(sessions.map((item) => item.id))
+	const rootOf = (currentId, groupOf, tree) => {
+		const picked = pure.conversationOf(pure.visibleTree(sessions, visible), currentId, groupOf)
+		return pure.buildGraph(picked, currentId, undefined, undefined, tree).nodes[0]
+	}
+	const ofA = rootOf('A').key
+	const ofB = rootOf('B').key
+	const ofC = rootOf('C').key
+	check(rootOf('A').kind === 'empty', 'nodes[0] 该是树根空节点')
+	check(ofA !== ofC, `两棵不相干的树空节点 key 撞了：${ofA}`)
+	check(ofA === ofB, `同一棵树站在 A / B 上看，空节点 key 该一样，实际 ${ofA} / ${ofB}`)
+	check(pure.isRootKey(ofA) && pure.isRootKey(ofC), 'isRootKey 认不出树根 key')
+	check(!pure.isRootKey('A:1') && !pure.isRootKey(undefined), 'isRootKey 把普通节点也认成了树根')
+	check(ofA === pure.rootKeyOf('A') && ofC === pure.rootKeyOf('C'), `树根 key 该是 rootKeyOf(树根会话)，实际 ${ofA} / ${ofC}`)
+
+	// 传进来的顺序乱了（子在前）也不许变
+	const shuffled = pure.buildGraph([B, A], 'B').nodes[0].key
+	check(shuffled === ofA, `会话顺序打乱后树根 key 变了：${shuffled}`)
+
+	// 合并：C 并进 A 这棵 → 空节点认的是 A 那棵（被并进去的那棵）的树根，
+	// 哪怕 C 更早建 —— 不然一合并，A 原来给空节点起的名字就丢了
+	const older = branch('O', undefined, undefined, [1])
+	older.createdAt = -1
+	const all = [A, B, older]
+	const seen = new Set(all.map((item) => item.id))
+	const groupOf = { O: 'A' }
+	const picked = pure.conversationOf(pure.visibleTree(all, seen), 'O', groupOf)
+	const merged = pure.buildGraph(picked, 'O', undefined, undefined, pure.treeOfSession(picked, groupOf, 'O')).nodes[0].key
+	check(merged === ofA, `合并后空节点该沿用 A 那棵的 key，实际 ${merged}`)
+	console.log('  不相干的树 key 不同；同一棵树换分支 key 不变；合并后认被并进去的那棵')
 }
 
 report()

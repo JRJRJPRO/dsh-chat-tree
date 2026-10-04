@@ -4,7 +4,7 @@
  * 整个插件最核心的一步，也是唯一一处"图的形状"的定义。改之前先看 DESIGN.md §5，
  * 尤其是"x 与当前在哪条分支无关"这一条。
  */
-import { ROOT_KEY, indexOf, keyOf } from './tree.js'
+import { indexOf, keyOf, rootKeyOf } from './tree.js'
 
 /**
  * 把一棵对话树摊成带 (column, depth) 坐标的节点图。一个节点 = (会话, 自有轮次)。
@@ -21,9 +21,11 @@ import { ROOT_KEY, indexOf, keyOf } from './tree.js'
  * @param currentId - 当前会话
  * @param cuts - 被"分离"的节点 key 集合（`cutSet` 的结果）
  * @param adopted - 认领表 `{会话 id: 剪点 key}`：在拆出去那棵树的前缀上开出来的会话归哪棵
- * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是 `root`
+ * @param tree - 这棵树的编号（`treeOf` 的结果，合并过的树就是被并进去那棵的树根会话 id）；
+ *   不给就取最早建的那条无父会话
+ * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是树根 key
  */
-export function buildGraph(sessions, currentId, cuts, adopted) {
+export function buildGraph(sessions, currentId, cuts, adopted, tree) {
 	const byId = indexOf(sessions)
 	const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
 
@@ -38,7 +40,16 @@ export function buildGraph(sessions, currentId, cuts, adopted) {
 	}
 	for (const session of sessions) emit(session)
 
-	const root = { key: ROOT_KEY, kind: 'empty', session: ordered[0], entry: undefined, parent: undefined, children: [], depth: 0 }
+	// 树根空节点的 key 按树区分（改名 / 收藏都按 key 存，共用一个 key 就是一改全改）。
+	// 两条不变式：同一棵树站在哪条分支上看都一样；两棵不同的树不一样。
+	// 所以认的是"这棵树是谁"，不是 ordered[0] —— 后者跟着传进来的顺序走；
+	// 而且合并后要认**被并进去**的那棵（groupOf 的目标），否则把一棵更早的树并进来，
+	// 原来给空节点起的名字就丢了。groupOf 只有调用方有，所以由它传 `tree`；
+	// 没传就退到"最早建的那条无父会话"，单棵树上两者一致。
+	const heads = ordered.filter((session) => session.parentId === undefined || !byId.has(session.parentId))
+	const eldest = heads.reduce((best, session) => (best === undefined || (session.createdAt || 0) < (best.createdAt || 0) ? session : best), undefined)
+	const treeId = typeof tree === 'string' && tree.length > 0 ? tree : eldest && eldest.id
+	const root = { key: rootKeyOf(treeId), kind: 'empty', session: ordered[0], entry: undefined, parent: undefined, children: [], depth: 0 }
 	let nodes = [root]
 	const nodeOf = new Map()
 	const attachOf = new Map() // 会话 → 它挂在哪个节点下
@@ -150,7 +161,7 @@ export function buildGraph(sessions, currentId, cuts, adopted) {
 		nodes = nodes.filter((node) => keep.has(node))
 		for (const node of nodes) node.children = node.children.filter((kid) => keep.has(kid))
 	}
-	// 每个节点归哪棵（剪点 key；没拆过就是 root）。前缀节点的 `tree` 和整张图的 `owner`
+	// 每个节点归哪棵（剪点 key；没拆过就是树根 key）。前缀节点的 `tree` 和整张图的 `owner`
 	// 不一样 —— Rail 靠这个判断"在前缀上开的分支要不要认领"。
 	for (const node of nodes) node.tree = (ownerOf.get(node) || root).key
 

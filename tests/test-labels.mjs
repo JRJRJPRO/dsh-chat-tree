@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { check, report } from './test-kit.mjs'
+import { check, loadClientPure, report } from './test-kit.mjs'
 
 const was = process.env.DSH_HOME
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-chat-tree-labels-'))
@@ -61,5 +61,19 @@ try {
 	if (was === undefined) delete process.env.DSH_HOME
 	else process.env.DSH_HOME = was
 	fs.rmSync(home, { recursive: true, force: true })
+}
+
+console.log('用例 4：浏览器半 —— 老数据里树根空节点的 key 是 root（所有树共用），读的时候直接扔掉')
+{
+	// 不迁移：那条标注当初是给哪棵树起的已经无从得知。宿主 labels.json 里留着无害。
+	const pure = await loadClientPure()
+	localStorage.setItem('dsh-chat-tree.labels', JSON.stringify({ root: '旧名', 'S:1': '留着' }))
+	localStorage.setItem('dsh-chat-tree.favorites', JSON.stringify(['root', 'S:1']))
+	localStorage.setItem('dsh-chat-tree.favicons', JSON.stringify({ root: 'hexagon', 'S:1': 'cross' }))
+	localStorage.setItem('dsh-chat-tree.favcolors', JSON.stringify({ root: '#ff0000', 'S:1': '#00ff00' }))
+	check(!('root' in pure.readLabels()) && pure.readLabels()['S:1'] === '留着', `readLabels 该扔掉 root、留下别的，实际 ${JSON.stringify(pure.readLabels())}`)
+	check(!pure.readFavorites().has('root') && pure.readFavorites().has('S:1'), '收藏清单该扔掉 root')
+	check(!('root' in pure.readFavIcons()) && !('root' in pure.readFavColors()), '图标 / 颜色该扔掉 root')
+	console.log('  四张表都不再返回老的 root 条目')
 }
 report()

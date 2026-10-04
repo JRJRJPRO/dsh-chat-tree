@@ -1118,8 +1118,11 @@ export function dotInside(shape, size, skin, stroke, dashed) {
  * @returns 内联样式
  */
 export function glyphBoxStyle(shape, size, skin, stroke, dashed) {
+	// `shift`：框在它那一行分到的地盘里不一定居中（贴着导轨右缘、或者被邻居挤了一边），
+	// Rail 算好往哪边挪多少（geometry.js 的 boxShift）塞在 spec 上。没有就是居中。
+	const shift = Number.isFinite(shape.shift) ? shape.shift : 0
 	return {
-		position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+		position: 'absolute', left: shift === 0 ? '50%' : `calc(50% + ${shift}px)`, top: '50%', transform: 'translate(-50%, -50%)',
 		width: `${drawnWidth(shape, size)}px`, height: `${shapeHeight(shape, size)}px`,
 		display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
 		borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,

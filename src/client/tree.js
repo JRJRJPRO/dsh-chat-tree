@@ -9,12 +9,33 @@
 // ===== 节点 key：全插件唯一的"一个节点"的写法 =====
 //
 // 一个节点 = (会话, 该会话自己的第几轮)，写成 `<sessionId>:<turn>`；树根那个空节点
-// 没有轮次，固定叫 `root`。localStorage 的改名表、shape.json 的 detached 清单、
-// buildGraph 的 nodeOf 索引用的都是它，所以**只准从这两个函数里出**，
-// 别再有第四处手拼 `${id}:${turn}`。
+// 没有轮次，写成 `root:<树根会话 id>`。localStorage 的改名表、shape.json 的 detached 清单、
+// buildGraph 的 nodeOf 索引用的都是它，所以**只准从这几个函数里出**，
+// 别再有别处手拼 `${id}:${turn}`。
+//
+// ⚠️ 树根 key 曾经是常量 `root`，所有树共用 —— 给一棵树的空节点改名 / 收藏，
+//    别的树的空节点全跟着变（John 2026-10-04 报的）。现在按树区分，`ROOT_KEY` 只剩前缀的用处。
 
-/** 树根那个空节点的 key。 */
+/** 树根 key 的前缀。**不是**任何一个节点的 key —— 判"是不是树根"用 `isRootKey`。 */
 export const ROOT_KEY = 'root'
+
+/**
+ * 某棵树的树根空节点 key。
+ * @param sessionId - 这棵树的树根会话 id（合并过的树用被并进去那棵的，即 `treeOf` 给的编号）
+ * @returns `root:<sessionId>`
+ */
+export function rootKeyOf(sessionId) {
+	return `${ROOT_KEY}:${sessionId}`
+}
+
+/**
+ * 是不是树根空节点的 key。
+ * @param key - 节点 key
+ * @returns 是 `rootKeyOf` 造出来的就 true；老数据里的裸 `root` 也算（读标注时靠它扔掉）
+ */
+export function isRootKey(key) {
+	return typeof key === 'string' && (key === ROOT_KEY || key.startsWith(`${ROOT_KEY}:`))
+}
 
 // ===== 会话列表：两代宿主的差异在这儿抹平 =====
 //
@@ -437,4 +458,100 @@ export function jumpTarget(node, currentId) {
  */
 export function isFocusedNode(node, activeTurn) {
 	return node.entry !== undefined && node.active === true && node.entry.turn === activeTurn
+}
+
+// ===== 删除 = 归档整条支线 =====
+//
+// dsh 的会话日志**只追加**，没有"删一轮"的原语；宿主给的是**归档**（可逆，归档的会话树上已经不画）。
+// 所以"删一个节点"定义成：把它所在的整条支线 —— 它自己的会话，加上图上挂在它底下的全部子孙会话 ——
+// 一起归档。能删的只有**支线的头一个节点**：删它就是删整条会话；会话中间 / 末尾的一轮删不了半截，
+// 那是撤回的活（消息行上有）。整张表见 DESIGN.md「删除 = 归档整条支线」。
+
+/**
+ * 这个节点是不是它所在会话在图上的头一个节点。
+ *
+ * 判的是**图上的父亲**：父亲是树根空节点，或者属于别的会话，就是头。同一条会话的节点
+ * 串成一条链（撤回的那段除外），所以只有链头满足。和 `isBranchHead`（按大纲里第一个自有轮次判）
+ * 几乎总是一致，差别在"头一轮答到一半被撤回、节点没画"那种会话：大纲上的头一轮没有节点，
+ * 按 isBranchHead 这条会话就永远删不了，按图上的父亲仍然删得了。
+ * @param node - 节点
+ * @returns 是不是链头
+ */
+function isChainHead(node) {
+	const parent = node.parent
+	return parent === undefined || parent.entry === undefined || parent.session.id !== node.session.id
+}
+
+/**
+ * 在某个节点上按「删除」会归档哪些会话。
+ *
+ * 子孙按**图上**算（`node.children` 一路往下），不按 `parentId`：从继承段岔出去的分支在图上
+ * 挂在祖先那一轮底下、和这条支线并排，看着就不在它底下，自然不该跟着没；被拆到别的树上的子树
+ * 已经不在这张图里，同理。**所见即所删。**
+ *
+ * 轮数和"有没有在跑"按名单里的会话在**整张图**上数，不只数这棵子树：同一条会话撤回掉的那段
+ * 在图上是旁边一条废弃支线，归档时一样跟着没，确认文案里得把它算进去。
+ *
+ * 小例子：A 1-2-3-4，B 从 A:2 岔出自有 3-4，C 从 B:3 岔出自有 4-5，D 从 B 的第 2 轮（继承自 A）岔出。
+ *   删 B:3 → 归档 B、C（4 轮）；D 挂在 A:2 底下，不动。删 A:2 → 不行，那是 A 的中间一轮。
+ * @param node - 被点的节点
+ * @returns `{sessions, turns, running}`：要归档的会话 id（点的那条排头）、它们合起来有几轮、
+ *   有没有正在跑的；删不了就是 `{blocked: 原因}`
+ */
+export function deletePlan(node) {
+	if (!node || node.entry === undefined) return { blocked: '树根空节点不是哪一轮，删不了；要清掉整棵树，逐条删它底下的分支' }
+	if (!isChainHead(node)) return { blocked: '只能删整条支线（从分支头那一轮起），日志删不了半截；要撤掉这几轮，用消息行上的撤回' }
+	const sessions = []
+	const seen = new Set()
+	const collect = (at) => {
+		if (!seen.has(at.session.id)) {
+			seen.add(at.session.id)
+			sessions.push(at.session.id)
+		}
+		for (const kid of at.children || []) collect(kid)
+	}
+	collect(node)
+	let top = node
+	while (top.parent !== undefined) top = top.parent
+	let turns = 0
+	let running = false
+	const count = (at) => {
+		if (at.entry !== undefined && seen.has(at.session.id)) {
+			turns += 1
+			if (at.session.running === true) running = true
+		}
+		for (const kid of at.children || []) count(kid)
+	}
+	count(top)
+	return { sessions, turns, running }
+}
+
+/**
+ * 这个「删除」现在为什么按不了。和 `forkBlockedWhy` 同一套："按不了就说清楚"。
+ * @param node - 被点的节点
+ * @returns 原因；能删就是空串
+ */
+export function deleteBlockedWhy(node) {
+	const plan = deletePlan(node)
+	return typeof plan.blocked === 'string' ? plan.blocked : ''
+}
+
+/**
+ * 删的名单里有正在看的那条会话时，归档前先切到哪儿去。
+ *
+ * 宿主的当前会话一归档就没了（主视图空掉），所以**先走再删**。先沿图往上找：父亲那一轮
+ * 所在的会话（分支头的父亲就是岔出来的那条）；一路到树根都在名单里（删的是树根底下最早的
+ * 那条，树根空节点挂的会话就是它）就从 `others` 里挑第一个不在名单里的。
+ * @param node - 被点的节点
+ * @param plan - `deletePlan` 的结果
+ * @param others - 备选会话 id（Rail 给的是可见会话列表）
+ * @returns 该先打开的会话 id；实在没有就 undefined（交给宿主自己处理）
+ */
+export function escapeFrom(node, plan, others) {
+	const gone = new Set((plan && plan.sessions) || [])
+	for (let at = node === undefined || node === null ? undefined : node.parent; at !== undefined; at = at.parent) {
+		if (at.session !== undefined && !gone.has(at.session.id)) return at.session.id
+	}
+	for (const id of others || []) if (!gone.has(id)) return id
+	return undefined
 }

@@ -39,8 +39,9 @@ const FIELDS = {
 	// 合法值由浏览器半的 FIELDS.accept 把关（和下面那几个 *Shape 一个道理）：
 	// 手改进来一个认不得的量法不该把树搞崩，退回默认就行。
 	visibleMode: Schema.string().default('depth').description('显示范围怎么量：depth = 按层高差，step = 按树上的无向步数'),
-	visibleDepth: Schema.natural().max(30).default(10).description('和当前这一轮差几层以内的节点才画出来；0 = 不省略'),
-	visibleRadius: Schema.natural().max(30).default(12).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
+	// ⚠️ 上限 / 默认值和浏览器半 const.js 的 DEPTH / RADIUS 必须一致（test-contract.mjs 逐项核对）
+	visibleDepth: Schema.natural().max(30).default(18).description('和当前这一轮差几层以内的节点才画出来；0 = 不省略'),
+	visibleRadius: Schema.natural().max(60).default(30).description('离当前这一轮多少步以内的节点才画出来；0 = 不省略'),
 	nodeScale: Schema.natural().min(50).max(250).default(100).description('节点、连线、列间距的整体缩放百分比'),
 	sidebarFold: Schema.boolean().default(true).description('左侧会话列表按对话树折叠：一棵树一行，分支收在树头底下'),
 	// ⚠️ 下面这几个 *Color 的 default 只是"存进配置文件时的样子"。

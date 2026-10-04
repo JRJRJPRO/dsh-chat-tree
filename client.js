@@ -36,8 +36,13 @@ window.__ModuleLoader__.load({
 		/** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
 		const SETTINGS_NS = 'dsh-chat-tree'
 
-		/** 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
-		const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
+		/**
+		 * 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [10..60, 0]。
+		 *
+		 * ⚠️ RADIUS / DEPTH 的 min / max / fallback 和 host 的 schema（src/host/settings.js）必须一致，
+		 *    test-contract.mjs 逐项核对。改这里就得改那边。
+		 */
+		const RADIUS = { min: 10, max: 60, fallback: 30, off: 0 }
 
 		/**
 		 * 「按层数」那一档的层高差。0 = 不省略；滑杆位置就是 [1..30, 0]。
@@ -46,7 +51,7 @@ window.__ModuleLoader__.load({
 		 * 于是同一层的两个节点可能差 20 步，看着明明并排却一个在一个不在 —— 观感很怪。
 		 * 按层数量的话，一横排要么整排都在，要么整排都不在，眼睛好受得多。
 		 */
-		const DEPTH = { min: 1, max: 30, fallback: 10, off: 0 }
+		const DEPTH = { min: 1, max: 30, fallback: 18, off: 0 }
 
 		/** 节点缩放，百分比。 */
 		const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }
@@ -500,10 +505,18 @@ window.__ModuleLoader__.load({
 		 * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
 		 * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
 		 *
-		 * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root`，见 tree.js），
+		 * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root:<树根会话 id>`，见 tree.js），
 		 * 所以改名和收藏天然对齐到同一个点上。
 		 */
 
+
+		/**
+		 * 老版本的树根 key：所有树共用一个裸 `root`，给一棵树的空节点起的名字会出现在每棵树上。
+		 * 读的时候直接扔掉，**不迁移** —— 那条当初是给哪棵树起的已经无从得知；宿主 labels.json 里留着无害。
+		 * @param key - 节点 key
+		 * @returns 是不是该扔掉的老条目
+		 */
+		const isLegacyRoot = (key) => key === ROOT_KEY
 
 		const LS_KEY = 'dsh-chat-tree.labels'
 
@@ -559,14 +572,18 @@ window.__ModuleLoader__.load({
 		/** @returns {Record<string,string>} */
 		function readLabels() {
 			try {
-				return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}
+				const raw = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}
+				if (typeof raw !== 'object' || Array.isArray(raw)) return {}
+				const out = {}
+				for (const [key, value] of Object.entries(raw)) if (!isLegacyRoot(key)) out[key] = value
+				return out
 			} catch {
 				return {}
 			}
 		}
 
 		/**
-		 * @param key - `<sessionId>:<turn>` 或 `root`
+		 * @param key - `<sessionId>:<turn>` 或 `root:<树根会话 id>`
 		 * @param value - 名字；空串 = 删除，回到默认
 		 */
 		function writeLabel(key, value) {
@@ -590,7 +607,7 @@ window.__ModuleLoader__.load({
 		function readFavorites() {
 			try {
 				const raw = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]')
-				return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && item.length > 0) : [])
+				return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && item.length > 0 && !isLegacyRoot(item)) : [])
 			} catch {
 				return new Set()
 			}
@@ -645,7 +662,7 @@ window.__ModuleLoader__.load({
 				if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
 				const out = {}
 				for (const [key, value] of Object.entries(raw)) {
-					if (typeof value === 'string' && value.length > 0) out[key] = value
+					if (typeof value === 'string' && value.length > 0 && !isLegacyRoot(key)) out[key] = value
 				}
 				return out
 			} catch {
@@ -711,7 +728,7 @@ window.__ModuleLoader__.load({
 				if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
 				const out = {}
 				for (const [key, value] of Object.entries(raw)) {
-					if (isColor(value)) out[key] = value.toLowerCase()
+					if (isColor(value) && !isLegacyRoot(key)) out[key] = value.toLowerCase()
 				}
 				return out
 			} catch {
@@ -762,12 +779,33 @@ window.__ModuleLoader__.load({
 		// ===== 节点 key：全插件唯一的"一个节点"的写法 =====
 		//
 		// 一个节点 = (会话, 该会话自己的第几轮)，写成 `<sessionId>:<turn>`；树根那个空节点
-		// 没有轮次，固定叫 `root`。localStorage 的改名表、shape.json 的 detached 清单、
-		// buildGraph 的 nodeOf 索引用的都是它，所以**只准从这两个函数里出**，
-		// 别再有第四处手拼 `${id}:${turn}`。
+		// 没有轮次，写成 `root:<树根会话 id>`。localStorage 的改名表、shape.json 的 detached 清单、
+		// buildGraph 的 nodeOf 索引用的都是它，所以**只准从这几个函数里出**，
+		// 别再有别处手拼 `${id}:${turn}`。
+		//
+		// ⚠️ 树根 key 曾经是常量 `root`，所有树共用 —— 给一棵树的空节点改名 / 收藏，
+		//    别的树的空节点全跟着变（John 2026-10-04 报的）。现在按树区分，`ROOT_KEY` 只剩前缀的用处。
 
-		/** 树根那个空节点的 key。 */
+		/** 树根 key 的前缀。**不是**任何一个节点的 key —— 判"是不是树根"用 `isRootKey`。 */
 		const ROOT_KEY = 'root'
+
+		/**
+		 * 某棵树的树根空节点 key。
+		 * @param sessionId - 这棵树的树根会话 id（合并过的树用被并进去那棵的，即 `treeOf` 给的编号）
+		 * @returns `root:<sessionId>`
+		 */
+		function rootKeyOf(sessionId) {
+			return `${ROOT_KEY}:${sessionId}`
+		}
+
+		/**
+		 * 是不是树根空节点的 key。
+		 * @param key - 节点 key
+		 * @returns 是 `rootKeyOf` 造出来的就 true；老数据里的裸 `root` 也算（读标注时靠它扔掉）
+		 */
+		function isRootKey(key) {
+			return typeof key === 'string' && (key === ROOT_KEY || key.startsWith(`${ROOT_KEY}:`))
+		}
 
 		// ===== 会话列表：两代宿主的差异在这儿抹平 =====
 		//
@@ -1192,6 +1230,102 @@ window.__ModuleLoader__.load({
 			return node.entry !== undefined && node.active === true && node.entry.turn === activeTurn
 		}
 
+		// ===== 删除 = 归档整条支线 =====
+		//
+		// dsh 的会话日志**只追加**，没有"删一轮"的原语；宿主给的是**归档**（可逆，归档的会话树上已经不画）。
+		// 所以"删一个节点"定义成：把它所在的整条支线 —— 它自己的会话，加上图上挂在它底下的全部子孙会话 ——
+		// 一起归档。能删的只有**支线的头一个节点**：删它就是删整条会话；会话中间 / 末尾的一轮删不了半截，
+		// 那是撤回的活（消息行上有）。整张表见 DESIGN.md「删除 = 归档整条支线」。
+
+		/**
+		 * 这个节点是不是它所在会话在图上的头一个节点。
+		 *
+		 * 判的是**图上的父亲**：父亲是树根空节点，或者属于别的会话，就是头。同一条会话的节点
+		 * 串成一条链（撤回的那段除外），所以只有链头满足。和 `isBranchHead`（按大纲里第一个自有轮次判）
+		 * 几乎总是一致，差别在"头一轮答到一半被撤回、节点没画"那种会话：大纲上的头一轮没有节点，
+		 * 按 isBranchHead 这条会话就永远删不了，按图上的父亲仍然删得了。
+		 * @param node - 节点
+		 * @returns 是不是链头
+		 */
+		function isChainHead(node) {
+			const parent = node.parent
+			return parent === undefined || parent.entry === undefined || parent.session.id !== node.session.id
+		}
+
+		/**
+		 * 在某个节点上按「删除」会归档哪些会话。
+		 *
+		 * 子孙按**图上**算（`node.children` 一路往下），不按 `parentId`：从继承段岔出去的分支在图上
+		 * 挂在祖先那一轮底下、和这条支线并排，看着就不在它底下，自然不该跟着没；被拆到别的树上的子树
+		 * 已经不在这张图里，同理。**所见即所删。**
+		 *
+		 * 轮数和"有没有在跑"按名单里的会话在**整张图**上数，不只数这棵子树：同一条会话撤回掉的那段
+		 * 在图上是旁边一条废弃支线，归档时一样跟着没，确认文案里得把它算进去。
+		 *
+		 * 小例子：A 1-2-3-4，B 从 A:2 岔出自有 3-4，C 从 B:3 岔出自有 4-5，D 从 B 的第 2 轮（继承自 A）岔出。
+		 *   删 B:3 → 归档 B、C（4 轮）；D 挂在 A:2 底下，不动。删 A:2 → 不行，那是 A 的中间一轮。
+		 * @param node - 被点的节点
+		 * @returns `{sessions, turns, running}`：要归档的会话 id（点的那条排头）、它们合起来有几轮、
+		 *   有没有正在跑的；删不了就是 `{blocked: 原因}`
+		 */
+		function deletePlan(node) {
+			if (!node || node.entry === undefined) return { blocked: '树根空节点不是哪一轮，删不了；要清掉整棵树，逐条删它底下的分支' }
+			if (!isChainHead(node)) return { blocked: '只能删整条支线（从分支头那一轮起），日志删不了半截；要撤掉这几轮，用消息行上的撤回' }
+			const sessions = []
+			const seen = new Set()
+			const collect = (at) => {
+				if (!seen.has(at.session.id)) {
+					seen.add(at.session.id)
+					sessions.push(at.session.id)
+				}
+				for (const kid of at.children || []) collect(kid)
+			}
+			collect(node)
+			let top = node
+			while (top.parent !== undefined) top = top.parent
+			let turns = 0
+			let running = false
+			const count = (at) => {
+				if (at.entry !== undefined && seen.has(at.session.id)) {
+					turns += 1
+					if (at.session.running === true) running = true
+				}
+				for (const kid of at.children || []) count(kid)
+			}
+			count(top)
+			return { sessions, turns, running }
+		}
+
+		/**
+		 * 这个「删除」现在为什么按不了。和 `forkBlockedWhy` 同一套："按不了就说清楚"。
+		 * @param node - 被点的节点
+		 * @returns 原因；能删就是空串
+		 */
+		function deleteBlockedWhy(node) {
+			const plan = deletePlan(node)
+			return typeof plan.blocked === 'string' ? plan.blocked : ''
+		}
+
+		/**
+		 * 删的名单里有正在看的那条会话时，归档前先切到哪儿去。
+		 *
+		 * 宿主的当前会话一归档就没了（主视图空掉），所以**先走再删**。先沿图往上找：父亲那一轮
+		 * 所在的会话（分支头的父亲就是岔出来的那条）；一路到树根都在名单里（删的是树根底下最早的
+		 * 那条，树根空节点挂的会话就是它）就从 `others` 里挑第一个不在名单里的。
+		 * @param node - 被点的节点
+		 * @param plan - `deletePlan` 的结果
+		 * @param others - 备选会话 id（Rail 给的是可见会话列表）
+		 * @returns 该先打开的会话 id；实在没有就 undefined（交给宿主自己处理）
+		 */
+		function escapeFrom(node, plan, others) {
+			const gone = new Set((plan && plan.sessions) || [])
+			for (let at = node === undefined || node === null ? undefined : node.parent; at !== undefined; at = at.parent) {
+				if (at.session !== undefined && !gone.has(at.session.id)) return at.session.id
+			}
+			for (const id of others || []) if (!gone.has(id)) return id
+			return undefined
+		}
+
 		// ===== fold.js =================================================
 
 		/**
@@ -1398,9 +1532,11 @@ window.__ModuleLoader__.load({
 		 * @param currentId - 当前会话
 		 * @param cuts - 被"分离"的节点 key 集合（`cutSet` 的结果）
 		 * @param adopted - 认领表 `{会话 id: 剪点 key}`：在拆出去那棵树的前缀上开出来的会话归哪棵
-		 * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是 `root`
+		 * @param tree - 这棵树的编号（`treeOf` 的结果，合并过的树就是被并进去那棵的树根会话 id）；
+		 *   不给就取最早建的那条无父会话
+		 * @returns {nodes, maxDepth, maxColumn, owner}；`owner` 是现在站着的这棵树的剪点 key，没拆过就是树根 key
 		 */
-		function buildGraph(sessions, currentId, cuts, adopted) {
+		function buildGraph(sessions, currentId, cuts, adopted, tree) {
 			const byId = indexOf(sessions)
 			const ownTurns = (session) => (session.turns || []).filter((entry) => !entry.inherited)
 
@@ -1415,7 +1551,16 @@ window.__ModuleLoader__.load({
 			}
 			for (const session of sessions) emit(session)
 
-			const root = { key: ROOT_KEY, kind: 'empty', session: ordered[0], entry: undefined, parent: undefined, children: [], depth: 0 }
+			// 树根空节点的 key 按树区分（改名 / 收藏都按 key 存，共用一个 key 就是一改全改）。
+			// 两条不变式：同一棵树站在哪条分支上看都一样；两棵不同的树不一样。
+			// 所以认的是"这棵树是谁"，不是 ordered[0] —— 后者跟着传进来的顺序走；
+			// 而且合并后要认**被并进去**的那棵（groupOf 的目标），否则把一棵更早的树并进来，
+			// 原来给空节点起的名字就丢了。groupOf 只有调用方有，所以由它传 `tree`；
+			// 没传就退到"最早建的那条无父会话"，单棵树上两者一致。
+			const heads = ordered.filter((session) => session.parentId === undefined || !byId.has(session.parentId))
+			const eldest = heads.reduce((best, session) => (best === undefined || (session.createdAt || 0) < (best.createdAt || 0) ? session : best), undefined)
+			const treeId = typeof tree === 'string' && tree.length > 0 ? tree : eldest && eldest.id
+			const root = { key: rootKeyOf(treeId), kind: 'empty', session: ordered[0], entry: undefined, parent: undefined, children: [], depth: 0 }
 			let nodes = [root]
 			const nodeOf = new Map()
 			const attachOf = new Map() // 会话 → 它挂在哪个节点下
@@ -1527,7 +1672,7 @@ window.__ModuleLoader__.load({
 				nodes = nodes.filter((node) => keep.has(node))
 				for (const node of nodes) node.children = node.children.filter((kid) => keep.has(kid))
 			}
-			// 每个节点归哪棵（剪点 key；没拆过就是 root）。前缀节点的 `tree` 和整张图的 `owner`
+			// 每个节点归哪棵（剪点 key；没拆过就是树根 key）。前缀节点的 `tree` 和整张图的 `owner`
 			// 不一样 —— Rail 靠这个判断"在前缀上开的分支要不要认领"。
 			for (const node of nodes) node.tree = (ownerOf.get(node) || root).key
 
@@ -2890,8 +3035,11 @@ window.__ModuleLoader__.load({
 		 * @returns 内联样式
 		 */
 		function glyphBoxStyle(shape, size, skin, stroke, dashed) {
+			// `shift`：框在它那一行分到的地盘里不一定居中（贴着导轨右缘、或者被邻居挤了一边），
+			// Rail 算好往哪边挪多少（geometry.js 的 boxShift）塞在 spec 上。没有就是居中。
+			const shift = Number.isFinite(shape.shift) ? shape.shift : 0
 			return {
-				position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+				position: 'absolute', left: shift === 0 ? '50%' : `calc(50% + ${shift}px)`, top: '50%', transform: 'translate(-50%, -50%)',
 				width: `${drawnWidth(shape, size)}px`, height: `${shapeHeight(shape, size)}px`,
 				display: 'flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box',
 				borderWidth: `${stroke}px`, borderStyle: dashed === true ? 'dashed' : 'solid', borderColor: skin.ink,
@@ -3046,6 +3194,97 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 同一行上每个节点能摊多宽：自定义字的框向**这一行**的空位借地方（BACKLOG T2）。
+		 *
+		 * 【为什么】老规则按列距一刀切：列距一压，每个字框都只剩"列距 − 间隙"那么宽，
+		 * 2~4 个字的名字全画成「…」。可同一行上往往只有一两格有东西 —— 左右的空位白空着。
+		 * 这里把一行当成一条线段来分：每个节点圈一块地盘 `[x − left, x + right]`，
+		 * 相邻两块之间留 `gap`，字框就画在自己的地盘里（不一定居中，见 `boxShift`）。
+		 *
+		 * 规矩：
+		 *   · 每块地盘至少盖住自己的**核心** `[x − coreL, x + coreR]`。圆点 / 星星的核心就是
+		 *     它自己（半个画宽）；字框的核心是"线从框的平边进出、不戳在圆角上"那么宽。
+		 *     核心可以不对称：一个节点自己的岔路拐角（横段拐下去的那一列）也算进它的核心 ——
+		 *     自己的字框可以盖住自己的拐角（线从框底下出去），邻居借不过来。
+		 *   · 两边都要不够时**公平分**（按宽度对半，谁要的少谁先满足）；一边有富余就让给另一边。
+		 *     来回扫几遍，富余会顺着一行传过去 —— 夹在中间的那个不会被两头挤成「…」。
+		 *   · 两边都够时分界线尽量落在"两个框都居中"的位置，空间够的场面一个像素都不挪。
+		 *   · 连线**不算**占位（别人的拐角除外，见上）。
+		 *
+		 * 小例子（三列全是字、每个想要 44px、导轨 [0, 100]、间隙 5、列在 x = 24.5 / 50 / 75.5）：
+		 *   一刀切的老规则：每个框 ≤ 列距 25.5 − 5 = 20.5px → 只剩「…」；
+		 *   这里：先按"居中"分出 34.75 / 20.5 / 34.75，再来回扫：两头分给中间，收敛到约 30 / 30 / 30。
+		 *
+		 * @param items - 这一行的节点（任意顺序），形如 `{x, coreL, coreR, want}`；
+		 *                `want` = 它最多想要多宽（字框 = 全宽，圆点 = 自己的宽）
+		 * @param lo - 左边最远借到哪（导轨坐标，可以是负数 = 借到导轨外的空当里）
+		 * @param hi - 右边最远借到哪
+		 * @param gap - 相邻两块地盘之间留多少
+		 * @returns 和 `items` 同序的 `{left, right}`：地盘从 x 往左 / 往右各多远（恒非负）
+		 */
+		function rowSlots(items, lo, hi, gap) {
+			const g = Number.isFinite(gap) ? gap : 0
+			const num = (value) => (Number.isFinite(value) ? value : 0)
+			const order = items.map((item, at) => ({ item, at })).sort((a, b) => a.item.x - b.item.x)
+			const n = order.length
+			const x = (k) => order[k].item.x
+			const want = (k) => num(order[k].item.want)
+			const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
+			// 第 k 条分界线（夹在第 k 和第 k+1 个之间）能落的范围：两边的核心都得留住
+			const lowOf = (k) => x(k) + num(order[k].item.coreR) + g / 2
+			const highOf = (k) => x(k + 1) - num(order[k + 1].item.coreL) - g / 2
+			const cut = []
+			const stuck = []
+			for (let k = 0; k + 1 < n; k += 1) {
+				// 两个核心已经挤在一起了（列距压到底）：分界线钉在中间，谁也别借
+				stuck[k] = lowOf(k) > highOf(k)
+				// 起点：两个框都居中时，它们外缘的中点
+				const natural = (x(k) + want(k) / 2 + x(k + 1) - want(k + 1) / 2) / 2
+				cut[k] = stuck[k] ? (lowOf(k) + highOf(k)) / 2 : clamp(natural, lowOf(k), highOf(k))
+			}
+			const from = (k) => (k === 0 ? lo : cut[k - 1] + g / 2)
+			const to = (k) => (k === n - 1 ? hi : cut[k] - g / 2)
+			// 来回扫：每次只动一条分界线，看它两边那两块地盘该怎么分。
+			// 扫的遍数和节点数同阶就够让富余从一头传到另一头。
+			for (let sweep = 0; sweep < 2 * n + 2; sweep += 1) {
+				for (let step = 0; step + 1 < n; step += 1) {
+					const k = sweep % 2 === 0 ? step : n - 2 - step
+					if (stuck[k]) continue
+					const a = from(k)
+					const b = to(k + 1)
+					const total = b - a - g
+					let next
+					// 两个都够：分界线别动，除非动了才能两个都装下
+					if (want(k) + want(k + 1) <= total) next = clamp(cut[k], a + want(k) + g / 2, b - want(k + 1) - g / 2)
+					// 不够：对半分，谁要的少谁先满足、剩下的归另一个
+					else next = a + Math.min(want(k), Math.max(total - want(k + 1), total / 2)) + g / 2
+					cut[k] = clamp(next, lowOf(k), highOf(k))
+				}
+			}
+			const out = new Array(n)
+			for (let k = 0; k < n; k += 1) out[order[k].at] = { left: Math.max(0, x(k) - from(k)), right: Math.max(0, to(k) - x(k)) }
+			return out
+		}
+
+		/**
+		 * 一个宽 `width` 的框在地盘 `[x − left, x + right]` 里该往哪边挪多少（正 = 往右）。
+		 *
+		 * 能居中就居中（返回 0）；居中会出界就贴着那一边，往另一边挪。
+		 * 比地盘还宽（只在压到底时发生）就居中在地盘里。
+		 *
+		 * 小例子（框 44、地盘往左 60、往右 12 —— 第 0 列贴着导轨右缘）：
+		 *   居中的话右边要 22 > 12 → 往左挪 10，框 = [x − 32, x + 12]。
+		 * @param width - 框宽
+		 * @param left - 地盘从 x 往左多远
+		 * @param right - 地盘从 x 往右多远
+		 * @returns 框中心相对 x 的偏移
+		 */
+		function boxShift(width, left, right) {
+			if (width >= left + right) return (right - left) / 2
+			return Math.min(Math.max(0, width / 2 - left), right - width / 2)
+		}
+
+		/**
 		 * 导轨离视口右缘多远（CSS 的 `right`，**值越大越靠左**）。
 		 *
 		 * **就是贴着聊天区右缘**，一个像素都不挪。
@@ -3175,14 +3414,19 @@ window.__ModuleLoader__.load({
 		 * @param yTo - 子节点圆心 y
 		 * @param gapFrom - 父这端让开多少
 		 * @param gapTo - 子这端让开多少
+		 * @param sideFrom - 父这端**横向**让开多少（朝孩子那一侧）。缺省 = `gapFrom`。
+		 *                   父节点是个横着摊开的字框时，横段得从框边起，不然线从字中间穿过去；
+		 *                   框一直盖到孩子那一列的话横段整个不画，竖段从框的下沿起。
 		 * @returns 若干段 `{tag, left, top, width, height}`，长度为 0 的段不返回
 		 */
-		function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo) {
+		function segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo, sideFrom) {
 			const out = []
 			const half = 0.5 // 线宽的一半：把线的中心对齐到节点中心
-			const bent = xTo !== xFrom
+			const side = Number.isFinite(sideFrom) ? sideFrom : gapFrom
+			// 孩子那一列被父节点的框盖住了：当成"不拐弯"，竖段从框的下沿直接下去
+			const bent = xTo !== xFrom && side < Math.abs(xTo - xFrom)
 			if (bent) {
-				const near = xFrom + (xTo > xFrom ? gapFrom : -gapFrom)
+				const near = xFrom + (xTo > xFrom ? side : -side)
 				// 横段往折角那头多伸半个线宽，好和竖段的笔画严丝合缝（否则拐角缺个小口）
 				const width = Math.abs(near - xTo)
 				if (width > 0) out.push({ tag: 'hz', left: Math.min(xTo, near) - half, top: yFrom - half, width: width + 2 * half, height: 1 })
@@ -4673,7 +4917,7 @@ window.__ModuleLoader__.load({
 		 * 卡片和 store 都是按表渲染的，不用改。
 		 */
 
-		/** 「按步数」的档位：5..30，最后一格是"不省略"。 */
+		/** 「按步数」的档位：10..60，最后一格是"不省略"。 */
 		const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
 
 		/** 「按层数」的档位：1..30，最后一格是"不省略"。 */
@@ -4950,7 +5194,7 @@ window.__ModuleLoader__.load({
 		 *
 		 * 卡片有**两档**：
 		 *   · 收起（鼠标停在点上就是这档）—— 一行：信息 + ＋ + ☆，**就这两个动作**。
-		 *   · 展开（在卡片上双击）—— 第一行左边多出改树形那三颗（⇤ / ⇥ / ⊕），
+		 *   · 展开（在卡片上双击）—— 第一行左边多出改树形那三颗（⇤ / ⇥ / ⊕），最右多出红色的删除（✕），
 		 *     底下多出名字框和收藏图标那排。
 		 *
 		 * ⚠️ 全部动作按钮都在**第一行**，包括只有展开才露面的那三颗。
@@ -5060,6 +5304,26 @@ window.__ModuleLoader__.load({
 
 		/** 详情卡最外层那个 div 身上的记号。焦点守卫靠它判断"焦点还在不在卡片里"。 */
 		const CARD_MARK = 'data-dsh-chat-tree-card'
+
+		/**
+		 * 「删除」那颗和确认行里那个「删除」字的颜色。宿主的 CSS 变量里没找到一个稳定的"危险色"，
+		 * 所以写死 —— 这个红在深底和白底上都压得住（和 FAV_COLORS 里那个是同一个）。
+		 */
+		const DANGER = '#f85149'
+
+		/** 删除按钮的 title。写明是归档、可恢复：归档是宿主的"软删"，不说清楚用户会以为是硬删。 */
+		const DELETE_TITLE = '删除这条支线：归档它和底下的全部分支（可在宿主的归档列表里恢复）'
+
+		/**
+		 * 确认行上问的那句话。抽成纯函数好测：N 条会话、M 轮、有没有在跑的，三样都得对。
+		 * @param plan - `deletePlan` 的结果（能删的那种）
+		 * @returns 一句话
+		 */
+		function deleteAsk(plan) {
+			const n = plan && Array.isArray(plan.sessions) ? plan.sessions.length : 0
+			const turns = plan && Number.isFinite(plan.turns) ? plan.turns : 0
+			return `归档这 ${n} 条会话（${turns} 轮）？${plan && plan.running === true ? '其中有正在运行的，会停掉正在跑的回答。' : ''}删掉的进宿主的归档列表，可以恢复。`
+		}
 
 		/**
 		 * 六位色值输入框。取色盘旁边那个能直接打 `#FFD43B` 的小框。
@@ -5501,6 +5765,8 @@ window.__ModuleLoader__.load({
 			const [expanded, setExpanded] = react.useState(false)
 			const [draft, setDraft] = react.useState(null)
 			const [merging, setMerging] = react.useState(false)
+			// 删除按了第一下、正在等第二下。是"对**这个**节点"的第一下：换节点、收起卡片都要清。
+			const [confirming, setConfirming] = react.useState(false)
 			// 名字框里有没有光标。和 `dirty` 一起决定"这张卡现在不许关、也不许换点"。
 			const [typing, setTyping] = react.useState(false)
 			// 灰掉的按钮、小牌子上那些理由全写在 `title` 里，而 **title 在触摸设备上
@@ -5511,14 +5777,20 @@ window.__ModuleLoader__.load({
 			react.useEffect(() => {
 				setExpanded(false)
 				setMerging(false)
+				setConfirming(false)
 				setDraft(null)
 				setNote(null)
 				setTyping(false)
 			}, [node])
+			// 卡片一收起（双击、点外面、保存），还没按第二下的删除就作废
+			react.useEffect(() => {
+				if (!expanded) setConfirming(false)
+			}, [expanded])
 
 			const shown = node !== null
 			const isEmpty = shown && node.kind === 'empty'
-			const key = !shown ? '' : isEmpty ? 'root' : node.key
+			// 节点 key 只从 node 上拿（树根那个的 key 由 graph.js 用 ROOT_KEY 造），这里不许再手写字面量
+			const key = !shown ? '' : node.key
 			const fallback = !shown ? '' : isEmpty ? node.session.title || '未命名对话' : node.entry.prompt || `第 ${node.entry.turn} 轮`
 			const text = labels[key] || fallback
 			const dirty = isDirty(draft, text)
@@ -5534,6 +5806,25 @@ window.__ModuleLoader__.load({
 				if (typeof onLock === 'function') onLock(busy)
 			}, [busy, onLock])
 			react.useEffect(() => () => { if (typeof onLock === 'function') onLock(false) }, [onLock])
+
+			// 展开着时点卡片外面任何地方 → 收回收起档。只靠双击收起太难找；
+			// 鼠标设备也没有触摸那条"戳到导轨外面关卡片"（rail.js 的 away）。
+			// 捕获阶段挂：点的多半是聊天区，冒泡不到导轨。
+			// 改名中（busy）不收 —— 和 onMouseLeave 同一条规矩，否则草稿跟着名字框一起没了。
+			// ⚠️ 别和 useFocusGuard 的 pointerdown 合并：那个只记时刻，两件事。
+			const self = react.useRef(null)
+			react.useEffect(() => {
+				if (!expanded || busy || typeof document === 'undefined') return undefined
+				const away = (event) => {
+					const el = self.current
+					if (el !== null && el !== undefined && el.contains(event.target)) return
+					setExpanded(false)
+					setMerging(false)
+					setNote(null)
+				}
+				document.addEventListener('pointerdown', away, true)
+				return () => document.removeEventListener('pointerdown', away, true)
+			}, [expanded, busy])
 
 			const commit = (value) => {
 				props.onRename(key, value === null || value === undefined ? '' : value.trim())
@@ -5560,17 +5851,20 @@ window.__ModuleLoader__.load({
 
 			// 保存 / 不保存那两颗。写成字而不是符号：这是**会丢东西**的抉择，
 			// 得让人一眼读懂，不能让他去猜 ✓ 和 ✗ 各是什么意思。
-			const word = (label, title, action, accent) =>
-				h('span', {
+			// `accent`：true = 强调色；给一个色值就用那个色（删除那颗是红的）。
+			const word = (label, title, action, accent) => {
+				const ink = accent === true ? C.accent : typeof accent === 'string' ? accent : C.muted
+				return h('span', {
 					key: label, title,
 					style: Object.assign({
 						flex: '0 0 auto', cursor: 'pointer', fontSize: '11.5px', lineHeight: '18px',
 						padding: '0 8px', borderRadius: '4px',
-						borderWidth: '1px', borderStyle: 'solid', borderColor: accent ? C.accent : C.line,
-						color: accent ? C.accent : C.muted,
+						borderWidth: '1px', borderStyle: 'solid', borderColor: accent ? ink : C.line,
+						color: ink,
 					}, TAPPABLE),
 					onClick: (event) => { event.stopPropagation(); action() },
 				}, label)
+			}
 
 			// 「撤回」「无上下文」这类小牌子共用一套样子
 			const tag = (slot, label, why) =>
@@ -5661,6 +5955,17 @@ window.__ModuleLoader__.load({
 						() => props.onFavorite(key, !starred),
 						starred ? props.starInk : C.muted,
 					),
+				// 删除：只在展开档，排最右、红色。能不能删、删哪些由 tree.js 的 deletePlan 定
+				// （只有支线头一个节点能删，删的是整条支线 = 归档）。**第一下不删**，摊开下面那行确认，
+				// 第二下才叫 onDelete —— 这是全卡片唯一会让东西从树上消失的动作。
+				// 宿主没有归档服务（canDelete 为 false）就整颗不画：画一颗永远灰的只会招来"为什么按不了"。
+				!expanded || props.canDelete !== true
+					? null
+					: dirty
+						? blocked('✕', '先保存或放弃这次改名')
+						: deleteBlockedWhy(node) !== ''
+							? blocked('✕', deleteBlockedWhy(node))
+							: button('✕', DELETE_TITLE, () => setConfirming(!confirming), DANGER),
 			])
 
 			// 收藏图标那一排。**只在收藏过的点上露面** —— 没收藏的话它改的是个看不见的东西。
@@ -5712,12 +6017,30 @@ window.__ModuleLoader__.load({
 				iconRow,
 			]
 
+			// ===== 删除的确认行 =====
+			// 只在"展开 + 按过第一下 + 没有草稿"时露面，摊在卡片最下沿。问的话说清楚三样：
+			// 归档几条会话、几轮、有没有在跑的；再说一遍是归档、能恢复。两颗字按钮：取消 / 删除（红）。
+			const plan = shown && expanded && confirming && !dirty && props.canDelete === true ? deletePlan(node) : undefined
+			const confirmLine = plan === undefined || plan.blocked !== undefined ? null : h('div', {
+				key: 'confirm',
+				style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: `${ROOM}px`, width: '100%', marginTop: `${ROOM}px` },
+			}, [
+				h('span', { key: 'ask', style: { flex: '1 1 100%', fontSize: '11.5px', lineHeight: 1.5, color: C.text } }, deleteAsk(plan)),
+				word('取消', '不删了', () => setConfirming(false)),
+				word('删除', '确认归档这条支线（可在宿主的归档列表里恢复）', () => {
+					setConfirming(false)
+					setExpanded(false)
+					if (typeof props.onDelete === 'function') props.onDelete(node, plan)
+				}, DANGER),
+			])
+
 			return h(
 				'div',
 				{
 					// 焦点守卫靠这个记号判断"焦点还落在卡片里（点了卡片上别的东西），
 					// 还是被外人抢走了"。见 useFocusGuard。
 					[CARD_MARK]: '1',
+					ref: self,
 					style: {
 						position: 'absolute', right: `${anchor}px`, top: `${y}px`,
 						transform: `translateY(-50%) translateX(${shown ? 0 : 8}px)`,
@@ -5751,6 +6074,7 @@ window.__ModuleLoader__.load({
 				head,
 				noteLine,
 				body,
+				confirmLine,
 				!shown || !expanded || !merging || dirty ? null : h(MergeList, {
 					key: 'merge',
 					targets: props.targets || [],
@@ -6434,10 +6758,15 @@ window.__ModuleLoader__.load({
 			//    顶着的话错误被整棵旧树盖住，看起来像树卡住了，其实是 host 那边一直在报错。
 			// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
 			// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
-			const marked = picked.map((item) => Object.assign({}, item, { completed: (listState.byId[item.id] || {}).completed === true }))
+			// 「在跑」host 的大纲里有一份（collect.js），但 0.2 宿主的实时状态在会话列表那张表上（withStatus 并进去的）——
+			// 两边取或，开岔路要不要拦、删除要不要带 stopActivity 看的都是它。
+			const marked = picked.map((item) => Object.assign({}, item, {
+				completed: (listState.byId[item.id] || {}).completed === true,
+				running: item.running === true || (listState.byId[item.id] || {}).running === true,
+			}))
 			let graph
 			try {
-				graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted) : undefined
+				graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted, treeOfSession(picked, shape.groupOf, current)) : undefined
 			} catch (error) {
 				warn('建图失败，先拿上一棵顶着', error)
 			}
@@ -6501,10 +6830,12 @@ window.__ModuleLoader__.load({
 				}
 				return most
 			}
-			const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, railRoom(box))
+			const room = railRoom(box)
+			const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, room)
 			// 列距被压过之后（横向放不下，见 railLayout 的 `room`），带框的字**按压完的列距重截**：
 			// 框不许比列距宽，字装不下就少画几个加省略号。不这么做的话相邻两列的字框会叠在一起
 			// （youli42 报的 issue #1）。布局那边（widestOf）仍按全宽算，空间够了列距自然会撑回去。
+			// ⚠️ 这只是**不在这一屏上的字框**的退路；画出来的字框按下面 slotOf 给的那一行的空位截（T2）。
 			const spanAt = (size) => glyphSpanFor(lane, z.laneGap, size)
 			// 命中区宽度。列被宽形状撑开时得跟着撑，否则两列之间会裂出一条点不中的缝。
 			// 反过来列距比 Z.hit 窄时**不收窄** —— 命中区互相重叠是故意的（点太小，靠 nodeAt 取最近的那个）。
@@ -6523,8 +6854,8 @@ window.__ModuleLoader__.load({
 			//    每层各带一个 opacity，叠出来就比别处黑，看着就是"横线一会粗一会细还上下起伏"
 			//    （John 报的）。竖段各在各的列上，不会撞，直接画。
 			const runs = []
-			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha, active) => {
-				const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo)
+			const line = (key, xFrom, xTo, yFrom, yTo, color, gapFrom, gapTo, alpha, active, sideFrom) => {
+				const cut = segments(xFrom, xTo, yFrom, yTo, gapFrom, gapTo, sideFrom)
 				for (const part of cut) {
 					const piece = Object.assign({ key, color, alpha, active }, part)
 					if (part.tag === 'hz') runs.push(piece)
@@ -6540,14 +6871,75 @@ window.__ModuleLoader__.load({
 			// 极端压缩：列距压到比最窄的框 / 星星还窄时（railLayout 的下限只管圆点分得开），把整个
 			// 形状**等比缩小**到塞得进列距，最小缩到一个普通圆点那么大 —— 这时它和圆点一样只剩
 			// 两像素缝，但不再叠上隔壁列（issue #1 的极端情形）。没压时恒为 1，见 shrinkToLane。
+			/** 这个点按什么形状画（`span` 只影响自定义字截到多宽）。 */
+			const shapeAt = (node, span) => (favorites.has(node.key) ? favShape(favIcons[node.key], span) : shapeOf(kindOf(node), node.active, theme, span))
+			/** 这一帧画多大（鱼眼缩过的直径）。 */
+			const sizeOf = (node) => dotSizeOf(kindOf(node), dotSize, eyeOf(node).scale)
+
+			// ===== 自定义字按"这一行"的空位摊开（BACKLOG T2，规则见 geometry.js 的 rowSlots）=====
+			// 老规则按列距一刀切：列距一压，每个字框都只剩"列距 − 间隙"，2~4 个字全成「…」。
+			// 这里把每一行当一条线段分给这一行上的节点：字框能向空着的格子借地方，
+			// 但不压到同一行的邻居（圆点 / 星星原样留住自己那块）、不压到别人的岔路拐角。
+			// 左边最远借到 railRoom 的边上（树没占满那条空当时，最左那列能往导轨外面借一点）。
+			const slotOf = new Map()
+			{
+				const rows = new Map()
+				const itemOf = new Map()
+				for (const node of graph.nodes) {
+					if (!view.shown.has(node)) continue
+					const size = sizeOf(node)
+					const base = shapeAt(node)
+					const item = base.glyph !== undefined
+						// 字框的核心：线从框的平边进出、不戳在圆角上
+						? { glyph: true, x: xOf(node.column), core: shapeHeight(base, size) * GLYPH_RADIUS + 1, want: drawnWidth(base, size) }
+						: { glyph: false, x: xOf(node.column), core: (drawnWidth(base, size) * shrinkToLane(drawnWidth(base, size), lane, z.laneGap, dotSize)) / 2 }
+					item.coreL = item.core
+					item.coreR = item.core
+					if (item.want === undefined) item.want = 2 * item.core
+					itemOf.set(node, item)
+					const row = rowOfNode(node)
+					if (!rows.has(row)) rows.set(row, [])
+					rows.get(row).push(node)
+				}
+				// 自己的岔路拐角并进自己的核心：自己的框可以盖住它（线从框底下出去），邻居借不过来
+				for (const node of graph.nodes) {
+					const item = itemOf.get(node.parent)
+					if (item === undefined || !itemOf.has(node) || node.column === node.parent.column) continue
+					const corner = xOf(node.column)
+					if (corner < item.x) item.coreL = Math.max(item.coreL, item.x - corner + 0.5)
+					else item.coreR = Math.max(item.coreR, corner - item.x + 0.5)
+				}
+				const lo = Math.min(0, railWidth - room)
+				for (const list of rows.values()) {
+					if (!list.some((node) => itemOf.get(node).glyph)) continue // 这一行没有字框，一切照旧
+					const slots = rowSlots(list.map((node) => itemOf.get(node)), lo, railWidth, z.laneGap)
+					list.forEach((node, at) => {
+						if (itemOf.get(node).glyph) slotOf.set(node, slots[at])
+					})
+				}
+			}
+			/** 字最多摊几倍宽：画在这一屏上的字框按它那一行的空位算，别的退回按列距算。 */
+			const spanFor = (node, size) => {
+				const slot = slotOf.get(node)
+				return slot === undefined ? spanAt(size) : glyphSpanFor(slot.left + slot.right, 0, size)
+			}
 			const fitOf = (node, size) => {
-				const shape = favorites.has(node.key) ? favShape(favIcons[node.key], spanAt(size)) : shapeOf(kindOf(node), node.active, theme, spanAt(size))
-				return shrinkToLane(drawnWidth(shape, size), lane, z.laneGap, dotSize)
+				const wide = drawnWidth(shapeAt(node, spanFor(node, size)), size)
+				const slot = slotOf.get(node)
+				return slot === undefined ? shrinkToLane(wide, lane, z.laneGap, dotSize) : shrinkToLane(wide, slot.left + slot.right, 0, dotSize)
+			}
+			/** 字框画出来多宽、相对圆心往哪边挪了多少（不是字框 → undefined）。连线的横段要从框边起。 */
+			const boxOf = (node) => {
+				const slot = slotOf.get(node)
+				if (slot === undefined) return undefined
+				const size = sizeOf(node)
+				const width = drawnWidth(shapeAt(node, spanFor(node, size)), size) * fitOf(node, size)
+				return { width, shift: boxShift(width, slot.left, slot.right) }
 			}
 			const reachOf = (node) => {
 				const eye = eyeOf(node)
 				// 缩小过的形状，连线也要多连一截过去 —— 缩放走 `grow` 那个口子，和鱼眼是同一回事
-				return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, dotSizeOf(kindOf(node), dotSize, eye.scale)), starOf(node))
+				return reachFor(kindOf(node), node.active, dotSize, theme, eye.scale * fitOf(node, sizeOf(node)), starOf(node))
 			}
 
 			const edge = (node) => {
@@ -6557,7 +6949,12 @@ window.__ModuleLoader__.load({
 				const color = node.active ? fade(theme.currentColor, 0.6) : C.line
 				// 线按**淡的那一头**走：亮点连着淡点时，线跟着亮会显得那个淡点还没退场
 				const alpha = Math.min(eyeOf(node).alpha, eyeOf(node.parent).alpha)
-				line(node.key, xOf(node.parent.column), xOf(node.column), yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha, node.active === true)
+				const xFrom = xOf(node.parent.column)
+				const xTo = xOf(node.column)
+				// 父节点是个摊开的字框：横段从框朝孩子那一侧的边起（不然线从字中间穿过去）
+				const owner = boxOf(node.parent)
+				const side = owner === undefined ? undefined : owner.width / 2 + (xTo < xFrom ? -owner.shift : owner.shift) + 1
+				line(node.key, xFrom, xTo, yOf(rowOfNode(node.parent)), yOf(rowOfNode(node)), color, reachOf(node.parent), reachOf(node), alpha, node.active === true, side)
 			}
 			for (const node of edgeOrder(graph.nodes)) edge(node)
 			// 去重之后再画。出来的横段互不重叠，所以 DOM 先后不再影响观感。
@@ -6590,9 +6987,12 @@ window.__ModuleLoader__.load({
 				}
 				// 收藏过的点整个换成黄色五角星。收藏和"角色"（普通/当前/压缩/空）正交，
 				// 所以这里是**盖在上面**的一层：形状和颜色都让给 star，别的一概不动。
-				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanAt(size)) : undefined
+				const star = favorites.has(node.key) ? starSkin(isFocused, favIcons[node.key], favColors[node.key], theme, spanFor(node, size)) : undefined
 				// 三角这类多边形、以及自定义的字，方框画不出来，得往里放东西
-				const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanAt(size)) : star.shape
+				const drawnShape = star === undefined ? shapeOf(kindOf(node), node.active, theme, spanFor(node, size)) : star.shape
+				// 字框在自己那块地盘里可能不居中（贴着导轨右缘、或者邻居那边挤）：挪多少交给 glyphBoxStyle
+				const placed = boxOf(node)
+				const shape = placed === undefined || placed.shift === 0 ? drawnShape : Object.assign({}, drawnShape, { shift: placed.shift })
 				const skin = star === undefined ? inkOf(kindOf(node), node.active, isFocused, theme) : star
 				// 列距压到比这个形状还窄时等比缩小（见上面 fitOf）；没压时 drawn === size
 				const drawn = size * fitOf(node, size)
@@ -6690,6 +7090,23 @@ window.__ModuleLoader__.load({
 							const at = cutPointOf(node)
 							if (at !== undefined) reshape(shapeOps.cut(at.key))
 						},
+						// 删除 = 归档整条支线（tree.js 的 deletePlan）。宿主没有归档服务就不给按钮。
+						canDelete: api.canArchive === true,
+						// 名单里有正在看的这条时**先切走**：宿主的当前会话一归档主视图就空了（escapeFrom 挑去处）。
+						// 然后一条条归档（失败只告警），最后清掉悬停、催一次重拉。树上消失靠的是归档集
+						// （archivedSessionIds）跟着宿主变，不用自己回显。
+						onDelete: async (node, plan) => {
+							if (!plan || plan.blocked !== undefined || !Array.isArray(plan.sessions)) return undefined
+							if (plan.sessions.includes(current)) {
+								const to = escapeFrom(node, plan, (listState.ids || []).filter((id) => !archived.has(id)))
+								if (to !== undefined) await api.open(to)
+							}
+							await api.archive(plan.sessions, { stopActivity: plan.running === true })
+							clearTimeout(closeTimer.current)
+							setHover(null)
+							setNonce((value) => value + 1)
+							return undefined
+						},
 						// 卡片贴着那个点放，不贴整棵树的左边 —— 岔路一多，主干那列的卡片会被甩出去老远
 						anchor: hover ? cardAnchor(railWidth, hover.x, hitW) : railWidth + 4,
 						railWidth, labels, hold, release, onLock,
@@ -6721,7 +7138,7 @@ window.__ModuleLoader__.load({
 							// 站在拆出去的树上、点的又是**前缀**上的节点（它仍属旧会话）：新会话按血缘会
 							// 掉回旧树，得认领到这棵（issue #4，见 graph.js 的【认领】）。
 							// 点的是子树里的节点就不用：它的父亲本来就在这棵树里。
-							const claim = graph.owner !== ROOT_KEY && node.tree !== graph.owner ? shapeOps.adopt : undefined
+							const claim = !isRootKey(graph.owner) && node.tree !== graph.owner ? shapeOps.adopt : undefined
 							if (action === 'fresh') {
 								// 新对话没有血缘，得登记进当前这棵树（merge）；站在拆出去的树上还要认领（adopt）
 								return api.fresh(workspaceOf(workspaceState, node.session.id), node.session.cwd, (id) => {
@@ -6751,16 +7168,20 @@ window.__ModuleLoader__.load({
 		 * 【加了新纯函数怎么办】往这张表里加一行。不加也能跑，只是测不到；
 		 * 而测不到的代码，改坏了没有任何一条断言会响。
 		 *
-		 * 【什么东西不该进这张表】碰 DOM / react / fetch 的。那些在 node 里跑不起来，
-		 * 要测就得先把"算"从"画"里拆出来 —— 拆出来的那半才进这里。
+		 * 【组件也在这张表里】Detail / SettingsCard / Rail 这些画界面的也挂出去了 —— 测试用
+		 * tests/kit/react-lite.mjs 那份极简 react 把它们真的挂起来、派事件、看结果
+		 * （test-kit.mjs 的 `mount`）。所以"碰 react"不再是进不了这张表的理由；
+		 * 真进不来的只剩直接 fetch 的那几处（net.js 会在 node 里没有 fetch 时抛）。
 		 */
 
 		const __pure = {
 			// 选树、归组、节点上能做什么
-			visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, shapeOps,
+			visibleTree, conversationOf, treeOf, treeOfSession, indexOf, keyOf, ROOT_KEY, rootKeyOf, isRootKey, shapeOps,
 			// 两代宿主的会话列表差异：当前会话在哪、跑完未读在哪
 			currentOf, withStatus,
 			cutPointOf, cutSet, branchAction, forkBlockedWhy, forkCutSeq, isBranchHead, mergeTargets, blockedWhy, jumpTarget, isFocusedNode, workspaceOf,
+			// 删除 = 归档整条支线：删哪些、为什么删不了、删之前先切到哪
+			deletePlan, deleteBlockedWhy, escapeFrom,
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
@@ -6788,7 +7209,7 @@ window.__ModuleLoader__.load({
 			// 配色与明暗
 			PALETTE, paletteOf, themeFrom, isDark, isHex, hexOf,
 			// 几何
-			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP,
+			reachFor, segments, edgeOrder, nodeAt, hoverNext, railLayout, railRight, railRoom, shrinkToLane, trimRuns, MIN_RUN, cardAnchor, CARD_GAP, rowSlots, boxShift,
 			// 版式上的共处：正文栏右缘在哪、聊天是不是被别的插件盖住了、容器里挂的是不是别的页签
 			contentRightOf, isCovered, otherViewShown, RAIL_MARK,
 			// 指针：能不能悬停、手指戳一下算什么、WebKit 上必须补的那几条样式
@@ -6800,8 +7221,10 @@ window.__ModuleLoader__.load({
 			// 未读节点读过之后的三段式节奏
 			readPhase, readAnimation, nextReadBoundary, READ_ANIM, READ_HOLD_MS, READ_FADE_MS, READ_MELT_MS,
 			// 设置（SETTINGS_NS 同时是 0.2 宿主眼里的 entry id，测试要核它）
-			SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z,
+			SETTINGS_NS, settingsStore, stepText, layerText, scaleText, scaleZ, STEPS, LAYERS, SCALES, RADIUS, DEPTH, SCALE, FIELDS, ROWS, Z, C,
 			VISIBLE, isMode, visibleRange, stepsAway, layersAway,
+			// 组件：离线测试用 react-lite 挂起来测交互（tests/test-card.mjs 是例子）
+			Detail, NameField, FavIconRow, HexField, MergeList, SettingsCard, Rail,
 		}
 
 		// ===== apply.js ================================================
@@ -6942,6 +7365,34 @@ window.__ModuleLoader__.load({
 						open(id)
 						return id
 					}),
+
+				/**
+				 * 宿主有没有"归档会话"这个服务。两代都有 `ctx.workspaces.archiveSession`，但认服务不认版本号：
+				 * 没有它卡片就整个不画删除按钮（删除 = 归档整条支线，见 tree.js 的 deletePlan）。
+				 */
+				canArchive: typeof ctx.workspaces.archiveSession === 'function',
+
+				/**
+				 * 归档一批会话（卡片上的「删除」）。**一条条归，哪条失败只告警、不拦后面的** ——
+				 * 删一条支线删到一半停下来，比全删了或全没删更难解释。
+				 *
+				 * `stopActivity`：0.2 宿主上归档正在跑的会话会被拒（`workspace/session-active`），
+				 * 带上它宿主先停掉那一轮；0.1.5 没有这个选项，多传一个参数无害。
+				 * @param ids - 会话 id（`deletePlan` 给的名单）
+				 * @param options - `{stopActivity}`
+				 * @returns 真归档掉的条数
+				 */
+				archive: async (ids, options) => {
+					let done = 0
+					for (const id of ids || []) {
+						const ok = await attempt(`归档会话 ${id} 失败`, async () => {
+							await ctx.workspaces.archiveSession(id, options && options.stopActivity === true ? { stopActivity: true } : {})
+							return true
+						})
+						if (ok === true) done += 1
+					}
+					return done
+				},
 
 				/**
 				 * 改树形关系。补丁一律由 `shapeOps` 造（见 tree.js），别自己拼字段。

@@ -1,13 +1,15 @@
 {
   "name": "dsh-chat-tree",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Conversation trees for DeepSeek Harness: every branch of a conversation drawn as a clickable tree beside the chat / 把一个对话的所有分支画成一棵可点击的树",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
+    "lint": "node tools/lint.mjs",
     "pretest": "node build.mjs",
-    "test": "node tests/test.mjs && node tests/test-highlight.mjs && node tests/test-elide.mjs && node tests/test-branch.mjs && node tests/test-icon.mjs && node tests/test-rewind.mjs && node tests/test-merge.mjs && node tests/test-shape.mjs && node tests/test-http.mjs && node tests/test-net.mjs && node tests/test-lifecycle.mjs && node tests/test-tidy.mjs && node tests/test-pointer.mjs && node tests/test-layout.mjs && node tests/test-split.mjs && node tests/test-labels.mjs && node tests/test-fold.mjs && node tests/test-active.mjs && node tests/test-cut.mjs"
+    "test": "node tools/lint.mjs && node tests/run.mjs",
+    "check": "node build.mjs --check --strict && node tools/lint.mjs && node tests/run.mjs"
   },
   "main": "index.js",
   "exports": {

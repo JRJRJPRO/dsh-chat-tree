@@ -17,6 +17,7 @@
  * 用法：
  *   node build.mjs           重新生成 client.js
  *   node build.mjs --check    只检查 client.js 和 src 对不对得上（npm test 会跑）
+ *   node build.mjs --strict   漏 import 的提醒升级成报错（tools/lint.mjs 这么调它）
  *   node build.mjs --watch    改哪个 part 就重拼一次（配合 dsh 的热重载）
  *
  * @module build
@@ -229,6 +230,9 @@ function crossCheck(parts, owner) {
 	return notes.length
 }
 
+/** 漏 import 是不是要当成错误（`--strict`）。平时只提醒；lint 里拦住，免得积攒。 */
+const STRICT = process.argv.includes('--strict')
+
 /** 拼出完整的 client.js。 */
 function bundle() {
 	const onDisk = readdirSync(SRC).filter((name) => name.endsWith('.js'))
@@ -250,7 +254,8 @@ function bundle() {
 		}
 		bodies.push(`\t\t// ===== ${name} ${'='.repeat(Math.max(0, 56 - name.length))}\n\n${code.split('\n').map((line) => (line === '' ? '' : `\t\t${line}`)).join('\n')}`)
 	}
-	crossCheck(compiled, seen)
+	const missing = crossCheck(compiled, seen)
+	if (STRICT && missing > 0) throw new Error(`${missing} 处 import 对不上（见上面的 ⚠）—— 补上 import，或删掉没用到的`)
 
 	return lf(
 		[

@@ -8,6 +8,7 @@
  *   · 聊天被别的插件的浮层整个盖住时，树得跟着收起来
  *   · 同一行上的横段一像素只许画一次（不然一个父节点带几个孩子，横线就忽粗忽细）
  *   · 详情卡锚在**那个点**上，岔路多了也不许被甩到整棵树的左边去
+ *   · 自定义字的框向同一行的空格子借地方，不按列距一刀切成「…」
  *
  * 阅读顺序：
  *   第1步  取 client 的真函数
@@ -19,6 +20,7 @@
  *   第7步  用例 6：详情卡贴着那个点放，不贴整棵树的左缘
  *   第8步  用例 7：列距被压过之后，自定义字的框不许叠到隔壁列（issue #1）
  *   第9步  用例 8：滚动容器里挂的是别的页签（Trajectory）时，树该收起来
+ *   第10步 用例 9：自定义字按"这一行"的空位摊开，邻居之间公平分（T2）
  *
  * 跑法：node tests/test-layout.mjs
  *
@@ -418,6 +420,117 @@ const BOX = { top: 0, height: 600, right: 1600 }
 	check(otherViewShown(make('滚动容器', [], [composer(), make('页签区', [], [chatFlow()])])) === false, '输入框排前面也认得出聊天')
 
 	console.log('  聊天在→露着；Trajectory / 不认识的页签→收起；只剩输入框→不动')
+}
+
+// ===== 第10步：用例 9 —— 字框按"这一行"的空位摊开，不按列距一刀切（T2） =====
+{
+	console.log('用例 9：自定义字向同一行的空位借地方；邻居之间公平分，不叠、不越过圆点')
+	const { rowSlots, boxShift, shapeSpec, GLYPH_BOX, GLYPH_RADIUS, glyphSpanFor } = pure
+
+	// 场面：三列（maxColumn = 2），横向放不下、列距被压过 —— John 报"只剩 …"时就是这个样子。
+	const want = (size) => drawnWidth(shapeSpec('char:甲乙丙'), size)
+	const L = railLayout(BOX, 100, 12, 2, want, 100)
+	const size = L.dotSize
+	const g = L.z.laneGap
+	const full = want(size)
+	check(L.railWidth < 3 * (full + g), '前提：三列装不下三个全宽的字框，否则这条用例抓不到 bug')
+	check(drawnWidth(shapeSpec('char:甲乙丙', glyphSpanFor(L.lane, g, size)), size) < full - 1e-9, '前提：老规则按压完的列距截，字框画不全')
+	// 字框：中心附近至少盖住一个圆角那么宽（线从框的平边进出，不戳在圆角上）
+	const glyphCore = GLYPH_BOX * size * GLYPH_RADIUS + 1
+	const glyph = (column) => ({ x: L.xOf(column), coreL: glyphCore, coreR: glyphCore, want: full })
+	const dot = (column) => ({ x: L.xOf(column), coreL: size / 2, coreR: size / 2, want: size })
+	const box = (item, slot, w) => {
+		const shift = boxShift(w, slot.left, slot.right)
+		return [item.x + shift - w / 2, item.x + shift + w / 2]
+	}
+
+	// ① 一行里只有第 0 列有字，第 1、2 列空着 → 能摊到的宽度 ≥ 3 个列距减间隙
+	{
+		const [slot] = rowSlots([glyph(0)], 0, L.railWidth, g)
+		check(slot.left + slot.right >= 3 * L.lane - g - 1e-9, `独占一行的字框只摊到 ${(slot.left + slot.right).toFixed(1)}px，该 ≥ ${(3 * L.lane - g).toFixed(1)}`)
+		const w = Math.min(full, slot.left + slot.right)
+		check(w >= full - 1e-9, `独占一行时该画全（${w.toFixed(1)} / ${full.toFixed(1)}）`)
+		const [a, b] = box(glyph(0), slot, w)
+		check(a >= -1e-9 && b <= L.railWidth + 1e-9, `框 [${a.toFixed(1)}, ${b.toFixed(1)}] 不许出导轨 [0, ${L.railWidth.toFixed(1)}]`)
+		check(a + glyphCore <= L.xOf(0) + 1e-9 && L.xOf(0) <= b - glyphCore + 1e-9, '第 0 列贴着右缘：框往左借，但还得盖住自己那一列')
+	}
+
+	// ② 第 0 列和第 1 列都有字 → 两个框互不重叠、各自盖住自己那一列；空间不够时两边公平分
+	{
+		const items = [glyph(0), glyph(1)]
+		const slots = rowSlots(items, 0, L.railWidth, g)
+		const boxes = items.map((item, at) => box(item, slots[at], Math.min(full, slots[at].left + slots[at].right)))
+		const [r0, r1] = boxes
+		check(r1[1] + g <= r0[0] + 1e-9, `相邻两个字框之间该留 ${g}px，实际 ${(r0[0] - r1[1]).toFixed(1)}px`)
+		boxes.forEach((r, at) => check(r[0] + glyphCore <= items[at].x + 1e-9 && items[at].x <= r[1] - glyphCore + 1e-9, `第 ${at} 列的框没盖住自己那一列`))
+		const w0 = r0[1] - r0[0]
+		const w1 = r1[1] - r1[0]
+		check(w0 + w1 > 2 * (L.lane - g) + 1e-9, `两个框加起来 ${(w0 + w1).toFixed(1)}px，不比老规则（各一个列距减间隙）宽，等于没借到`)
+	}
+
+	// ③ 第 0 列有字、第 2 列是普通圆点 → 字框可以越过第 1 列，但要在圆点前停住
+	{
+		const items = [glyph(0), dot(2)]
+		const slots = rowSlots(items, 0, L.railWidth, g)
+		const [a, b] = box(items[0], slots[0], Math.min(full, slots[0].left + slots[0].right))
+		// 地盘越过第 1 列就算"能越过"；框本身装得下就照样居中，不会无故挪过去
+		check(items[0].x - slots[0].left < L.xOf(1), `字框的地盘该越过第 1 列（地盘左缘 ${(items[0].x - slots[0].left).toFixed(1)}，第 1 列 ${L.xOf(1).toFixed(1)}）`)
+		check(a >= L.xOf(2) + size / 2 + g - 1e-9, `字框该在第 2 列的圆点前停住（框左缘 ${a.toFixed(1)}，圆点右缘 + 间隙 ${(L.xOf(2) + size / 2 + g).toFixed(1)}）`)
+		check(b <= L.railWidth + 1e-9, '也不许从导轨右缘探出去')
+		check(slots[1].left >= size / 2 - 1e-9 && slots[1].right >= size / 2 - 1e-9, '圆点自己那一块不许被借走')
+	}
+
+	// ④ 三列全是字（John 的原场面）：三个框不叠，**中间那个不许被两头挤成「…」** ——
+	//    两头靠导轨边上那点空，中间夹着的那个也得分到差不多的一份
+	{
+		const items = [glyph(0), glyph(1), glyph(2)]
+		const slots = rowSlots(items, 0, L.railWidth, g)
+		const widths = slots.map((slot) => Math.min(full, slot.left + slot.right))
+		const boxes = items.map((item, at) => box(item, slots[at], widths[at]))
+		for (let at = 0; at + 1 < boxes.length; at += 1) {
+			check(boxes[at + 1][1] + g <= boxes[at][0] + 1e-9, `第 ${at + 1}、${at} 列的框叠上了`)
+		}
+		const narrow = Math.min(...widths)
+		check(narrow >= (L.railWidth - 2 * g) / 3 - 2 * glyphCore, `最窄的框只有 ${narrow.toFixed(1)}px，三家分 ${L.railWidth.toFixed(1)}px 该接近 ${((L.railWidth - 2 * g) / 3).toFixed(1)}`)
+		check(narrow > L.lane - g + 1e-9, `中间那个框 ${narrow.toFixed(1)}px，不比老规则的 ${(L.lane - g).toFixed(1)}px 宽`)
+		console.log(`  三列都有字：列距 ${L.lane.toFixed(1)}px，老规则每个框 ${(L.lane - g).toFixed(1)}px → 现在 ${widths.map((w) => w.toFixed(1)).join(' / ')}px`)
+	}
+
+	// ⑤ 空间够的时候一个像素都不动：框就居中画在自己那一列
+	{
+		const roomy = railLayout(BOX, 100, 12, 2, want)
+		const items = [0, 1, 2].map((column) => ({ x: roomy.xOf(column), coreL: glyphCore, coreR: glyphCore, want: full }))
+		const slots = rowSlots(items, 0, roomy.railWidth, g)
+		slots.forEach((slot, at) => {
+			check(slot.left + slot.right >= full - 1e-9, `空间够时第 ${at} 列该画全`)
+			check(boxShift(full, slot.left, slot.right) === 0, `空间够时第 ${at} 列不该挪位置`)
+		})
+	}
+
+	// ⑥ 导轨左边还有空（树没占满 railRoom）：最左那列可以往导轨外面借，但不许借进正文
+	{
+		const [slot] = rowSlots([{ x: 10, coreL: glyphCore, coreR: glyphCore, want: full }], -30, 40, g)
+		check(slot.left === 40 && slot.right === 30, `往左可借到 -30，实际 left=${slot.left}`)
+	}
+
+	// ⑦ 别人的岔路拐角也算占位（核心可以不对称）：自己的拐角被核心盖住，邻居借不过去
+	{
+		const items = [{ x: 50, coreL: 30, coreR: 5, want: 10 }, { x: 0, coreL: 5, coreR: 5, want: 200 }]
+		const slots = rowSlots(items, -100, 100, 4)
+		check(slots[1].right <= 50 - 30 - 4 + 1e-9, `邻居的框越过了别人的拐角（right=${slots[1].right.toFixed(1)}）`)
+	}
+
+	// ⑧ 连线：父节点是个往左摊开的字框时，横段从框边起；框一直盖到孩子那一列，横段就整个不画
+	{
+		const out = segments(100, 60, 50, 74, 9, 6, 15)
+		const hz = out.find((part) => part.tag === 'hz')
+		check(hz !== undefined && Math.abs(hz.left + hz.width - 0.5 - (100 - 15)) < 1e-9, '横段该从框的左缘起，不是从半个框高起')
+		const covered = segments(100, 60, 50, 74, 9, 6, 45)
+		check(covered.every((part) => part.tag !== 'hz'), '框盖住了孩子那一列：不该再画横段（会从字中间穿过去）')
+		const down = covered.find((part) => part.tag === 'v')
+		check(down !== undefined && Math.abs(down.top - (50 + 9)) < 1e-9, '框盖住孩子那列时，竖段从框的下沿起')
+		check(JSON.stringify(segments(100, 60, 50, 74, 9, 6)) === JSON.stringify(segments(100, 60, 50, 74, 9, 6, undefined)), '不给第 7 个参数时和老画法一样')
+	}
 }
 
 report()

@@ -62,6 +62,12 @@ in settings.
 Hover a dot for a preview. **Double-click the card to expand it** — rename the
 node, pick a shape, pick a color, or upload an image.
 
+The red ✕ at the far right of the expanded card **deletes** a branch: the node's
+session plus every branch hanging under it on the tree is archived into the host's
+archive list — a second click confirms, and anything archived can be restored.
+Only the first turn of a branch can be deleted: a log can't lose its middle, so to
+drop a few turns use rewind on the message row.
+
 On touch devices, a tap does what hovering does.
 
 <br clear="right">

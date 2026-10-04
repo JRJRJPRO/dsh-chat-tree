@@ -142,6 +142,34 @@ export function apply(ctx) {
 			}),
 
 		/**
+		 * 宿主有没有"归档会话"这个服务。两代都有 `ctx.workspaces.archiveSession`，但认服务不认版本号：
+		 * 没有它卡片就整个不画删除按钮（删除 = 归档整条支线，见 tree.js 的 deletePlan）。
+		 */
+		canArchive: typeof ctx.workspaces.archiveSession === 'function',
+
+		/**
+		 * 归档一批会话（卡片上的「删除」）。**一条条归，哪条失败只告警、不拦后面的** ——
+		 * 删一条支线删到一半停下来，比全删了或全没删更难解释。
+		 *
+		 * `stopActivity`：0.2 宿主上归档正在跑的会话会被拒（`workspace/session-active`），
+		 * 带上它宿主先停掉那一轮；0.1.5 没有这个选项，多传一个参数无害。
+		 * @param ids - 会话 id（`deletePlan` 给的名单）
+		 * @param options - `{stopActivity}`
+		 * @returns 真归档掉的条数
+		 */
+		archive: async (ids, options) => {
+			let done = 0
+			for (const id of ids || []) {
+				const ok = await attempt(`归档会话 ${id} 失败`, async () => {
+					await ctx.workspaces.archiveSession(id, options && options.stopActivity === true ? { stopActivity: true } : {})
+					return true
+				})
+				if (ok === true) done += 1
+			}
+			return done
+		},
+
+		/**
 		 * 改树形关系。补丁一律由 `shapeOps` 造（见 tree.js），别自己拼字段。
 		 * @param patch - `shapeOps.*` 的产物
 		 * @returns 打完补丁的完整形状；失败是 undefined（调用方据此决定要不要回显）

@@ -8,7 +8,7 @@ import { DEPTH, RADIUS, SCALE, SETTINGS_NS } from './const.js'
 import { warn } from './net.js'
 import { ROLES, THEME, favShape, paletteOf, shapeSpec } from './shapes.js'
 
-/** 「按步数」的档位：5..30，最后一格是"不省略"。 */
+/** 「按步数」的档位：10..60，最后一格是"不省略"。 */
 export const STEPS = Array.from({ length: RADIUS.max - RADIUS.min + 1 }, (_, i) => RADIUS.min + i).concat([RADIUS.off])
 
 /** 「按层数」的档位：1..30，最后一格是"不省略"。 */

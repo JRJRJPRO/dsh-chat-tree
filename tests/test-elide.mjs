@@ -226,13 +226,13 @@ console.log('用例 5：行号压实 —— 留下的行必须是 0..n-1 连续'
 	console.log(`  ${got.view.shown.size} 个节点压实成 ${got.view.rows} 行`)
 }
 
-console.log('用例 6：滑杆档位 —— 5..30 再加一格「不省略」')
+console.log('用例 6：滑杆档位 —— 10..60 再加一格「不省略」')
 {
 	const steps = pure.STEPS
-	check(steps[0] === 5, `第一档该是 5，实际 ${steps[0]}`)
-	check(steps[steps.length - 2] === 30, `倒数第二档该是 30，实际 ${steps[steps.length - 2]}`)
+	check(steps[0] === 10, `第一档该是 10，实际 ${steps[0]}`)
+	check(steps[steps.length - 2] === 60, `倒数第二档该是 60，实际 ${steps[steps.length - 2]}`)
 	check(steps[steps.length - 1] === pure.RADIUS.off, `最后一档该是"不省略"(${pure.RADIUS.off})，实际 ${steps[steps.length - 1]}`)
-	check(steps.length === 27, `一共该有 27 档，实际 ${steps.length}`)
+	check(steps.length === 52, `一共该有 52 档（10..60 共 51 档 + 不省略），实际 ${steps.length}`)
 	console.log(`  ${steps.length} 档：${steps[0]}..${steps[steps.length - 2]} + 不省略`)
 }
 
@@ -380,8 +380,10 @@ console.log('用例 9：档位文案')
 	check(pure.stepText(pure.RADIUS.off) === '不省略', `0 该显示"不省略"，实际 ${pure.stepText(pure.RADIUS.off)}`)
 	check(pure.stepText(12) === '12 步', `12 该显示"12 步"，实际 ${pure.stepText(12)}`)
 	check(!pure.stepText(12).includes('以内'), '档位读数里不要"以内"两个字')
-	// 默认档位：12 步，且必须真的在档位表里 —— 不在的话滑杆会跳到第 0 档
-	check(pure.RADIUS.fallback === 12, `默认该是 12 步，实际 ${pure.RADIUS.fallback}`)
+	// 默认档位：30 步，且必须真的在档位表里 —— 不在的话滑杆会跳到第 0 档
+	check(pure.RADIUS.fallback === 30, `默认该是 30 步，实际 ${pure.RADIUS.fallback}`)
+	check(pure.RADIUS.min === 10 && pure.RADIUS.max === 60, `按步数的档位该是 10..60，实际 ${pure.RADIUS.min}..${pure.RADIUS.max}`)
+	check(pure.DEPTH.fallback === 18, `按层数默认该是 18 层，实际 ${pure.DEPTH.fallback}`)
 	check(pure.STEPS.includes(pure.RADIUS.fallback), `默认档 ${pure.RADIUS.fallback} 不在档位表里，滑杆会跳掉`)
 	check(pure.SCALES.includes(pure.SCALE.fallback), `默认缩放 ${pure.SCALE.fallback} 不在档位表里`)
 	console.log(`  0 → ${pure.stepText(0)}；12 → ${pure.stepText(12)}；默认 ${pure.stepText(pure.RADIUS.fallback)}`)
@@ -455,10 +457,10 @@ console.log('用例 13：两种量法二选一 —— 各记各的档位，切�
 	check(pure.VISIBLE[0].mode === 'depth', '左边那半该是默认的"按层数"')
 	check(pure.VISIBLE.map((one) => one.field).join() === 'visibleDepth,visibleRadius', `字段名变了：${pure.VISIBLE.map((one) => one.field).join()}`)
 
-	// 默认：按层数 10
+	// 默认：按层数 18（John 2026-10-04 定的：10 层常常只剩半屏树）
 	const fresh = pure.visibleRange({})
-	check(fresh.mode === 'depth' && fresh.limit === 10, `默认该是按层数 10，实际 ${fresh.mode} ${fresh.limit}`)
-	check(fresh.text === '10 层', `默认读数该是"10 层"，实际 ${fresh.text}`)
+	check(fresh.mode === 'depth' && fresh.limit === 18, `默认该是按层数 18，实际 ${fresh.mode} ${fresh.limit}`)
+	check(fresh.text === '18 层', `默认读数该是"18 层"，实际 ${fresh.text}`)
 
 	// 两个上限同时存着，谁生效只看 visibleMode
 	const both = { visibleMode: 'step', visibleDepth: 6, visibleRadius: 25 }
@@ -473,8 +475,8 @@ console.log('用例 13：两种量法二选一 —— 各记各的档位，切�
 	}
 	check(!pure.isMode('steps') && pure.isMode('step') && pure.isMode('depth'), 'isMode 认的值不对')
 	// 上限存了个认不得的值也退回这一档自己的默认
-	check(pure.visibleRange({ visibleMode: 'step', visibleRadius: 'x' }).limit === pure.RADIUS.fallback, '认不得的步数该退回 12')
-	check(pure.visibleRange({ visibleMode: 'depth', visibleDepth: null }).limit === pure.DEPTH.fallback, '认不得的层数该退回 10')
+	check(pure.visibleRange({ visibleMode: 'step', visibleRadius: 'x' }).limit === pure.RADIUS.fallback, '认不得的步数该退回默认')
+	check(pure.visibleRange({ visibleMode: 'depth', visibleDepth: null }).limit === pure.DEPTH.fallback, '认不得的层数该退回默认')
 
 	// 档位表：1..30 再加一格"不省略"，默认那一档必须在表里，否则滑杆会跳到第 0 格
 	const layers = pure.LAYERS

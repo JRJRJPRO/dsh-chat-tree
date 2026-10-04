@@ -44,6 +44,7 @@ npm test          # 先构建再跑十个测试脚本
 | `outline.js` | 把日志事件折成轮次大纲 | **全部的日志格式知识都在这儿**，别在别处解析事件 |
 | `rewind.js` | 撤回过的轮次 | ⚠️ 顶上那段"读旁车会打断正在跑的那一轮"的规矩**不许放宽** |
 | `shape.js` | 哪几条对话算一棵树、哪条支线被拆了 | 存盘格式改了要能读老数据 |
+| `split.js` | 把被多条 dsh 会话共用的 Claude 记录文件拆开（`tools/split-shared-claude.mjs` 的逻辑） | 只在 dsh 停着时跑；DESIGN.md §4 缺陷二 |
 | `icons.js` | 自定义节点图片 | 只收 PNG，id 只认 32 位十六进制（要拼进文件名） |
 | `lineage.js` | 血缘表（跨模块共享的可变状态） | 就一个 Map，别往里加逻辑 |
 | `graft.js` | 把外部引擎的记忆嫁接给新分支 | ⚠️ 里面记着一条**还没修**的同类风险 |
@@ -60,8 +61,9 @@ npm test          # 先构建再跑十个测试脚本
 | `const.js` | 设置命名空间、滑杆档位、基准尺寸 `Z`、配色 `C` |
 | `runtime.js` | 宿主给的 react（**只有画界面的模块才 import 它**） |
 | `net.js` | 三个路由的地址 + `getJson` / `postJson` / `warn`；直连被围栏拒了改走 `/remote`（`apiPrefix()` 供 CSS url 用）|
+| `theme.js` | 现在是亮色还是暗色（读宿主 `body[data-ds-dark-theme]`） |
 | `pointer.js` | 这块屏能不能悬停（`useHover`）、手指戳一下算什么（`tapNext`）、WebKit 必补的样式表 |
-| `labels.js` | 节点上的用户标注：改名 + 收藏 + 收藏图标（都存 localStorage，半成品，见文件头） |
+| `labels.js` | 节点上的用户标注：改名 + 收藏 + 收藏图标 / 颜色（落盘在 host 的 labels.json，localStorage 只是缓存） |
 | `tree.js` | 选树、归组、节点 key、`shapeOps`、节点上能做什么 |
 | `fold.js` | 左侧会话列表怎么折：谁归哪棵树、座位怎么排（纯函数） |
 | `graph.js` | `buildGraph` —— 唯一一处定义"图长什么样" |
@@ -91,6 +93,8 @@ npm test          # 先构建再跑十个测试脚本
 | 加一种改树形的动作 | `src/client/tree.js` 的 `shapeOps` 加一条 + `src/host/shape.js` 的 `reshape` 认它 |
 | 加一个浏览器半的模块 | 新建 `src/client/xxx.js` + 往 `build.mjs` 的 `PARTS` 里登记（不登记会**直接报错**，不会静默） |
 | 加一个纯函数并想测它 | 写完往 `src/client/pure.js` 的 `__pure` 里加一行 |
+| 加一个画界面的模块 | 同上建 part；还要登记进 `tools/lint.mjs` 的 `UI_PARTS`（不登记 lint 报错：纯函数文件不许 import react）；组件也挂进 `__pure` 好用 react-lite 测 |
+| 加一个测试文件 | `tests/test-<名字>.mjs`，`tests/run.mjs` 按文件名自动发现，不用登记；以 `report()` 收尾（lint 盯着） |
 
 ---
 
@@ -130,6 +134,8 @@ npm test          # 先构建再跑十个测试脚本
 - `build.mjs` 的 `PARTS`（加 part 必须改，所以冲突多半是**两个人同时加了 part**，
   合并时把两行都留下就行）
 
+多个 agent 并行干活的派活流程、级别判据、必过的四道门，见 [WORKFLOW.md](WORKFLOW.md)；待办卡在 [BACKLOG.md](BACKLOG.md)。
+
 `client.js` 是生成物，**冲突了别手动合**：解决完 `src/client/` 的冲突，
 重跑 `npm run build` 覆盖它。
 
@@ -161,15 +167,37 @@ npm test          # 先构建再跑十个测试脚本
 
 ## 7. 测试
 
-十八个离线脚本，共用 `test-kit.mjs`（一条断言、一个收尾、一份"把浏览器半骗起来"的加载器）。
+```bash
+npm test                        # build → lint → 全部测试（并行，一个失败不挡别的）
+npm run check                   # 不重 build，只核对 client.js 是否最新；CI / 复查用
+node tests/run.mjs --only card  # 只跑文件名含 card 的；--list 列出；--serial 串行
+node tools/lint.mjs             # 单跑规矩检查；--fix-hint 打印每条规矩的说明
+node tests/test-card.mjs        # 单跑一个文件（之前记得 npm run build）
+```
+
+**四道门**（哪类改动会被哪道抓住，见 WORKFLOW.md §1）：
+
+| | 在哪 | 抓什么 |
+|---|---|---|
+| 规矩 lint | `tools/lint.mjs` | §4 那几条能机械查的：纯函数文件碰 react、手拼节点 key、绕开 atomicWrite / route()、client.js 没重 build、漏 import、新 part 没进本文件 §2 的清单 |
+| 两半契约 | `tests/test-contract.mjs` | 设置字段 / 默认值 / 上下限两边一致、路由两边一致、SETTINGS_NS = entry id = 包名、`__pure` 没有 undefined |
+| 纯函数 | 其余 `tests/test-*.mjs` | 建图、省略、几何、折叠、撤回、合并、HTTP 外壳、生命周期…… |
+| 组件交互 | `tests/test-card.mjs`、`tests/test-ui-settings.mjs` | 组件用 `tests/kit/react-lite.mjs`（极简 react）+ `tests/kit/dom-lite.mjs`（假 DOM）真的挂起来，派事件看回调 |
+
+共用的东西都在 `tests/test-kit.mjs`：
 
 ```js
-import { check, report, loadClientPure } from './test-kit.mjs'
-const pure = await loadClientPure()   // 只有要测浏览器半才需要
+import { check, report, loadClientPure, loadClient, mount, h, dom, tick } from './test-kit.mjs'
+const pure = await loadClientPure()   // 浏览器半的纯函数（和组件）
 check(条件, '失败时打印什么')
 report()                               // 最后一行
 ```
 
-测的是**真代码**：浏览器半从生成物 `client.js` 的 `__pure` 取，host 半从 `index.js`
+测的是**真代码**：浏览器半从生成物 `client.js` 的 `__pure` 取（组件也在里面），host 半从 `index.js`
 的 `__test` 取。所以 `npm test` 第一步就是 `npm run build` —— 否则改了 src 忘了构建，
 测的还是上一版。
+
+组件测试怎么写、react-lite 能做什么不能做什么，见 WORKFLOW.md §4；
+**布局类的 bug 不测组件，测几何纯函数**（react-lite 没有真实布局）。
+
+> **加断言的规矩：写完先把被测的那行改坏，确认它真的变红，再改回来。**

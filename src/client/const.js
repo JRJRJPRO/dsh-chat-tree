@@ -8,8 +8,13 @@
 /** 设置命名空间。host 半用同名 namespace 注册 schema，两边必须一致。 */
 export const SETTINGS_NS = 'dsh-chat-tree'
 
-/** 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [5..30, 0]。 */
-export const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
+/**
+ * 「按步数」那一档的半径。0 = 不省略；滑杆位置就是 [10..60, 0]。
+ *
+ * ⚠️ RADIUS / DEPTH 的 min / max / fallback 和 host 的 schema（src/host/settings.js）必须一致，
+ *    test-contract.mjs 逐项核对。改这里就得改那边。
+ */
+export const RADIUS = { min: 10, max: 60, fallback: 30, off: 0 }
 
 /**
  * 「按层数」那一档的层高差。0 = 不省略；滑杆位置就是 [1..30, 0]。
@@ -18,7 +23,7 @@ export const RADIUS = { min: 5, max: 30, fallback: 12, off: 0 }
  * 于是同一层的两个节点可能差 20 步，看着明明并排却一个在一个不在 —— 观感很怪。
  * 按层数量的话，一横排要么整排都在，要么整排都不在，眼睛好受得多。
  */
-export const DEPTH = { min: 1, max: 30, fallback: 10, off: 0 }
+export const DEPTH = { min: 1, max: 30, fallback: 18, off: 0 }
 
 /** 节点缩放，百分比。 */
 export const SCALE = { min: 50, max: 250, step: 10, fallback: 100 }

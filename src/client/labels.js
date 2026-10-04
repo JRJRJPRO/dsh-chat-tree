@@ -6,11 +6,20 @@
  * 就用宿主那份盖一遍（adoptLabels），写的时候本地先改、再把补丁 POST 给宿主。
  * 宿主是空的而本地有货（老版本留下的）→ 把本地整份送上去一次（seedFromLocal）。
  *
- * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root`，见 tree.js），
+ * 两者的键都是**节点 key**（`<sessionId>:<turn>`，树根是 `root:<树根会话 id>`，见 tree.js），
  * 所以改名和收藏天然对齐到同一个点上。
  */
 
 import { postJson, warn } from './net.js'
+import { ROOT_KEY } from './tree.js'
+
+/**
+ * 老版本的树根 key：所有树共用一个裸 `root`，给一棵树的空节点起的名字会出现在每棵树上。
+ * 读的时候直接扔掉，**不迁移** —— 那条当初是给哪棵树起的已经无从得知；宿主 labels.json 里留着无害。
+ * @param key - 节点 key
+ * @returns 是不是该扔掉的老条目
+ */
+const isLegacyRoot = (key) => key === ROOT_KEY
 
 export const LS_KEY = 'dsh-chat-tree.labels'
 
@@ -66,14 +75,18 @@ export const FAVORITES_KEY = 'dsh-chat-tree.favorites'
 /** @returns {Record<string,string>} */
 export function readLabels() {
 	try {
-		return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}
+		const raw = JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}
+		if (typeof raw !== 'object' || Array.isArray(raw)) return {}
+		const out = {}
+		for (const [key, value] of Object.entries(raw)) if (!isLegacyRoot(key)) out[key] = value
+		return out
 	} catch {
 		return {}
 	}
 }
 
 /**
- * @param key - `<sessionId>:<turn>` 或 `root`
+ * @param key - `<sessionId>:<turn>` 或 `root:<树根会话 id>`
  * @param value - 名字；空串 = 删除，回到默认
  */
 export function writeLabel(key, value) {
@@ -97,7 +110,7 @@ export function writeLabel(key, value) {
 export function readFavorites() {
 	try {
 		const raw = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]')
-		return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && item.length > 0) : [])
+		return new Set(Array.isArray(raw) ? raw.filter((item) => typeof item === 'string' && item.length > 0 && !isLegacyRoot(item)) : [])
 	} catch {
 		return new Set()
 	}
@@ -152,7 +165,7 @@ export function readFavIcons() {
 		if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
 		const out = {}
 		for (const [key, value] of Object.entries(raw)) {
-			if (typeof value === 'string' && value.length > 0) out[key] = value
+			if (typeof value === 'string' && value.length > 0 && !isLegacyRoot(key)) out[key] = value
 		}
 		return out
 	} catch {
@@ -218,7 +231,7 @@ export function readFavColors() {
 		if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
 		const out = {}
 		for (const [key, value] of Object.entries(raw)) {
-			if (isColor(value)) out[key] = value.toLowerCase()
+			if (isColor(value) && !isLegacyRoot(key)) out[key] = value.toLowerCase()
 		}
 		return out
 	} catch {

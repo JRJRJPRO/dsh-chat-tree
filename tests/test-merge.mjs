@@ -263,7 +263,7 @@ console.log('\n用例 5：拆出去的树，前缀上开的分支不许掉回旧
 	const cut = reshape({ session: 'M:2', detach: true })
 	const lost = graphOf('N', cut)
 	check(JSON.stringify(keysOf(lost)) === '["M:1","N:7","P:3"]', `没认领时 N 该掉在旧树里（这就是 bug 本身），实际 ${JSON.stringify(keysOf(lost))}`)
-	check(lost.owner === pure.ROOT_KEY, '没认领时站的该是旧树（owner = root）')
+	check(lost.owner === pure.rootKeyOf('M'), `没认领时站的该是旧树（owner = M 那棵的树根 key），实际 ${lost.owner}`)
 
 	// 认领：N 归 M:2 那棵。这就是 Rail 在 fork 成功后打的那条补丁（shapeOps.adopt）
 	const patch = pure.shapeOps.adopt('N', 'M:2')
@@ -281,7 +281,7 @@ console.log('\n用例 5：拆出去的树，前缀上开的分支不许掉回旧
 	check(seven !== undefined && seven.tree === 'M:2', `N:7 该归 M:2 那棵，实际 ${seven && seven.tree}`)
 	// 前缀节点自己仍归旧树 —— Rail 靠 `node.tree !== graph.owner` 认出"这是前缀，开分支要认领"
 	const one = found.nodes.find((node) => node.key === 'M:1')
-	check(one !== undefined && one.tree === pure.ROOT_KEY && one.tree !== found.owner, '前缀节点 M:1 该标成归旧树（认领判据靠它）')
+	check(one !== undefined && one.tree === pure.rootKeyOf('M') && pure.isRootKey(one.tree) && one.tree !== found.owner, '前缀节点 M:1 该标成归旧树（认领判据靠它）')
 	// 子树里的节点归新树 —— 从它们开分支不用认领
 	check(found.nodes.find((node) => node.key === 'M:6').tree === 'M:2', 'M:6 在子树里，该归 M:2 那棵')
 
@@ -300,7 +300,7 @@ console.log('\n用例 5：拆出去的树，前缀上开的分支不许掉回旧
 	check(healed.adopted && healed.adopted.N === 'M:2', '接回去不该清掉认领记录（再拆一次还要用）')
 	const whole = graphOf('N', healed)
 	check(JSON.stringify(keysOf(whole)) === '["M:1","M:2","M:6","N:7","P:3"]', `接回去之后该是一整棵，实际 ${JSON.stringify(keysOf(whole))}`)
-	check(whole.owner === pure.ROOT_KEY, '接回去之后站的该是整棵（root）')
+	check(whole.owner === pure.rootKeyOf('M'), `接回去之后站的该是整棵（M 的树根 key），实际 ${whole.owner}`)
 	// 再拆一次：N 又跟着新树走
 	const again = graphOf('N', reshape({ session: 'M:2', detach: true }))
 	check(JSON.stringify(keysOf(again)) === '["M:1","M:2","M:6","N:7"]', `再拆一次 N 该跟着新树，实际 ${JSON.stringify(keysOf(again))}`)
