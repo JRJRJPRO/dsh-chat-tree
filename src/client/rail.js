@@ -628,17 +628,20 @@ export function Rail(props) {
 		),
 	)
 	// 分隔线：带子的左缘，一条细线，按住左右拖。松手把宽度写进设置（railBand）。
-	const handleLine = (color) => `linear-gradient(to right, transparent 3px, ${color} 3px, ${color} 4px, transparent 4px)`
+	// 平时就画一根淡线（不然找不到 —— John 找了半天）；压上去变实，拖的时候变强调色。
+	// ⚠️ zIndex 要压在导轨（40）上面：树宽到带子左缘时，导轨那层 pointerEvents:auto 会把它整个盖住。
+	const handleLine = (color, alpha) => `linear-gradient(to right, transparent 3px, ${color} 3px, ${color} 4px, transparent 4px)`
 	const handle = band <= 0 && bandDrag === null ? null : h('div', {
 		key: 'band-handle',
 		title: `对话树占位 ${Math.round(band)}px，拖动调整`,
 		style: Object.assign({
 			position: 'fixed', top: `${box.top}px`, height: `${box.height}px`, left: `${box.right - band - 3}px`, width: '7px',
-			zIndex: 39, cursor: 'col-resize', pointerEvents: 'auto',
-			background: bandDrag !== null ? handleLine(C.accent) : 'transparent',
+			zIndex: 41, cursor: 'col-resize', pointerEvents: 'auto',
+			background: handleLine(bandDrag !== null ? C.accent : C.line), opacity: bandDrag !== null ? 1 : 0.45,
+			transition: 'opacity .12s ease',
 		}, TAPPABLE),
-		onPointerEnter: (event) => { event.currentTarget.style.background = handleLine(C.line) },
-		onPointerLeave: (event) => { if (bandDrag === null) event.currentTarget.style.background = 'transparent' },
+		onPointerEnter: (event) => { event.currentTarget.style.opacity = '1' },
+		onPointerLeave: (event) => { if (bandDrag === null) event.currentTarget.style.opacity = '0.45' },
 		onPointerDown: (event) => {
 			event.preventDefault()
 			const right = box.right

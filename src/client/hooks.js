@@ -35,8 +35,9 @@ export function hideNativeRail() {
  * 【为什么这么做】宿主的正文栏是 `max-width + margin: 0 auto` 居中在滚动容器里的，
  * 屏幕越宽两边空得越多，可树只能用右边那一条（railRoom）。把容器右侧 padding 掉 `px`，
  * 居中算的是剩下的宽度，两边仍对称、正文不变窄，树那边却多出整条带子。
- * 输入框那一格（`[data-composer-seat]`）同样垫上，否则正文和输入框错开半条带子。
- * 只垫滚动容器和输入框，不碰宿主别的任何布局；样式表摘掉就一切恢复。
+ * ⚠️ **只垫滚动容器**。输入框那一格（`[data-composer-seat]`）是滚动容器里 `position: sticky` 的
+ *    孩子，已经在垫过的内容盒里居中了；再给它垫一次就是垫两遍 —— 2026-10-05 John 截图里输入框
+ *    比正文还靠左一截就是这么来的。样式表摘掉就一切恢复，不碰宿主别的布局。
  * @param px - 带子宽度
  * @returns 卸载函数
  */
@@ -44,7 +45,7 @@ export function installBand(px) {
 	try {
 		const tag = document.createElement('style')
 		tag.dataset.dshTree = 'band'
-		tag.textContent = `[data-conversation-scroll],[data-composer-seat]{padding-right:${Math.round(px)}px !important;box-sizing:border-box}`
+		tag.textContent = `[data-conversation-scroll]{padding-right:${Math.round(px)}px !important;box-sizing:border-box}`
 		document.head.appendChild(tag)
 		return () => tag.remove()
 	} catch {
