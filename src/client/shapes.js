@@ -38,10 +38,12 @@ export const GLYPH_STORE_MAX = 64
 /**
  * 字最多摊到点的几倍宽（**只算字，不含外面那圈框**）。
  *
- * 封顶是因为列距按画出来最宽的形状留（见 geometry.js 的 railLayout）：
- * 不封的话，某一个节点挂个 5 字标签，**整棵树**的列距都会被它撑开。
+ * 以前封在 3 em，因为列距按画出来最宽的形状留（geometry.js 的 railLayout），不封的话一个
+ * 5 字标签会把整棵树的列距撑开。2026-10-05 起列距**不再**按字框全宽留（rail.js 的 widestOf
+ * 只算字框缩成方块的宽），字框的宽度由它那一行的空位决定（rowSlots），这个封顶就只剩
+ * "再长也别离谱"的兜底，放到 10 em。
  */
-export const GLYPH_SPAN = 3
+export const GLYPH_SPAN = 10
 
 /**
  * 字最多缩到基准字号的多少倍。

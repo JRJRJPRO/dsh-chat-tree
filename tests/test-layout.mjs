@@ -353,7 +353,8 @@ const BOX = { top: 0, height: 600, right: 1600 }
 	const long = 'char:甲乙丙丁'
 	const laid = railLayout(BOX, 100, 12, 1, (size) => drawnWidth(shapeSpec(long), size))
 	const longSpan = glyphSpanFor(laid.lane, laid.z.laneGap, laid.dotSize)
-	check(longSpan === GLYPH_SPAN, `本来就顶到全宽的字，没压时 span 该是 ${GLYPH_SPAN}，实际 ${longSpan}`)
+	// 四个字要 4 em；列距按它留过，没压时给出来的 span 至少装得下它（封顶 GLYPH_SPAN 比 4 大，不会卡在封顶上）
+	check(longSpan >= 4 && longSpan <= GLYPH_SPAN, `列距按四个字留过，没压时 span 该 ≥ 4 且 ≤ ${GLYPH_SPAN}，实际 ${longSpan}`)
 	check(shapeSpec(long, longSpan).glyph === shapeSpec(long).glyph, '顶到全宽的字没压时画法不变')
 
 	// 压到底：截字这一招到此为止 —— 框最窄也就是一个正方块（GLYPH_BOX）

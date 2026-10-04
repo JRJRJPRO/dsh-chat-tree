@@ -135,6 +135,19 @@ export function Rail(props) {
 	// 垫一段 padding（installBand），正文栏在剩下的宽度里重新居中 —— 右边就多出整条带子给树。
 	// 宽度来自设置 railBand；拖分隔线时先用本地值跟手，松手才写设置。
 	const [bandDrag, setBandDrag] = react.useState(null)
+	// 松手后设置要绕宿主一圈才回来；这段时间本地值继续顶着，等设置真的变成那个数再放手 ——
+	// 否则会先闪回旧宽度再跳到新的（John 报的）。宿主一直不回（写失败）就 3s 后放手。
+	const [bandPending, setBandPending] = react.useState(null)
+	react.useEffect(() => {
+		if (bandPending === null) return undefined
+		if (Math.round(Number(tuned.railBand)) === bandPending) {
+			setBandPending(null)
+			setBandDrag(null)
+			return undefined
+		}
+		const timer = setTimeout(() => { setBandPending(null); setBandDrag(null) }, 3000)
+		return () => clearTimeout(timer)
+	}, [bandPending, tuned.railBand])
 	const bandWant = bandDrag !== null ? bandDrag : Number.isFinite(tuned.railBand) ? tuned.railBand : BAND.fallback
 	const band = bandWidth(bandWant, box === undefined ? undefined : box.width)
 	const bandOn = box !== undefined && !!listState && !!current
@@ -295,16 +308,21 @@ export function Rail(props) {
 	// ⚠️ 扫的是**整棵树**，不是这一屏画出来的那几个。只扫可见的话，一颗星星滚进
 	//    省略窗口、又滚出去，导轨就会跟着变宽变窄 —— 和 maxColumn 用整棵树是同一条理由。
 	// ⚠️ 鱼眼的缩放不算进来：它只会把点画小，撑宽列的永远是没被淡化的那个。
+	// ⚠️ 自定义字**不按全宽算**，只按它缩成一个方块时的宽（= 框高）。按全宽算的话，一个节点
+	//    挂个四字标签，整棵树每一列都跟着撑到那么宽（John 说的"像 Excel 改一格宽整列跟着改"），
+	//    而字框真正的宽度由它那一行的空位决定（下面的 rowSlots），和列距无关。
 	const widestOf = (size) => {
 		let most = 0
 		for (const node of graph.nodes) {
 			const star = favorites.has(node.key) ? favShape(favIcons[node.key]) : undefined
 			const shape = star === undefined ? shapeOf(kindOf(node), node.active, theme) : star
-			most = Math.max(most, drawnWidth(shape, dotSizeOf(kindOf(node), size, 1)))
+			const drawn = dotSizeOf(kindOf(node), size, 1)
+			most = Math.max(most, shape.glyph !== undefined ? shapeHeight(shape, drawn) : drawnWidth(shape, drawn))
 		}
 		return most
 	}
-	const room = railRoom(box)
+	// 留了带子就只许在带子里长（John：树不在分隔线右边 = 没意义）；没留才用正文旁边的空当
+	const room = band > 0 ? Math.max(0, band - 2 * Z.gap) : railRoom(box)
 	const { z, available, rowH, treeHeight, railWidth, lane, dotSize, xOf, yOf } = railLayout(box, scale, view.rows, graph.maxColumn, widestOf, room)
 	// 列距被压过之后（横向放不下，见 railLayout 的 `room`），带框的字**按压完的列距重截**：
 	// 框不许比列距宽，字装不下就少画几个加省略号。不这么做的话相邻两列的字框会叠在一起
@@ -373,7 +391,18 @@ export function Rail(props) {
 			itemOf.set(node, item)
 			const row = rowOfNode(node)
 			if (!rows.has(row)) rows.set(row, [])
-			rows.get(row).push(node)
+			rows.get(row).push({ node, item })
+		}
+		// 从这一行**经过**的竖线也算占位（1px 的核心）：不算的话字框会盖到别的分支的连线上，
+		// 看着像线断在框里。只算竖线；横线只在父节点那一行，由上面"拐角"那条管。
+		for (const node of graph.nodes) {
+			if (!itemOf.has(node) || node.parent === undefined || !itemOf.has(node.parent)) continue
+			const from = rowOfNode(node.parent)
+			const to = rowOfNode(node)
+			for (let row = from + 1; row < to; row += 1) {
+				if (!rows.has(row)) continue // 这一行什么节点都没有，没人要借地方
+				rows.get(row).push({ node: null, item: { glyph: false, x: xOf(node.column), core: 1, coreL: 1, coreR: 1, want: 2 } })
+			}
 		}
 		// 自己的岔路拐角并进自己的核心：自己的框可以盖住它（线从框底下出去），邻居借不过来
 		for (const node of graph.nodes) {
@@ -385,10 +414,10 @@ export function Rail(props) {
 		}
 		const lo = Math.min(0, railWidth - room)
 		for (const list of rows.values()) {
-			if (!list.some((node) => itemOf.get(node).glyph)) continue // 这一行没有字框，一切照旧
-			const slots = rowSlots(list.map((node) => itemOf.get(node)), lo, railWidth, z.laneGap)
-			list.forEach((node, at) => {
-				if (itemOf.get(node).glyph) slotOf.set(node, slots[at])
+			if (!list.some((entry) => entry.item.glyph)) continue // 这一行没有字框，一切照旧
+			const slots = rowSlots(list.map((entry) => entry.item), lo, railWidth, z.laneGap)
+			list.forEach((entry, at) => {
+				if (entry.node !== null && entry.item.glyph) slotOf.set(entry.node, slots[at])
 			})
 		}
 	}
@@ -650,10 +679,11 @@ export function Rail(props) {
 			const up = (ev) => {
 				document.removeEventListener('pointermove', move)
 				document.removeEventListener('pointerup', up)
-				const final = bandWidth(right - ev.clientX, width)
-				setBandDrag(null)
+				const final = Math.round(bandWidth(right - ev.clientX, width))
+				setBandDrag(final)
+				setBandPending(final)
 				if (api.settings && typeof api.settings.set === 'function') {
-					Promise.resolve(api.settings.set('railBand', Math.round(final))).catch((error) => warn('占位宽度没存进设置', error))
+					Promise.resolve(api.settings.set('railBand', final)).catch((error) => warn('占位宽度没存进设置', error))
 				}
 			}
 			document.addEventListener('pointermove', move)

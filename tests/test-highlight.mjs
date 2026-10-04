@@ -746,8 +746,11 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(shapeField.accept(`char:${long}`), '十个字也该收，上限已经去掉了')
 	check(pure.shapeSpec(`char:${long}`).value === `char:${long}`,
 		'value 必须是原文：它要存回设置、还要过 isShape，截了就认不得自己')
-	check(pure.shapeSpec(`char:${long}`).glyph.endsWith('…'), '画不下的该截断加省略号')
-	check([...pure.shapeSpec(`char:${long}`).glyph].length < [...long].length, '截断之后该真的变短')
+	// 封顶是 10 em 的兜底：十个字正好装得下，不截；超过封顶（上面那个 over）才截
+	check(pure.shapeSpec(`char:${long}`).glyph === long, '十个字在 10 em 封顶内，该原样画')
+	const over = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸'  // 20 em：超过封顶（10 em）也超过下限字号能装的数（GLYPH_FIT_EM ≈ 16.7）
+	check(pure.shapeSpec(`char:${over}`).glyph.endsWith('…'), '画不下的该截断加省略号')
+	check([...pure.shapeSpec(`char:${over}`).glyph].length < [...over].length, '截断之后该真的变短')
 
 	// 护栏：够不着，但得在
 	const huge = '甲'.repeat(pure.GLYPH_STORE_MAX + 1)
@@ -779,15 +782,16 @@ console.log('\n用例 14：倒三角、自定义字符、自定义图片')
 	check(pure.drawnWidth(three, 10) > pure.drawnWidth(one, 10), '三个字该比一个字宽')
 	check(pure.shapeHeight(three, 10) === pure.shapeHeight(one, 10) && pure.shapeHeight(one, 10) === 10 * pure.GLYPH_BOX,
 		'带框的字高度必须一律相同，一排看过去才齐')
-	// 封顶算的是**字本身**，外面那圈框另算 —— 不封的话一个 5 字标签能把整棵树的列距撑开
-	check(pure.drawnWidth(pure.shapeSpec(`char:${full}`), 10) === 10 * (pure.GLYPH_SPAN + 2 * pure.GLYPH_PAD_X),
+	// 封顶算的是**字本身**，外面那圈框另算。封顶现在只是 10 em 的兜底（列距早已不按字框全宽留，
+	// 见 rail.js 的 widestOf），拿上面那 12 个字去撞它
+	check(pure.drawnWidth(pure.shapeSpec(`char:${over}`), 10) === 10 * (pure.GLYPH_SPAN + 2 * pure.GLYPH_PAD_X),
 		`宽度该封顶在 ${pure.GLYPH_SPAN} 倍字宽外加左右各一圈框`)
 	// 框往外撑，字一个像素不缩 —— 默认点才 11px，把字缩进框里反而更难认
 	check(pure.shapeHeight(one, 10) > 10, '框得占地方，不然框和字就贴上了')
 	check(pure.glyphFont('甲', 10) === 10, '一个字该用满字号')
 	check(pure.glyphFont('甲乙', 10) === 10, '两个字宽度也跟着翻倍，字号不用缩')
-	check(pure.glyphFont(full, 10) < pure.glyphFont('甲乙丙', 10), '宽度封顶之后，字数越多字号越小')
-	check(pure.glyphFont(full, 10) * [...full].length <= 10 * pure.GLYPH_SPAN + 1e-9, '五个字合起来不该超出封顶宽度')
+	check(pure.glyphFont(over, 10) < pure.glyphFont('甲乙丙', 10), '宽度封顶之后，字数越多字号越小')
+	check(pure.glyphFont(over, 10) * [...over].length <= 10 * pure.GLYPH_SPAN + 1e-9, '十二个字合起来不该超出封顶宽度')
 
 	// ⚠️ 宽窄分档：以前一律按汉字算，加了框之后立刻露馅 —— `AB` 实际只有 1.2 个汉字宽，
 	//    框却按 2 个汉字画，两边空出一大片；而汉字的框是贴着的。同样两个字，松紧差一倍。
