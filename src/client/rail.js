@@ -220,46 +220,53 @@ export function Rail(props) {
 	// shape 用 Rail 手里的（改树形的回显也在里面）；还没开任何会话时它是 undefined，钩子自己拉。
 	useSidebarFold(listState, echo || (outlines && outlines.shape) || undefined, tuned.sidebarFold !== false, (workspaceState && workspaceState.archivedSessionIds) || [])
 
+	// 建图、挑树、算可见集、省略：只跟数据有关，**跟 hover / 未读动画 / 设置回显无关**。
+	// 以前它们写在渲染函数体里，鼠标每换一个点就把整棵树重建一遍（buildGraph 要遍历
+	// 本棵树的全部轮次）。缓存之后 hover 只重画点，不再重建图。
+	//
+	// ⚠️ 这个 useMemo 必须在下面那个「不露面就 return null」**之前**：Rail 是同一个组件
+	//    反复渲染的，提前 return 会让 hooks 数量在两次渲染之间变化，React 直接抛
+	//    "Rendered more hooks than during the previous render"，整棵树消失。
+	const derived = react.useMemo(() => {
+		if (!listState || !current || box === undefined) return undefined
+		const archivedNow = new Set((workspaceState && workspaceState.archivedSessionIds) || [])
+		const visibleNow = new Set((listState.ids || []).filter((id) => !archivedNow.has(id)))
+		if (!visibleNow.has(current)) visibleNow.add(current)
+		const shapeNow = echo || (outlines && outlines.shape) || {}
+		const freshNow = outlines !== undefined && outlines.cwd === cwd
+		const allNow = visibleTree((outlines && outlines.sessions) || [], visibleNow)
+		const pickedNow = freshNow ? conversationOf(allNow, current, shapeNow.groupOf) : []
+		// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
+		// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
+		// 「在跑」host 的大纲里有一份（collect.js），但 0.2 宿主的实时状态在会话列表那张表上（withStatus 并进去的）——
+		// 两边取或，开岔路要不要拦、删除要不要带 stopActivity 看的都是它。
+		const markedNow = pickedNow.map((item) => Object.assign({}, item, {
+			completed: (listState.byId[item.id] || {}).completed === true,
+			running: item.running === true || (listState.byId[item.id] || {}).running === true,
+		}))
+		let graphNow
+		try {
+			graphNow = pickedNow.length > 0 ? buildGraph(markedNow, current, cutSet(shapeNow.detached, pickedNow), shapeNow.adopted, treeOfSession(pickedNow, shapeNow.groupOf, current)) : undefined
+		} catch (error) {
+			warn('建图失败，先拿上一棵顶着', error)
+		}
+		// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），这中间
+		//    picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来** —— 所以拿上一棵树
+		//    顶着。但只许拿**同一个目录**的上一棵顶，而且拉取**出了错**也不许顶（错误会被盖住）。
+		const failedNow = outlines !== undefined && outlines.error !== undefined
+		if (graphNow !== undefined) lastGraph.current = { cwd, graph: graphNow }
+		else if (!failedNow && lastGraph.current !== undefined && lastGraph.current.cwd === cwd) graphNow = lastGraph.current.graph
+		// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
+		// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
+		const viewNow = graphNow === undefined ? undefined : elide(graphNow.nodes, anchorNode(graphNow.nodes, activeTurn), range.limit, range.mode)
+		return { archived: archivedNow, visible: visibleNow, shape: shapeNow, fresh: freshNow, all: allNow, picked: pickedNow, graph: graphNow, failed: failedNow, view: viewNow }
+	}, [listState, current, box, workspaceState, outlines, echo, cwd, activeTurn, range.limit, range.mode])
+
 	// 导轨现在是全局常驻的（shell.overlay），所以必须自己判断"该不该露面"：
 	// 量不到聊天区 = 用户不在会话界面（设置页/全局面板），收起来。
 	// 组件本身不卸载，hover / box / 上一棵树都还在，切回来是瞬时的。
-	if (!listState || !current || box === undefined) return null
-
-	// 可见集 = 会话列表 减去 归档集（归档的会话仍留在 sessions.list 里，必须显式扣）
-	const archived = new Set((workspaceState && workspaceState.archivedSessionIds) || [])
-	const visible = new Set((listState.ids || []).filter((id) => !archived.has(id)))
-	if (!visible.has(current)) visible.add(current)
-
-	const shape = echo || (outlines && outlines.shape) || {}
-	// ⚠️ 手里这份大纲是不是**这个目录**的。切到别的目录后、新数据到之前，`outlines` 还是上一个
-	//    目录的（useOutlines 拉取期间保留旧数据，图才不闪空）——那份里当然找不到当前会话，
-	//    不能拿它当"当前会话没有轮次"，更不能拿它建图。
-	const fresh = outlines !== undefined && outlines.cwd === cwd
-	const picked = fresh ? conversationOf(visibleTree(outlines.sessions || [], visible), current, shape.groupOf) : []
-
-	// ⚠️ 新分支会先出现在会话列表里、后出现在 /outlines 里（拉取有 120ms 防抖），
-	//    这中间 picked 是空的。直接 return null 会让整条导轨**整个消失再冒出来**，
-	//    比"颜色晚 100ms 更新"难看得多 —— 所以拿上一棵树顶着，数据到了自然换掉。
-	//    但只许拿**同一个目录**的上一棵顶：切到别的目录（另一组对话）还顶着旧树，就是
-	//    John 报的"完全是另一组对话了，树还显示着原来的那颗"。而且拉取**出了错**也不许顶 ——
-	//    顶着的话错误被整棵旧树盖住，看起来像树卡住了，其实是 host 那边一直在报错。
-	// 「跑完了你没在看」是宿主会话列表上的事（completed），大纲里没有 —— 建图前抄一份过去，
-	// graph.js 据此把那条分支的最后一轮标成未读（绿点）。
-	// 「在跑」host 的大纲里有一份（collect.js），但 0.2 宿主的实时状态在会话列表那张表上（withStatus 并进去的）——
-	// 两边取或，开岔路要不要拦、删除要不要带 stopActivity 看的都是它。
-	const marked = picked.map((item) => Object.assign({}, item, {
-		completed: (listState.byId[item.id] || {}).completed === true,
-		running: item.running === true || (listState.byId[item.id] || {}).running === true,
-	}))
-	let graph
-	try {
-		graph = picked.length > 0 ? buildGraph(marked, current, cutSet(shape.detached, picked), shape.adopted, treeOfSession(picked, shape.groupOf, current)) : undefined
-	} catch (error) {
-		warn('建图失败，先拿上一棵顶着', error)
-	}
-	const failed = outlines !== undefined && outlines.error !== undefined
-	if (graph !== undefined) lastGraph.current = { cwd, graph }
-	else if (!failed && lastGraph.current !== undefined && lastGraph.current.cwd === cwd) graph = lastGraph.current.graph
+	if (!listState || !current || box === undefined || derived === undefined) return null
+	const { archived, visible, shape, fresh, all, picked, graph, failed, view } = derived
 	// 一棵树都没有、而且宿主那边报了错 → 说一声，别整条导轨静悄悄消失
 	if (graph === undefined) {
 		if (!failed) return null
@@ -288,9 +295,7 @@ export function Rail(props) {
 	}
 	void readTick // 只为让到点的那次 setReadTick 触发重画；值本身不用
 
-	// 省略太远的节点。上限 = 0 时 elide 全留，下面这一整套退化成原来的画法。
-	// 放在自诊断钩子前面，好让钩子能把"到底省了几个"一起倒出来。
-	const view = elide(graph.nodes, anchorNode(graph.nodes, activeTurn), range.limit, range.mode)
+	// 省略结果在 derived 里一起算好了（见上面 ⚠️ 放在早退之前的原因）。
 	const rowOfNode = (node) => view.rowOf.get(node.depth)
 
 	// 自诊断钩子：症状出现时在浏览器控制台敲 __dshTree() 就能把当时的真实状态倒出来。
@@ -524,7 +529,7 @@ export function Rail(props) {
 	}
 
 	// 能合并进来的 / 已经合进来的别的对话。整棵树对整棵树，所以这里按树列。
-	const all = visibleTree((outlines && outlines.sessions) || [], visible)
+	// （可见集和过滤在上面 derived 里已经算过一次，直接用解构出来的 all）
 	const targets = mergeTargets(all, current, shape.groupOf)
 	const here = treeOfSession(all, shape.groupOf, current)
 

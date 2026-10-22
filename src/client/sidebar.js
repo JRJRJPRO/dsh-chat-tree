@@ -22,6 +22,7 @@
  * 算座位的纯函数在 fold.js，这里只管贴。
  */
 import { react } from './runtime.js'
+import { Z } from './const.js'
 import { getJson, warn } from './net.js'
 import { currentOf } from './tree.js'
 import { foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
@@ -477,9 +478,26 @@ export function useSidebarFold(listState, shape, enabled, archived) {
 		if (!enabled || typeof document === 'undefined' || typeof MutationObserver === 'undefined') return undefined
 		const openSet = new Set(open)
 		let frame = 0
+		let timer = 0
+		let last = 0
+		let pending = false
 		let observer
+		const canFrame = typeof requestAnimationFrame === 'function'
+		const scheduleFrame = (fn) => {
+			frame = canFrame ? requestAnimationFrame(fn) : setTimeout(fn, 0)
+			if (!canFrame && frame !== null && frame !== undefined && typeof frame.unref === 'function') frame.unref()
+		}
+		const cancelFrame = () => {
+			if (frame === 0) return
+			if (canFrame) cancelAnimationFrame(frame)
+			else clearTimeout(frame)
+			frame = 0
+		}
 		const repaint = () => {
 			frame = 0
+			timer = 0
+			pending = false
+			last = Date.now()
 			try {
 				applyFold(heads, openSet, byId, current, toggle, trees, wantMore.current)
 			} catch (error) {
@@ -488,13 +506,51 @@ export function useSidebarFold(listState, shape, enabled, archived) {
 			// 自己贴的那些变动别再触发自己
 			if (observer !== undefined) observer.takeRecords()
 		}
-		observer = new MutationObserver(() => {
-			if (frame === 0) frame = requestAnimationFrame(repaint)
+		/** 贴一遍，但别贴得比 Z.pasteMs 还密：流式输出时宿主每来一批 token 都可能动 DOM。 */
+		const later = () => {
+			const wait = Math.max(0, Z.pasteMs - (Date.now() - last))
+			if (wait === 0) return repaint()
+			if (timer !== 0) return
+			timer = setTimeout(repaint, wait)
+			if (timer !== null && timer !== undefined && typeof timer.unref === 'function') timer.unref()
+		}
+		const schedulePaint = () => {
+			if (document.hidden === true) {
+				pending = true
+				return
+			}
+			if (frame !== 0 || timer !== 0) return
+			scheduleFrame(later)
+		}
+		// ⚠️ 只对"侧栏那几行"的变动重贴。挂在整个 body 上的话，聊天区每来一批 token
+		//    都是一次 mutation，侧栏就会被跟着全表重贴一遍 —— 流式输出时这是白烧的 CPU。
+		const relevant = (records) => {
+			for (const record of records) {
+				const target = record.target
+				if (target !== null && target !== undefined && typeof target.closest === 'function'
+					&& target.closest('[role="tree"],[role="group"],[role="treeitem"]') !== null) return true
+				const nodes = [...(record.addedNodes || []), ...(record.removedNodes || [])]
+				for (const node of nodes) {
+					if (node === null || node === undefined || node.nodeType !== 1) continue
+					if (typeof node.matches === 'function' && node.matches('[role="treeitem"]')) return true
+					if (typeof node.querySelector === 'function' && node.querySelector('[role="treeitem"]') !== null) return true
+				}
+			}
+			return false
+		}
+		const onVisibility = () => {
+			if (document.hidden !== true && pending) schedulePaint()
+		}
+		observer = new MutationObserver((records) => {
+			if (relevant(records)) schedulePaint()
 		})
 		observer.observe(document.body, { childList: true, subtree: true })
+		document.addEventListener('visibilitychange', onVisibility)
 		repaint()
 		return () => {
-			if (frame !== 0) cancelAnimationFrame(frame)
+			cancelFrame()
+			clearTimeout(timer)
+			document.removeEventListener('visibilitychange', onVisibility)
 			observer.disconnect()
 		}
 	}, [enabled, heads, trees, open, byId, current, toggle])

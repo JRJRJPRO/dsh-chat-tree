@@ -108,7 +108,7 @@ import {
 	starSkin,
 } from './shapes.js'
 import { CARD_GAP, MIN_RUN, bandWidth, boxShift, cardAnchor, edgeOrder, hoverNext, nodeAt, railLayout, railRight, railRoom, reachFor, rowSlots, segments, shrinkToLane, trimRuns } from './geometry.js'
-import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, installBand, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, readAnimation, readPhase, rewindRetryDelay, runningCount, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
+import { PIN_SETTLE_MS, PIN_SLACK, RAIL_MARK, READ_ANIM, READ_FADE_MS, READ_HOLD_MS, READ_MELT_MS, STAR_ANIM, installBand, STAR_ANIM_MS, contentRightOf, isCovered, isRewindPending, listStamp, otherViewShown, nextReadBoundary, nudgePin, pickActiveTurn, pinActiveTurn, pinnedTurn, pollDelay, readAnimation, readPhase, rewindRetryDelay, runningCount, sceneKeyOf, settleDelay, settlePin, starAnimation, tagOutlines, unpinActiveTurn, watchViewport } from './hooks.js'
 import { isColor, nextFavColors, nextFavIcons, nextFavorites, readFavColors, readFavIcons, readFavorites, readLabels, writeFavColor, writeFavIcon, writeFavorite, writeLabel } from './labels.js'
 import { CARD_MARK, Detail, FAV_COLORS, FAV_DROP, FAV_SHAPES, FavIconRow, GAP, HexField, LEAVE_MS, MergeList, NameField, PICK, clampGlyph, favSwatch, isComposingKey, isDirty, keepsCard, shouldRefocus } from './ui-detail.js'
 import { SettingsCard } from './ui-settings.js'
@@ -159,6 +159,8 @@ export const __pure = {
 	tapNext, hasHover, overRail, watchViewport, TAPPABLE, NO_ZOOM,
 	// 撤回的重拉节奏；会话列表的指纹（0.2 宿主上 updatedAt 不跟回答走，得把 running 算进去）；跑完之后的补拉
 	isRewindPending, rewindRetryDelay, listStamp, runningCount, settleDelay, tagOutlines,
+	// 测量节流：便宜指纹（没变就整轮跳过）和按可见性停表的轮询间隔
+	pollDelay, sceneKeyOf,
 	// 现在看到的是第几轮：按位置挑，以及点击之后的钉住
 	pickActiveTurn, pinActiveTurn, unpinActiveTurn, pinnedTurn, settlePin, nudgePin, PIN_SLACK, PIN_SETTLE_MS,
 	// 未读节点读过之后的三段式节奏
