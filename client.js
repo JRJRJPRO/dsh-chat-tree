@@ -3879,6 +3879,38 @@ window.__ModuleLoader__.load({
 		 * 返回 `undefined` 表示"现在不该露面"：不在会话界面，聊天被别的插件整个盖住了，
 		 * 或者容器里挂的是别的页签（Trajectory）。
 		 */
+		/**
+		 * 只在页面可见时轮询 `measure`；隐藏时停机，回到前台先量一次。
+		 *
+		 * 隐藏的窗口改不了自己的几何，那些唤醒纯属白跑（800ms 那处每次还要做 elementFromPoint 命中测试）。
+		 * 调用方拿到的是拆解函数，卸载插件时会一并摘掉 visibilitychange。
+		 */
+		function startVisiblePolling(measure, ms) {
+			let timer = 0
+			const stop = () => {
+				if (timer !== 0) {
+					clearInterval(timer)
+					timer = 0
+				}
+			}
+			const start = () => {
+				stop()
+				if (typeof document !== 'undefined' && document.hidden === true) return
+				timer = setInterval(measure, ms)
+			}
+			const onVisibility = () => {
+				if (typeof document !== 'undefined' && document.hidden === true) return stop()
+				measure()
+				start()
+			}
+			start()
+			if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
+			return () => {
+				stop()
+				if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+			}
+		}
+
 		function useChatBox() {
 			const [box, setBox] = react.useState(undefined)
 			react.useEffect(() => {
@@ -3954,7 +3986,7 @@ window.__ModuleLoader__.load({
 				measure()
 				window.addEventListener('resize', schedule)
 				const offViewport = watchViewport(schedule)
-				const timer = setInterval(measure, 800)
+				const stopPolling = startVisiblePolling(measure, 800)
 				return () => {
 					cancelAnimationFrame(raf)
 					clearTimeout(graceTimer)
@@ -3962,7 +3994,7 @@ window.__ModuleLoader__.load({
 					if (mutant) mutant.disconnect()
 					window.removeEventListener('resize', schedule)
 					offViewport()
-					clearInterval(timer)
+					stopPolling()
 				}
 			}, [])
 			return box
@@ -4130,14 +4162,14 @@ window.__ModuleLoader__.load({
 				measure()
 				document.addEventListener('scroll', onScroll, true)
 				const offViewport = watchViewport(schedule)
-				const timer = setInterval(measure, 400)
+				const stopPolling = startVisiblePolling(measure, 400)
 				return () => {
 					pinWatchers.delete(onPin)
 					cancelAnimationFrame(raf)
 					clearTimeout(settleTimer)
 					document.removeEventListener('scroll', onScroll, true)
 					offViewport()
-					clearInterval(timer)
+					stopPolling()
 				}
 			}, [])
 			return turn
