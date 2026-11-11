@@ -3,6 +3,7 @@
  */
 import { isClaudeSession } from './graft.js'
 import { lineage } from './lineage.js'
+import { resolveParents } from './parents.js'
 import { cache, effectiveForkTurn, outlineOf } from './outline.js'
 import { hiddenCache, markRewound, rewindStateOf, statusProbe } from './rewind.js'
 
@@ -53,6 +54,10 @@ export async function collect(ctx, cwd) {
 		const header = snapshot.header
 		lineage.set(header.id, header.parentSession) // 血缘表顺手刷新，graft 要顺着它往上找锚点
 		known.add(header.id)
+		// 子代理会话不画进导轨：宿主对它们有自己的一套展示（侧栏折叠早就把它们排除了，
+		// 见 src/client/fold.js）。它们的轮次从 1 重新数，画进来会和父会话的同一轮撞车 ——
+		// 一条路径上出现两个 turn 1，滑到那儿会同时亮两个点。
+		if (header.origin === 'subagent') continue
 		if (cwd && header.cwd !== cwd) continue
 		const outline = await outlineOf(ctx, snapshot)
 		// 撤回有两个真相来源：surface replace 在日志里，outline 折的时候已经盖了戳；
@@ -82,6 +87,17 @@ export async function collect(ctx, cwd) {
 			...(contextMissing(header.id, header.isSeeded === true) ? { contextMissing: true } : {}),
 		})
 	}
+
+	// 宿主漏写的 `parentSession` 在这儿补回来：桌面版 0.2.2 的 fork 不写它（见 parents.js）。
+	// 补完再刷一遍血缘表 —— graft 靠它往上找锚点，拿断掉的链去接上下文只会接空。
+	// 只动内存里已经读好的大纲，不额外读盘；没有孤儿分支时几乎零开销。
+	try {
+		resolveParents(sessions)
+	} catch (error) {
+		// 补血缘失败不该让整棵树消失：最坏就是这几条分支各自成树
+		ctx.logger?.warn?.(`dsh-chat-tree: 补分支血缘失败：${String(error)}`)
+	}
+	for (const item of sessions) lineage.set(item.id, item.parentId)
 
 	// 顺手清理已删除会话的残留，别让这几个 Map 无限长。
 	// 按同一份名单（`known` = 这次列表里出现过的全部会话）来。

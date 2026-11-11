@@ -7403,6 +7403,22 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 把"这条分支是从哪条会话开出来的"记到宿主那边。
+		 *
+		 * ⚠️ 桌面版 0.2.2-rc.1 的 `session.fork` 给子会话写 header 时**漏了 parentSession**
+		 *    （宿主的回归，见 src/host/parents.js 开头）。不补这一笔，新分支在树上就是一截
+		 *    没有根的直线：继承来的轮次不画，父会话又接不上，只剩一个空根。
+		 *    失败只告警 —— 宿主那边还能按继承前缀把它猜回来。
+		 * @param childId - 新分支
+		 * @param parentId - 被开岔路的那条会话
+		 */
+		function rememberParent(childId, parentId) {
+			return postJson('/parent', { session: childId, parent: parentId }).catch((error) =>
+				warn('分支血缘没记上（树可能接不回父对话）', error),
+			)
+		}
+
+		/**
 		 * 插件体。
 		 * @param ctx - 浏览器根 context
 		 */
@@ -7486,6 +7502,8 @@ window.__ModuleLoader__.load({
 				fork: (id, atSeq, born) =>
 					attempt('开分支失败', async () => {
 						const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
+						// 先记血缘再切过去：切过去导轨会立刻按新会话重画，晚一拍那一帧就是"只剩根"
+						await rememberParent(made, id)
 						if (typeof born === 'function') await born(made)
 						open(made)
 						return made

@@ -11,6 +11,7 @@
  *   撤回过的轮次 ·········· src/host/rewind.js（⚠️ 读旁车那一段的规矩不许放宽）
  *   哪几条对话算一棵树 ···· src/host/shape.js
  *   自定义节点图片 ········ src/host/icons.js
+ *   分支血缘的补记 ········ src/host/parents.js
  *   外部引擎的记忆嫁接 ···· src/host/graft.js
  *   HTTP 那层壳 ··········· src/host/http.js
  *
@@ -28,6 +29,7 @@ import { HttpError, raw, route } from './src/host/http.js'
 import { ICON_KEEP, ICON_MAX, isIconId, putIcon, readIcon } from './src/host/icons.js'
 import { lineage } from './src/host/lineage.js'
 import { iconDir } from './src/host/paths.js'
+import { inferParent, parentsPath, readParents, rememberParent, resolveParents } from './src/host/parents.js'
 import { SIDECAR_QUIET_MS, markRewound, rewindStateOf, statusProbe, turnHidden } from './src/host/rewind.js'
 import { readShape, reshape } from './src/host/shape.js'
 import { SETTINGS_NS, SETTINGS_SCHEMA } from './src/host/settings.js'
@@ -65,6 +67,7 @@ export const __test = {
 	putIcon, readIcon, isIconId, iconDir, ICON_KEEP, ICON_MAX,
 	statusProbe, rewindStateOf, markRewound, turnHidden, SIDECAR_QUIET_MS,
 	collect, shadowedSeqs, effectiveForkTurn, cacheKeyOf, readLabels, patchLabels,
+	parentsPath, readParents, rememberParent, inferParent, resolveParents,
 }
 
 /**
@@ -138,6 +141,9 @@ export function apply(ctx) {
 	route(ctx, '/labels', {
 		GET: () => readLabels(),
 		POST: ({ body }) => patchLabels(body),
+	})
+	route(ctx, '/parent', {
+		POST: ({ body }) => rememberParent(body),
 	})
 
 	route(ctx, '/shape', {
