@@ -50,6 +50,7 @@ npm test          # 先构建再跑十个测试脚本
 | `graft.js` | 把外部引擎的记忆嫁接给新分支 | ⚠️ 里面记着一条**还没修**的同类风险 |
 | `adopt.js` | 新分支一出生就接管 | 全同步，不许有时间窗 |
 | `collect.js` | 组装 `/outlines` 的响应体 | |
+| `parents.js` | 分支血缘的补记（宿主 0.2.2 的 fork 不写 `parentSession`，这里记/猜回父会话） | 只在 header 缺 `parentSession` 时出手；推断用 collect 已读的大纲，别再读一遍盘 |
 | `http.js` | 路由外壳 + 信任围栏 | 加路由走 `route()`，别自己 `webServer.register`（那样就绕过了鉴权）|
 
 ### 浏览器半（`src/client/`）

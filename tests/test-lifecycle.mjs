@@ -171,9 +171,10 @@ console.log('用例 1：装上之后该有的都在')
 	const host = fakeHost(world)
 	hostApply(host.ctx)
 	const paths = [...host.state.routes.keys()].sort()
-	check(paths.length === 4, `注册了 ${paths.length} 个路由，应该是 4 个：${paths.join(' ')}`)
+	check(paths.length === 6, `注册了 ${paths.length} 个路由，应该是 6 个：${paths.join(' ')}`)
 	check(
-		paths.join(' ') === '/plugins/dsh-chat-tree/icon /plugins/dsh-chat-tree/labels /plugins/dsh-chat-tree/outlines /plugins/dsh-chat-tree/shape',
+		paths.join(' ') ===
+			'/plugins/dsh-chat-tree/icon /plugins/dsh-chat-tree/labels /plugins/dsh-chat-tree/outlines /plugins/dsh-chat-tree/parent /plugins/dsh-chat-tree/parents /plugins/dsh-chat-tree/shape',
 		`路由不对：${paths.join(' ')}`,
 	)
 	check(host.state.listeners.length === 1 && host.state.listeners[0].event === 'agent/created', '没接管 agent/created')
@@ -199,7 +200,7 @@ console.log('用例 2：停用 → 再启用（市场里点两下就会走这条
 		failure = error
 	}
 	check(failure === undefined, `再启用抛了：${failure && failure.message}`)
-	check(second.state.routes.size === 4, `再启用后只剩 ${second.state.routes.size} 个路由`)
+	check(second.state.routes.size === 6, `再启用后只剩 ${second.state.routes.size} 个路由`)
 	check(world.namespaces.has('dsh-chat-tree'), '再启用后设置 namespace 没回来')
 	console.log('  第二次装上照样是 3 个路由 + namespace')
 	second.dispose()
@@ -284,7 +285,7 @@ console.log('用例 6：0.2 的宿主没有 settings.register —— 两半都�
 		failure = error
 	}
 	check(failure === undefined, `0.2 宿主上 apply 抛了：${failure && failure.message}`)
-	check(host.state.routes.size === 4, `0.2 宿主上只注册了 ${host.state.routes.size} 个路由`)
+	check(host.state.routes.size === 6, `0.2 宿主上只注册了 ${host.state.routes.size} 个路由`)
 	check(world.namespaces.size === 0, '0.2 宿主上不该再登记 namespace（它没有这个概念）')
 	check(host.state.logs.some((line) => /Config/.test(line)), '0.2 宿主上该有一行日志说明设置改走 Config')
 	host.dispose()
@@ -336,7 +337,7 @@ console.log('用例 6：0.2 的宿主没有 settings.register —— 两半都�
 		check(JSON.stringify(old.state.opened) === '["sessions:s1"]', `0.1.5 宿主上开会话该走 sessions.open，实际 ${JSON.stringify(old.state.opened)}`)
 		check(oldApi.status.getSnapshot() === undefined, '0.1.5 宿主上没有状态表，api.status 该是 undefined')
 		old.dispose()
-		console.log(`  host 4 个路由、不登记 namespace；Config ${fields.length} 个字段全 volatile；浏览器半挂 settings.section:${SETTINGS_NS}；开会话两代各走各的`)
+		console.log(`  host 6 个路由、不登记 namespace；Config ${fields.length} 个字段全 volatile；浏览器半挂 settings.section:${SETTINGS_NS}；开会话两代各走各的`)
 	}
 
 	// 列表快照的两代差异（tree.js 的 currentOf / withStatus）

@@ -85,6 +85,35 @@ export function foldHeads(sessions, shape) {
 }
 
 /**
+ * 把补记的血缘填进会话列表项。
+ *
+ * 宿主的列表项 parentId 是**日志 header 里 parentSession 的投影**（dsh 0.2 的
+ * session-controller 把 parentSessionId 映射成 parentId）。桌面版 0.2.2 的 fork
+ * 不写 parentSession，于是新分支在列表里没有父亲 —— 折不出树，只能平铺（见
+ * src/host/parents.js 开头）。host 那边已经把父子关系补进 parents.json，这里填回去。
+ *
+ * 已经带 parentId 的一律不动：宿主哪天写对了，就以它为准。
+ * @param sessions - 会话列表项（宿主快照里的 byId[id]）
+ * @param parents - GET /parents 的答复（{version, parents}），也可以直接给那张表
+ * @returns 新的数组；没父链的项原样返回（不改入参）
+ */
+export function withParents(sessions, parents) {
+	const doc = parents !== null && typeof parents === 'object' ? parents : {}
+	const table = doc.parents !== null && typeof doc.parents === 'object' ? doc.parents : doc
+	const out = []
+	for (const item of sessions || []) {
+		if (item === null || item === undefined || typeof item.id !== 'string') continue
+		if (typeof item.parentId === 'string' && item.parentId.length > 0) {
+			out.push(item)
+			continue
+		}
+		const parent = table[item.id]
+		out.push(typeof parent === 'string' && parent.length > 0 && parent !== item.id ? Object.assign({}, item, { parentId: parent }) : item)
+	}
+	return out
+}
+
+/**
  * 给侧栏里画出来的那几行排座位。
  *
  * 输入是一个容器里**按 DOM 顺序**的全部孩子：会话行给 id，别的（工作区标题行、

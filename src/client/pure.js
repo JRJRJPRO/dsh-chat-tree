@@ -43,7 +43,7 @@ import {
 	rootKeyOf,
 } from './tree.js'
 import { buildGraph } from './graph.js'
-import { OPEN_KEY, foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
+import { OPEN_KEY, foldHeads, foldRows, nextOpen, readOpenTrees, withParents, writeOpenTrees } from './fold.js'
 import { FOLD_ATTR, FOLD_BUTTON, applyFold, clearFold, foldReport, sessionIdOf, unitOf } from './sidebar.js'
 import { FADE, anchorNode, elide, fisheye, layersAway, stepsAway } from './elide.js'
 import {
@@ -128,7 +128,7 @@ export const __pure = {
 	// 图
 	buildGraph, elide, fisheye, FADE, anchorNode,
 	// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
-	foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY,
+	foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, withParents, OPEN_KEY,
 	applyFold, clearFold, foldReport, sessionIdOf, unitOf, FOLD_ATTR, FOLD_BUTTON,
 	// 画
 	dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,

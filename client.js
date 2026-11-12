@@ -1420,6 +1420,35 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 把补记的血缘填进会话列表项。
+		 *
+		 * 宿主的列表项 parentId 是**日志 header 里 parentSession 的投影**（dsh 0.2 的
+		 * session-controller 把 parentSessionId 映射成 parentId）。桌面版 0.2.2 的 fork
+		 * 不写 parentSession，于是新分支在列表里没有父亲 —— 折不出树，只能平铺（见
+		 * src/host/parents.js 开头）。host 那边已经把父子关系补进 parents.json，这里填回去。
+		 *
+		 * 已经带 parentId 的一律不动：宿主哪天写对了，就以它为准。
+		 * @param sessions - 会话列表项（宿主快照里的 byId[id]）
+		 * @param parents - GET /parents 的答复（{version, parents}），也可以直接给那张表
+		 * @returns 新的数组；没父链的项原样返回（不改入参）
+		 */
+		function withParents(sessions, parents) {
+			const doc = parents !== null && typeof parents === 'object' ? parents : {}
+			const table = doc.parents !== null && typeof doc.parents === 'object' ? doc.parents : doc
+			const out = []
+			for (const item of sessions || []) {
+				if (item === null || item === undefined || typeof item.id !== 'string') continue
+				if (typeof item.parentId === 'string' && item.parentId.length > 0) {
+					out.push(item)
+					continue
+				}
+				const parent = table[item.id]
+				out.push(typeof parent === 'string' && parent.length > 0 && parent !== item.id ? Object.assign({}, item, { parentId: parent }) : item)
+			}
+			return out
+		}
+
+		/**
 		 * 给侧栏里画出来的那几行排座位。
 		 *
 		 * 输入是一个容器里**按 DOM 顺序**的全部孩子：会话行给 id，别的（工作区标题行、
@@ -4885,10 +4914,28 @@ window.__ModuleLoader__.load({
 			}, [missing])
 
 			const archivedKey = (archived || []).join(',')
+			// 血缘补记：列表项的 parentId 是日志 header 的投影，而桌面版 0.2.2 的 fork 不写
+			// parentSession —— 新分支在列表里没有父亲，折不进树（见 src/host/parents.js）。
+			// 会话列表增删时拉一次（新分支一出现就会拉），没开折叠就不拉。
+			const idsKey = listState ? (listState.ids || []).join(',') : ''
+			const [parents, setParents] = react.useState(undefined)
+			react.useEffect(() => {
+				if (!enabled) return undefined
+				let alive = true
+				getJson('/parents')
+					.then((body) => {
+						if (alive) setParents(body)
+					})
+					.catch((error) => warn('拉血缘补记失败，侧栏只能按宿主给的父链折', error))
+				return () => {
+					alive = false
+				}
+			}, [enabled, idsKey])
 			const sessions = react.useMemo(() => {
 				const gone = new Set(archived || [])
-				return listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
-			}, [listState, archivedKey]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
+				const items = listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
+				return withParents(items, parents)
+			}, [listState, archivedKey, parents]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
 			const heads = react.useMemo(() => foldHeads(sessions, live || {}), [sessions, live])
 			// 树编号 → 全部成员（按会话列表算，含被宿主收进「还有 n 条」的那些）
 			const trees = react.useMemo(() => {
@@ -7329,7 +7376,7 @@ window.__ModuleLoader__.load({
 			// 图
 			buildGraph, elide, fisheye, FADE, anchorNode,
 			// 左侧会话列表怎么折：算座位的纯函数，以及往宿主行上贴记号的那半（测试用假 DOM 喂它）
-			foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, OPEN_KEY,
+			foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees, withParents, OPEN_KEY,
 			applyFold, clearFold, foldReport, sessionIdOf, unitOf, FOLD_ATTR, FOLD_BUTTON,
 			// 画
 			dotStyle, inkOf, fade, shapeSpec, shapeOf, shapeBox, drawnWidth, shapeHeight, polyPoints, polyProps, roleOf, dashedOf, dotSizeOf,
@@ -7400,6 +7447,22 @@ window.__ModuleLoader__.load({
 				warn(what, error)
 				return undefined
 			}
+		}
+
+		/**
+		 * 把"这条分支是从哪条会话开出来的"记到宿主那边。
+		 *
+		 * ⚠️ 桌面版 0.2.2-rc.1 的 `session.fork` 给子会话写 header 时**漏了 parentSession**
+		 *    （宿主的回归，见 src/host/parents.js 开头）。不补这一笔，新分支在树上就是一截
+		 *    没有根的直线：继承来的轮次不画，父会话又接不上，只剩一个空根。
+		 *    失败只告警 —— 宿主那边还能按继承前缀把它猜回来。
+		 * @param childId - 新分支
+		 * @param parentId - 被开岔路的那条会话
+		 */
+		function rememberParent(childId, parentId) {
+			return postJson('/parent', { session: childId, parent: parentId }).catch((error) =>
+				warn('分支血缘没记上（树可能接不回父对话）', error),
+			)
 		}
 
 		/**
@@ -7486,6 +7549,8 @@ window.__ModuleLoader__.load({
 				fork: (id, atSeq, born) =>
 					attempt('开分支失败', async () => {
 						const made = await ctx.sessions.fork({ sessionId: id, atSeq, increaseTitle: true })
+						// 先记血缘再切过去：切过去导轨会立刻按新会话重画，晚一拍那一帧就是"只剩根"
+						await rememberParent(made, id)
 						if (typeof born === 'function') await born(made)
 						open(made)
 						return made

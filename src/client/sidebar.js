@@ -24,7 +24,7 @@
 import { react } from './runtime.js'
 import { getJson, warn } from './net.js'
 import { currentOf } from './tree.js'
-import { foldHeads, foldRows, nextOpen, readOpenTrees, writeOpenTrees } from './fold.js'
+import { foldHeads, foldRows, nextOpen, readOpenTrees, withParents, writeOpenTrees } from './fold.js'
 
 /** 容器上的记号：`group`（工作区分组视图，行间距 2px）/ `flat`（"放在一个列表里"视图）。 */
 export const FOLD_ATTR = 'data-dsht-fold'
@@ -430,10 +430,28 @@ export function useSidebarFold(listState, shape, enabled, archived) {
 	}, [missing])
 
 	const archivedKey = (archived || []).join(',')
+	// 血缘补记：列表项的 parentId 是日志 header 的投影，而桌面版 0.2.2 的 fork 不写
+	// parentSession —— 新分支在列表里没有父亲，折不进树（见 src/host/parents.js）。
+	// 会话列表增删时拉一次（新分支一出现就会拉），没开折叠就不拉。
+	const idsKey = listState ? (listState.ids || []).join(',') : ''
+	const [parents, setParents] = react.useState(undefined)
+	react.useEffect(() => {
+		if (!enabled) return undefined
+		let alive = true
+		getJson('/parents')
+			.then((body) => {
+				if (alive) setParents(body)
+			})
+			.catch((error) => warn('拉血缘补记失败，侧栏只能按宿主给的父链折', error))
+		return () => {
+			alive = false
+		}
+	}, [enabled, idsKey])
 	const sessions = react.useMemo(() => {
 		const gone = new Set(archived || [])
-		return listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
-	}, [listState, archivedKey]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
+		const items = listState ? (listState.ids || []).map((id) => listState.byId[id]).filter((item) => item !== undefined && !gone.has(item.id)) : []
+		return withParents(items, parents)
+	}, [listState, archivedKey, parents]) // archived 按内容比（archivedKey），不按引用 —— 宿主每帧给的是新数组
 	const heads = react.useMemo(() => foldHeads(sessions, live || {}), [sessions, live])
 	// 树编号 → 全部成员（按会话列表算，含被宿主收进「还有 n 条」的那些）
 	const trees = react.useMemo(() => {

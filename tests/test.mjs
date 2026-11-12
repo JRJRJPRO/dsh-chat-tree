@@ -89,6 +89,8 @@ function collect(cwdFilter) {
 			const events = readSession(file)
 			const header = events[0] || {}
 			if (cwdFilter && header.cwd !== cwdFilter) continue
+			// 和 host 的 collect 一样跳过子代理：它们的轮次从 1 重数，画进来会和父会话撞车
+			if (header.origin === 'subagent') continue
 			touched.set(header.id, fs.statSync(file).mtimeMs)
 			const outline = foldOutline(events)
 			sessions.push({
