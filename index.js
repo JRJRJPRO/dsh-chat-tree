@@ -146,6 +146,11 @@ export function apply(ctx) {
 		POST: ({ body }) => rememberParent(body),
 	})
 
+	// 血缘补记的只读快照。侧栏折叠拿它给列表项补父链（列表项只有宿主投影的 parentId）。
+	route(ctx, '/parents', {
+		GET: () => readParents(),
+	})
+
 	route(ctx, '/shape', {
 		GET: () => readShape(),
 		POST: ({ body }) => reshape(body),

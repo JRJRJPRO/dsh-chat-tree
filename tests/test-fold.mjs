@@ -520,4 +520,22 @@ console.log('用例 13：clearFold 把页面上的记号全摘干净')
 	check(applyFold(new Map(), new Set(), {}, undefined, () => {}) === 0, '没有 document 时 applyFold 安静返回 0')
 }
 
+console.log('用例 14：withParents —— 列表项没有父链时用补记填回去（桌面版 0.2.2 的 fork 就是这样）')
+{
+	// 宿主列表项：新分支没有 parentId（header 里 parentSession 缺失）
+	const items = [session('A'), session('B'), session('C')]
+	const got = pure.withParents(items, { version: 1, parents: { B: 'A', C: 'B' } })
+	check(got.find((one) => one.id === 'B').parentId === 'A', '补记里的父链该填进去')
+	check(got.find((one) => one.id === 'A').parentId === undefined, '本来就没有父亲的不能被瞎填')
+	check(items[1].parentId === undefined, '不许改宿主给的入参')
+	const heads = foldHeads(got, {})
+	check(heads.get('B') === 'A' && heads.get('C') === 'A', '填完就该折进同一棵树')
+	// 宿主自己给了 parentId 的，以宿主为准（不接受补记覆盖）
+	const host = [session('B', 'Z'), session('A')]
+	check(pure.withParents(host, { parents: { B: 'A' } }).find((one) => one.id === 'B').parentId === 'Z', '宿主写对了就不动')
+	// 认不得的答复 / 空表：原样返回，不崩
+	check(pure.withParents(items, undefined).length === 3, '没有补记也不丢行')
+	check(pure.withParents([null, undefined, { id: 3 }], {}).length === 0, '坏项直接跳过')
+}
+
 report()
